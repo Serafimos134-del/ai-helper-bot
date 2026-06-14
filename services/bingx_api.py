@@ -46,9 +46,14 @@ def _request(method: str, path: str, params: dict = None) -> dict:
             response = requests.post(url, json=params, headers=headers, timeout=10)
 
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        if not isinstance(data, dict):
+            return {'error': 'Unexpected response format', 'code': -1, 'raw': data}
+        return data
     except requests.exceptions.RequestException as e:
         return {'error': str(e), 'code': -1}
+    except ValueError as e:
+        return {'error': f'Invalid JSON response: {e}', 'code': -1}
 
 
 def get_balance() -> dict:
@@ -82,6 +87,8 @@ def get_open_positions() -> dict:
 
     if result.get('code') == 0:
         positions = result.get('data', [])
+        if not isinstance(positions, list):
+            positions = positions.get('positions', []) if isinstance(positions, dict) else []
         trades = []
         for pos in positions:
             if float(pos.get('positionAmt', 0)) != 0:
