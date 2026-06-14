@@ -287,6 +287,22 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # ── Состояние: ожидание вопроса для AI ──
+    if state == 'asking_ai':
+        if text == BTN_CANCEL:
+            context.user_data['state'] = None
+            await update.message.reply_text(
+                "Отменено.",
+                reply_markup=ai_menu_keyboard()
+            )
+            return
+
+        context.user_data['state'] = None
+        msg = await update.message.reply_text("🤖 Думаю...")
+        answer = ai_analyzer.analyze_raw(text)
+        await msg.edit_text(f"💬 *Ответ AI:*\n\n{answer}", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
+        return
+
     # ── Навигация по меню ──
     if text == BTN_TRADING:
         await update.message.reply_text(
@@ -338,7 +354,13 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚧 В разработке (этап 5).", reply_markup=ai_menu_keyboard())
 
     elif text == BTN_AI_ASK:
-        await update.message.reply_text("🚧 В разработке (этап 3).", reply_markup=ai_menu_keyboard())
+        context.user_data['state'] = 'asking_ai'
+        await update.message.reply_text(
+            "💬 *Задай вопрос AI-тренеру:*\n\n"
+            "Например: «Стоит ли сейчас открывать лонг по ETH?» или «Как улучшить дисциплину?»",
+            parse_mode='Markdown',
+            reply_markup=cancel_keyboard()
+        )
 
     elif text == BTN_AI_MARKET:
         await update.message.reply_text("🚧 В разработке (этап 4).", reply_markup=ai_menu_keyboard())
