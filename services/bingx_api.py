@@ -143,3 +143,45 @@ def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
             'error': result.get('msg', 'Неизвестная ошибка'),
             'trades': []
         }
+
+
+def get_top_tickers(limit: int = 10) -> dict:
+    """Публичные данные по топ парам (без подписи)."""
+    url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        tickers = data.get('data', [])
+        if not isinstance(tickers, list):
+            return {'success': False, 'error': 'Unexpected format', 'tickers': []}
+
+        # Сортируем по объёму за 24ч (убывание)
+        sorted_tickers = sorted(
+            tickers,
+            key=lambda x: float(x.get('quoteVolume', 0)),
+            reverse=True
+        )
+        return {'success': True, 'tickers': sorted_tickers[:limit]}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'tickers': []}
+
+
+def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -> dict:
+    """Публичные свечные данные (без подписи)."""
+    url = f"{BASE_URL}/openApi/swap/v3/quote/klines"
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'limit': limit
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        klines = data.get('data', [])
+        if not isinstance(klines, list):
+            return {'success': False, 'error': 'Unexpected format', 'klines': []}
+        return {'success': True, 'klines': klines}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'klines': []}
