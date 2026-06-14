@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-from services.bingx_api import get_balance, get_open_positions, get_closed_orders
+from services.bingx_api import get_balance, get_open_positions, get_closed_orders, get_top_tickers, get_kline
 from services.trading_storage import (
     get_open_trades,
     get_closed_trades,
@@ -202,6 +202,92 @@ async def show_ai_analysis(update: Update):
     await msg.edit_text(text, parse_mode='Markdown')
 
 
+async def show_market_overview(update: Update):
+    msg = await update.message.reply_text("🌐 Собираю данные рынка...")
+
+    result = get_top_tickers(10)
+    if not result.get('success') or not result.get('tickers'):
+        await msg.delete()
+        await update.message.reply_text(
+            f"❌ Не удалось получить данные рынка: {result.get('error', 'нет данных')}",
+            reply_markup=ai_menu_keyboard()
+        )
+        return
+
+    summary = []
+    for t in result['tickers']:
+        symbol = t.get('symbol', '')
+        change = float(t.get('priceChangePercent', 0))
+        volume = float(t.get('quoteVolume', 0))
+        summary.append(f"{symbol}: изм {change:+.2f}%, объём {volume:,.0f}")
+
+    prompt = (
+        "Дай краткий обзор рынка криптовалют на основе этих данных (топ-10 пар по объёму за 24ч):\n"
+        + "\n".join(summary)
+        + "\n\nОпиши настроение рынка, выдели лидеров роста/падения, возможные развороты. Ответ на русском, кратко."
+    )
+
+    try:
+        analysis = ai_analyzer.analyze_raw(prompt)
+    except Exception as e:
+        analysis = f"Ошибка AI: {e}"
+
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text(f"🌐 Обзор рынка от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
+
+
+async def show_trends(update: Update):
+    msg = await update.message.reply_text("📊 Анализирую тренды...")
+
+    symbols = ["BTC-USDT", "ETH-USDT"]
+    data_lines = []
+    for sym in symbols:
+        result = get_kline(sym, "1h", 24)
+        klines = result.get('klines', [])
+        if result.get('success') and len(klines) >= 2:
+            try:
+                first_close = float(klines[0].get('close', klines[0].get('c', 0)))
+                last_close = float(klines[-1].get('close', klines[-1].get('c', 0)))
+                if first_close:
+                    change = (last_close - first_close) / first_close * 100
+                    data_lines.append(f"{sym}: изменение за 24ч {change:+.2f}%")
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+    if not data_lines:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        await update.message.reply_text(
+            "❌ Не удалось получить данные по трендам.",
+            reply_markup=ai_menu_keyboard()
+        )
+        return
+
+    prompt = (
+        "Проанализируй тренды на основе изменения цены за последние 24 часа:\n"
+        + "\n".join(data_lines)
+        + "\n\nДай прогноз: продолжение тренда или разворот? Ключевые уровни. Ответ на русском, краткий, по делу."
+    )
+
+    try:
+        analysis = ai_analyzer.analyze_raw(prompt)
+    except Exception as e:
+        analysis = f"Ошибка AI: {e}"
+
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
+
+
 async def show_help(update: Update):
     text = (
         "ℹ️ *Помощь*\n\n"
@@ -373,10 +459,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == BTN_AI_MARKET:
-        await update.message.reply_text("🚧 В разработке (этап 4).", reply_markup=ai_menu_keyboard())
+        await show_market_overview(update)
 
     elif text == BTN_AI_TRENDS:
-        await update.message.reply_text("🚧 В разработке (этап 4).", reply_markup=ai_menu_keyboard())
+        await show_trends(update)
 
     else:
         await update.message.reply_text(
