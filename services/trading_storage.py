@@ -14,10 +14,26 @@ def _ensure_file():
 
 
 def load_trades() -> dict:
-    """Загрузить все сделки из файла."""
+    """Загрузить все сделки из файла. Если файл повреждён или содержит
+    неправильную структуру (например, список вместо словаря), пересоздаёт его."""
     _ensure_file()
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        data = None
+
+    if not isinstance(data, dict):
+        data = {"open_trades": [], "closed_trades": []}
+        save_trades(data)
+        return data
+
+    if 'open_trades' not in data or not isinstance(data.get('open_trades'), list):
+        data['open_trades'] = []
+    if 'closed_trades' not in data or not isinstance(data.get('closed_trades'), list):
+        data['closed_trades'] = []
+
+    return data
 
 
 def save_trades(data: dict):
