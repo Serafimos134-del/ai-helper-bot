@@ -50,6 +50,12 @@ BTN_AI_ANALYSIS = "🧠 AI-анализ"
 BTN_BACK = "🔙 Назад"
 BTN_CANCEL = "❌ Отмена"
 
+# AI-меню
+BTN_AI_OPEN_ANALYSIS = "📈 Анализ открытых сделок"
+BTN_AI_ASK = "💬 Задать вопрос AI"
+BTN_AI_MARKET = "🌐 Обзор рынка"
+BTN_AI_TRENDS = "📊 Тренды"
+
 # ─── Клавиатуры (Reply, снизу) ────────────────────────────────────────────────
 
 def main_menu_keyboard():
@@ -69,6 +75,18 @@ def trading_menu_keyboard():
             [BTN_BALANCE, BTN_LAST_TRADES],
             [BTN_STATS, BTN_COMMENT],
             [BTN_AI_ANALYSIS],
+            [BTN_BACK],
+        ],
+        resize_keyboard=True
+    )
+
+
+def ai_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_AI_OPEN_ANALYSIS],
+            [BTN_AI_ASK],
+            [BTN_AI_MARKET, BTN_AI_TRENDS],
             [BTN_BACK],
         ],
         resize_keyboard=True
@@ -279,9 +297,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == BTN_AI:
         await update.message.reply_text(
-            "🤖 *AI раздел*\n\nВ разработке. Пока доступен базовый анализ через Trading → 🧠 AI-анализ.",
+            "🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:",
             parse_mode='Markdown',
-            reply_markup=main_menu_keyboard()
+            reply_markup=ai_menu_keyboard()
         )
 
     elif text == BTN_SHORTS:
@@ -315,6 +333,18 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == BTN_AI_ANALYSIS:
         await show_ai_analysis(update)
+
+    elif text == BTN_AI_OPEN_ANALYSIS:
+        await update.message.reply_text("🚧 В разработке (этап 5).", reply_markup=ai_menu_keyboard())
+
+    elif text == BTN_AI_ASK:
+        await update.message.reply_text("🚧 В разработке (этап 3).", reply_markup=ai_menu_keyboard())
+
+    elif text == BTN_AI_MARKET:
+        await update.message.reply_text("🚧 В разработке (этап 4).", reply_markup=ai_menu_keyboard())
+
+    elif text == BTN_AI_TRENDS:
+        await update.message.reply_text("🚧 В разработке (этап 4).", reply_markup=ai_menu_keyboard())
 
     else:
         await update.message.reply_text(
