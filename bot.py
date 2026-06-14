@@ -306,9 +306,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = f"Ошибка вызова AI: {e}"
 
         try:
-            await msg.edit_text(f"💬 Ответ AI:\n\n{answer}", reply_markup=ai_menu_keyboard())
-        except Exception as e:
-            await msg.edit_text(f"⚠️ Ошибка отображения ответа: {e}\n\nСырой ответ:\n{answer[:500]}")
+            await msg.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(f"💬 Ответ AI:\n\n{answer[:3500]}", reply_markup=ai_menu_keyboard())
         return
 
     # ── Навигация по меню ──
