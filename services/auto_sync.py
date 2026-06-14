@@ -44,7 +44,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 await _notify_closed_trade(bot, chat_id, trade)
 
     # --- Проверка истории закрытых ордеров ---
-    closed_result = get_closed_orders(limit=10)
+    closed_result = get_closed_orders(limit=50)
     if closed_result.get('success'):
         stored_closed = get_closed_trades()
         stored_closed_ids = {str(t.get('orderId')) for t in stored_closed}
