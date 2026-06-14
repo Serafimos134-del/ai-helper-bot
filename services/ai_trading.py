@@ -78,6 +78,25 @@ class AITradingAnalyzer:
             print(f"❌ Ошибка Groq: {e}")
             return f"⚠️ Ошибка AI: {e}\n\n{get_ai_analysis()}"
 
+    def analyze_raw(self, prompt: str) -> str:
+        """Отправка произвольного промпта в Groq (для вопросов, обзора рынка, трендов и т.д.)"""
+        if not self.client:
+            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "Ты опытный крипто-трейдер и наставник. Отвечай на русском, кратко и по делу, используй эмодзи, без markdown-разметки звёздочками."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"❌ Ошибка Groq (analyze_raw): {e}")
+            return f"⚠️ Ошибка AI: {e}"
+
 
 def get_ai_analysis() -> str:
     """
