@@ -299,8 +299,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data['state'] = None
         msg = await update.message.reply_text("🤖 Думаю...")
-        answer = ai_analyzer.analyze_raw(text)
-        await msg.edit_text(f"💬 *Ответ AI:*\n\n{answer}", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
+
+        try:
+            answer = ai_analyzer.analyze_raw(text)
+        except Exception as e:
+            answer = f"Ошибка вызова AI: {e}"
+
+        try:
+            await msg.edit_text(f"💬 Ответ AI:\n\n{answer}", reply_markup=ai_menu_keyboard())
+        except Exception as e:
+            await msg.edit_text(f"⚠️ Ошибка отображения ответа: {e}\n\nСырой ответ:\n{answer[:500]}")
         return
 
     # ── Навигация по меню ──
