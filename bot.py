@@ -222,9 +222,13 @@ async def show_market_overview(update: Update):
         summary.append(f"{symbol}: изм {change:+.2f}%, объём {volume:,.0f}")
 
     prompt = (
-        "Дай краткий обзор рынка криптовалют на основе этих данных (топ-10 пар по объёму за 24ч):\n"
+        "Проанализируй рыночную ситуацию на основе данных топ-10 криптовалют по объёму за 24 часа:\n"
         + "\n".join(summary)
-        + "\n\nОпиши настроение рынка, выдели лидеров роста/падения, возможные развороты. Ответ на русском, кратко."
+        + "\n\nТвой ответ должен содержать строго:\n"
+        + "1. ОБЩИЙ НАСТРОЙ: (бычий/медвежий/нейтральный) — одним предложением\n"
+        + "2. ТОП-3 МОНЕТЫ С СИЛЬНЕЙШИМ ДВИЖЕНИЕМ (рост и падение) — назови и возможные причины\n"
+        + "3. ВОЗМОЖНЫЕ ТОЧКИ ВХОДА: любые две монеты из списка с кратким обоснованием\n\n"
+        + "Будь конкретен, используй цифры из данных выше. Без философии и общих фраз."
     )
 
     try:
@@ -250,11 +254,19 @@ async def show_trends(update: Update):
         klines = result.get('klines', [])
         if result.get('success') and len(klines) >= 2:
             try:
-                first_close = float(klines[0].get('close', klines[0].get('c', 0)))
-                last_close = float(klines[-1].get('close', klines[-1].get('c', 0)))
+                closes = [float(k.get('close', k.get('c', 0))) for k in klines]
+                highs = [float(k.get('high', k.get('h', 0))) for k in klines]
+                lows = [float(k.get('low', k.get('l', 0))) for k in klines]
+
+                first_close = closes[0]
+                last_close = closes[-1]
                 if first_close:
                     change = (last_close - first_close) / first_close * 100
-                    data_lines.append(f"{sym}: изменение за 24ч {change:+.2f}%")
+                    data_lines.append(
+                        f"{sym}: изменение за 24ч {change:+.2f}%, "
+                        f"максимум {max(highs):.2f}, минимум {min(lows):.2f}, "
+                        f"текущая цена {last_close:.2f}"
+                    )
             except (ValueError, TypeError, AttributeError):
                 continue
 
@@ -270,9 +282,14 @@ async def show_trends(update: Update):
         return
 
     prompt = (
-        "Проанализируй тренды на основе изменения цены за последние 24 часа:\n"
+        "Тренд-анализ на основе часовых свечей за 24 часа:\n"
         + "\n".join(data_lines)
-        + "\n\nДай прогноз: продолжение тренда или разворот? Ключевые уровни. Ответ на русском, краткий, по делу."
+        + "\n\nТвой ответ дай строго в формате:\n"
+        + "1. BTC: тренд (восходящий/нисходящий/боковик), ключевые уровни поддержки и сопротивления на сегодня\n"
+        + "2. ETH: аналогично\n"
+        + "3. СИГНАЛ: если видишь явную точку входа по любой из монет — укажи направление, цену входа и стоп-лосс. "
+        + "Если явного сигнала нет — напиши «явного сигнала нет»\n\n"
+        + "Кратко, без воды, используй цифры из данных выше."
     )
 
     try:
