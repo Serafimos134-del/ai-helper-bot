@@ -502,8 +502,31 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         msg = await update.message.reply_text("🤖 Думаю...")
 
+        market_context = ""
         try:
-            answer = ai_analyzer.analyze_raw(text)
+            tickers_result = get_top_tickers(5)
+            if tickers_result.get('success') and tickers_result.get('tickers'):
+                lines = []
+                for t in tickers_result['tickers']:
+                    symbol = t.get('symbol', '')
+                    price = t.get('lastPrice', t.get('close', ''))
+                    change = float(t.get('priceChangePercent', 0))
+                    lines.append(f"{symbol}: цена {price}, изм за 24ч {change:+.2f}%")
+                market_context = "Актуальные данные рынка (топ-5 по объёму):\n" + "\n".join(lines) + "\n\n"
+        except Exception:
+            market_context = ""
+
+        full_prompt = (
+            market_context
+            + f"ВОПРОС ТРЕЙДЕРА: {text}\n\n"
+            + "Если вопрос касается цены или текущей рыночной ситуации — используй ТОЛЬКО данные выше. "
+            + "Если нужной монеты нет в данных или вопрос не про рынок — отвечай по своим знаниям, "
+            + "но никогда не придумывай конкретные цифры цен, которых не видел. "
+            + "В таком случае честно скажи, что не можешь дать точную цифру, и предложи проверить на бирже."
+        )
+
+        try:
+            answer = ai_analyzer.analyze_raw(full_prompt)
         except Exception as e:
             answer = f"Ошибка вызова AI: {e}"
 
