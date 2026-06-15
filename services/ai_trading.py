@@ -86,11 +86,16 @@ class AITradingAnalyzer:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "Ты опытный крипто-трейдер и наставник. Отвечай на русском, кратко и по делу, используй эмодзи, без markdown-разметки звёздочками."},
+                    {"role": "system", "content": (
+                        "Ты — строгий, конкретный трейдер-ментор с опытом на крипторынке. "
+                        "Отвечаешь на русском языке, коротко и по делу. "
+                        "Не используешь общие фразы и философию — только конкретику: цифры, уровни, чёткие выводы. "
+                        "Используй эмодзи, но без markdown-разметки звёздочками."
+                    )},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
-                max_tokens=1000
+                temperature=0.5,
+                max_tokens=1200
             )
             return response.choices[0].message.content
         except Exception as e:
