@@ -93,6 +93,12 @@ def ai_menu_keyboard():
     )
 
 
+def open_positions_keyboard(positions):
+    buttons = [[f"{p.get('symbol', '?')} {p.get('side', '')}"] for p in positions]
+    buttons.append([BTN_BACK])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+
 def comment_select_keyboard(trades):
     buttons = [[t['label']] for t in trades[:8]]
     buttons.append([BTN_CANCEL])
@@ -305,6 +311,99 @@ async def show_trends(update: Update):
     await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
 
 
+async def start_open_position_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    positions = get_open_trades()
+    if not positions:
+        await update.message.reply_text(
+            "✅ Нет открытых позиций для анализа.",
+            reply_markup=ai_menu_keyboard()
+        )
+        return
+
+    positions_map = {}
+    for p in positions:
+        label = f"{p.get('symbol', '?')} {p.get('side', '')}"
+        positions_map[label] = p
+
+    context.user_data['open_positions_map'] = positions_map
+    context.user_data['state'] = 'choosing_position'
+
+    await update.message.reply_text(
+        "📈 *Выбери позицию для AI-анализа:*",
+        parse_mode='Markdown',
+        reply_markup=open_positions_keyboard(positions)
+    )
+
+
+async def analyze_open_position(update: Update, position: dict):
+    msg = await update.message.reply_text("🤖 Анализирую позицию...")
+
+    symbol = position.get('symbol', '')
+    side = position.get('side', '')
+    entry_price = float(position.get('entryPrice', 0))
+    unrealized_pnl = float(position.get('unrealizedPnl', 0))
+    size = position.get('size', '')
+
+    support = None
+    resistance = None
+    current_price = entry_price
+
+    kline_result = get_kline(symbol, "15m", 50)
+    klines = kline_result.get('klines', [])
+    if kline_result.get('success') and len(klines) >= 10:
+        try:
+            highs = [float(k.get('high', k.get('h', 0))) for k in klines[-10:]]
+            lows = [float(k.get('low', k.get('l', 0))) for k in klines[-10:]]
+            closes = [float(k.get('close', k.get('c', 0))) for k in klines]
+            resistance = max(highs)
+            support = min(lows)
+            current_price = closes[-1]
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    change_pct = 0
+    if entry_price:
+        if side == 'LONG':
+            change_pct = (current_price - entry_price) / entry_price * 100
+        else:
+            change_pct = (entry_price - current_price) / entry_price * 100
+
+    prompt = (
+        "Ты — профессиональный риск-менеджер. Проанализируй открытую позицию строго по пунктам, "
+        "без общих фраз, только конкретные рекомендации.\n\n"
+        "ДАННЫЕ ПОЗИЦИИ:\n"
+        f"- Символ: {symbol}\n"
+        f"- Направление: {side}\n"
+        f"- Цена входа: {entry_price}\n"
+        f"- Текущая цена: {current_price}\n"
+        f"- Изменение от входа: {change_pct:+.2f}%\n"
+        f"- Нереализованный PNL: {unrealized_pnl:+.2f} USDT\n"
+        f"- Объём позиции: {size}\n"
+        + (f"- Ближайшее сопротивление: {resistance}\n" if resistance else "")
+        + (f"- Ближайшая поддержка: {support}\n" if support else "")
+        + "\nОТВЕТ ДАЙ СТРОГО В ФОРМАТЕ:\n"
+        "1. РЕКОМЕНДАЦИЯ: (удерживать / частично закрыть / закрыть полностью)\n"
+        "2. ГДЕ ПОСТАВИТЬ СТОП-ЛОСС: (конкретная цена)\n"
+        "3. ГДЕ ЗАФИКСИРОВАТЬ ПРИБЫЛЬ: (конкретная цена)\n"
+        "4. ОБОСНОВАНИЕ: (2-3 предложения, с указанием уровней)"
+    )
+
+    try:
+        analysis = ai_analyzer.analyze_raw(prompt)
+    except Exception as e:
+        analysis = f"Ошибка AI: {e}"
+
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text(
+        f"📈 Анализ позиции {symbol} {side}\n\n{analysis[:3500]}",
+        reply_markup=ai_menu_keyboard()
+    )
+
+
 async def show_help(update: Update):
     text = (
         "ℹ️ *Помощь*\n\n"
@@ -416,6 +515,33 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"💬 Ответ AI:\n\n{answer[:3500]}", reply_markup=ai_menu_keyboard())
         return
 
+    # ── Состояние: выбор открытой позиции для AI-анализа ──
+    if state == 'choosing_position':
+        if text == BTN_BACK:
+            context.user_data['state'] = None
+            context.user_data.pop('open_positions_map', None)
+            await update.message.reply_text(
+                "🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:",
+                parse_mode='Markdown',
+                reply_markup=ai_menu_keyboard()
+            )
+            return
+
+        positions_map = context.user_data.get('open_positions_map', {})
+        position = positions_map.get(text)
+
+        if not position:
+            await update.message.reply_text(
+                "Выбери позицию из списка кнопок 👇",
+                reply_markup=open_positions_keyboard(list(positions_map.values()))
+            )
+            return
+
+        context.user_data['state'] = None
+        context.user_data.pop('open_positions_map', None)
+        await analyze_open_position(update, position)
+        return
+
     # ── Навигация по меню ──
     if text == BTN_TRADING:
         await update.message.reply_text(
@@ -464,7 +590,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_ai_analysis(update)
 
     elif text == BTN_AI_OPEN_ANALYSIS:
-        await update.message.reply_text("🚧 В разработке (этап 5).", reply_markup=ai_menu_keyboard())
+        await start_open_position_analysis(update, context)
 
     elif text == BTN_AI_ASK:
         context.user_data['state'] = 'asking_ai'
