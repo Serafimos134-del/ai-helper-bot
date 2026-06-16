@@ -22,6 +22,7 @@ def init_db():
             unrealized_pnl REAL DEFAULT 0,
             stop_loss REAL,
             take_profit REAL,
+            entry_comment TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS closed_trades (
@@ -40,34 +41,39 @@ def init_db():
             risk_reward REAL,
             open_time TIMESTAMP,
             close_time TIMESTAMP,
+            entry_comment TEXT DEFAULT '',
+            exit_comment TEXT DEFAULT '',
+            ai_review TEXT DEFAULT '',
             closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
     """)
-    # Добавление столбцов, если их нет (для существующей БД)
-    for col, col_def in [
-        ('risk_percent', 'REAL DEFAULT 0'),
-        ('leverage', 'REAL DEFAULT 1'),
-        ('stop_loss', 'REAL'),
-        ('take_profit', 'REAL'),
-        ('risk_reward', 'REAL'),
-        ('open_time', 'TIMESTAMP'),
-        ('close_time', 'TIMESTAMP')
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE closed_trades ADD COLUMN {col} {col_def}")
-        except sqlite3.OperationalError:
-            pass
-    # Поля для open_trades
-    for col, col_def in [
-        ('stop_loss', 'REAL'),
-        ('take_profit', 'REAL')
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE open_trades ADD COLUMN {col} {col_def}")
-        except sqlite3.OperationalError:
-            pass
+    # Миграция существующих таблиц
+    for table, cols in {
+        'open_trades': [
+            ('stop_loss', 'REAL'),
+            ('take_profit', 'REAL'),
+            ('entry_comment', "TEXT DEFAULT ''")
+        ],
+        'closed_trades': [
+            ('risk_percent', 'REAL DEFAULT 0'),
+            ('leverage', 'REAL DEFAULT 1'),
+            ('stop_loss', 'REAL'),
+            ('take_profit', 'REAL'),
+            ('risk_reward', 'REAL'),
+            ('open_time', 'TIMESTAMP'),
+            ('close_time', 'TIMESTAMP'),
+            ('entry_comment', "TEXT DEFAULT ''"),
+            ('exit_comment', "TEXT DEFAULT ''"),
+            ('ai_review', "TEXT DEFAULT ''")
+        ]
+    }.items():
+        for col, col_def in cols:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError:
+                pass
     conn.commit()
     conn.close()
 
@@ -86,13 +92,14 @@ class Database:
         conn = _get_conn()
         conn.execute("""
             INSERT INTO open_trades (symbol, side, entry_price, quantity, leverage,
-                                    unrealized_pnl, stop_loss, take_profit)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    unrealized_pnl, stop_loss, take_profit, entry_comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade['symbol'], trade['side'], trade['entry_price'],
             trade['quantity'], trade.get('leverage', 1),
             trade.get('unrealized_pnl', 0),
-            trade.get('stop_loss'), trade.get('take_profit')
+            trade.get('stop_loss'), trade.get('take_profit'),
+            trade.get('entry_comment', '')
         ))
         conn.commit()
         conn.close()
@@ -100,7 +107,7 @@ class Database:
     @staticmethod
     def update_open_trade(symbol: str, **kwargs):
         allowed = ['unrealized_pnl', 'leverage', 'quantity', 'entry_price',
-                   'stop_loss', 'take_profit']
+                   'stop_loss', 'take_profit', 'entry_comment']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
@@ -124,14 +131,17 @@ class Database:
         conn.execute("""
             INSERT INTO closed_trades 
             (symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
-             risk_percent, leverage, stop_loss, take_profit, risk_reward, open_time, close_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             risk_percent, leverage, stop_loss, take_profit, risk_reward,
+             open_time, close_time, entry_comment, exit_comment, ai_review)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade['symbol'], trade['side'], trade['entry_price'], trade['exit_price'],
             trade['quantity'], trade['realized_pnl'], trade.get('comment', ''),
             trade.get('risk_percent', 0), trade.get('leverage', 1),
             trade.get('stop_loss'), trade.get('take_profit'), trade.get('risk_reward'),
-            trade.get('open_time'), trade.get('close_time')
+            trade.get('open_time'), trade.get('close_time'),
+            trade.get('entry_comment', ''), trade.get('exit_comment', ''),
+            trade.get('ai_review', '')
         ))
         conn.commit()
         conn.close()
@@ -200,7 +210,7 @@ class Database:
     @staticmethod
     def add_comment(trade_id: int, comment: str):
         conn = _get_conn()
-        conn.execute("UPDATE closed_trades SET comment = ? WHERE id = ?", (comment, trade_id))
+        conn.execute("UPDATE closed_trades SET exit_comment = ? WHERE id = ?", (comment, trade_id))
         conn.commit()
         conn.close()
 
@@ -213,13 +223,17 @@ class Database:
 
     @staticmethod
     def update_trade_metrics(trade_id: int, risk_percent=None, leverage=None,
-                             stop_loss=None, take_profit=None, risk_reward=None):
+                             stop_loss=None, take_profit=None, risk_reward=None,
+                             entry_comment=None, exit_comment=None, ai_review=None):
         fields = {}
         if risk_percent is not None: fields['risk_percent'] = risk_percent
         if leverage is not None: fields['leverage'] = leverage
         if stop_loss is not None: fields['stop_loss'] = stop_loss
         if take_profit is not None: fields['take_profit'] = take_profit
         if risk_reward is not None: fields['risk_reward'] = risk_reward
+        if entry_comment is not None: fields['entry_comment'] = entry_comment
+        if exit_comment is not None: fields['exit_comment'] = exit_comment
+        if ai_review is not None: fields['ai_review'] = ai_review
         if not fields:
             return
         set_clause = ", ".join(f"{k}=?" for k in fields)
@@ -228,3 +242,10 @@ class Database:
         conn.execute(f"UPDATE closed_trades SET {set_clause} WHERE id=?", values)
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def get_last_closed_id():
+        conn = _get_conn()
+        row = conn.execute("SELECT MAX(id) FROM closed_trades").fetchone()
+        conn.close()
+        return row[0] if row else None
