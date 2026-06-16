@@ -1,7 +1,7 @@
 import logging
 from services.bingx_api import get_open_positions, get_closed_orders
 from services.database import Database
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup   # <-- добавлено
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +66,15 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 results['new_closed'].append(stored)
                 await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
 
-    # --- История закрытых ордеров ---
+    # --- История закрытых ордеров (только с реальным PNL) ---
     closed_result = get_closed_orders(limit=50)
     if closed_result.get('success'):
         stored_closed = db.get_closed_trades(limit=1000)
         stored_closed_ids = {str(t.get('orderId', t.get('id'))) for t in stored_closed}
         for order in closed_result.get('trades', []):
             oid = str(order.get('orderId'))
-            if oid not in stored_closed_ids:
+            profit = float(order.get('profit', 0))
+            if oid not in stored_closed_ids and profit != 0:      # <-- игнорируем нулевые сделки
                 raw_side = order.get('side', 'BUY')
                 side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
                 db.add_closed_trade({
@@ -82,7 +83,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
                     'entry_price': float(order.get('avgPrice', 0)),
                     'exit_price': float(order.get('avgPrice', 0)),
                     'quantity': float(order.get('executedQty', 0)),
-                    'realized_pnl': float(order.get('profit', 0)),
+                    'realized_pnl': profit,
                     'comment': '',
                     'leverage': float(order.get('leverage', 1)),
                     'stop_loss': None,
