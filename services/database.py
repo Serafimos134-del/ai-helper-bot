@@ -20,6 +20,8 @@ def init_db():
             quantity REAL NOT NULL,
             leverage REAL DEFAULT 1,
             unrealized_pnl REAL DEFAULT 0,
+            stop_loss REAL,
+            take_profit REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS closed_trades (
@@ -57,6 +59,15 @@ def init_db():
             conn.execute(f"ALTER TABLE closed_trades ADD COLUMN {col} {col_def}")
         except sqlite3.OperationalError:
             pass
+    # Поля для open_trades
+    for col, col_def in [
+        ('stop_loss', 'REAL'),
+        ('take_profit', 'REAL')
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE open_trades ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -74,16 +85,22 @@ class Database:
     def add_open_trade(trade: dict):
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO open_trades (symbol, side, entry_price, quantity, leverage, unrealized_pnl)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (trade['symbol'], trade['side'], trade['entry_price'],
-              trade['quantity'], trade.get('leverage', 1), trade.get('unrealized_pnl', 0)))
+            INSERT INTO open_trades (symbol, side, entry_price, quantity, leverage,
+                                    unrealized_pnl, stop_loss, take_profit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            trade['symbol'], trade['side'], trade['entry_price'],
+            trade['quantity'], trade.get('leverage', 1),
+            trade.get('unrealized_pnl', 0),
+            trade.get('stop_loss'), trade.get('take_profit')
+        ))
         conn.commit()
         conn.close()
 
     @staticmethod
     def update_open_trade(symbol: str, **kwargs):
-        allowed = ['unrealized_pnl', 'leverage', 'quantity', 'entry_price']
+        allowed = ['unrealized_pnl', 'leverage', 'quantity', 'entry_price',
+                   'stop_loss', 'take_profit']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
