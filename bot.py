@@ -131,7 +131,7 @@ async def show_balance(update: Update):
         text = f"❌ Ошибка получения баланса:\n`{result.get('error', 'Неизвестная ошибка')}`"
     await msg.edit_text(text, parse_mode='Markdown')
 
-# ── Показ последних сделок с inline-кнопками ──
+# ── Показ последних сделок (закрытые сделки теперь кнопками) ──
 async def show_last_trades(update: Update):
     msg = await update.message.reply_text("⏳ Загружаю сделки...")
 
@@ -153,30 +153,20 @@ async def show_last_trades(update: Update):
     else:
         lines.append("🔓 Открытых позиций нет")
 
+    # Закрытые сделки теперь только кнопками
+    keyboard = []
     if closed_trades:
-        lines.append("\n✅ *Последние закрытые:*")
+        lines.append("\n✅ *Последние закрытые (нажми для деталей):*")
         for t in reversed(closed_trades):
             pnl = float(t.get('realized_pnl', 0))
             emoji = "✅" if pnl >= 0 else "❌"
-            comment = f"\n   💬 {t['comment']}" if t.get('comment') else ""
-            lines.append(
-                f"{emoji} {t.get('symbol')} | PNL: ${pnl:+.2f}{comment}"
-            )
+            label = f"{emoji} {t['symbol']} {pnl:+.2f}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"detail_{t['id']}")])
     else:
         lines.append("\n✅ Закрытых сделок нет")
 
-    text = "\n".join(lines)
-
-    # Inline-кнопки для каждой закрытой сделки
-    keyboard = []
-    for t in reversed(closed_trades):
-        keyboard.append([
-            InlineKeyboardButton(f"📝 {t['symbol']} комм.", callback_data=f"comment_{t['id']}"),
-            InlineKeyboardButton(f"📊 {t['symbol']} дет.", callback_data=f"detail_{t['id']}")
-        ])
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-
-    await msg.edit_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    await msg.edit_text("\n".join(lines), parse_mode='Markdown', reply_markup=reply_markup)
 
 
 async def show_stats(update: Update):
@@ -444,7 +434,7 @@ async def show_help(update: Update):
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
-# ── Обработчик inline-кнопок (пункты 2, 11) ──
+# ── Обработчик inline-кнопок (обновлённый) ──
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -474,7 +464,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Комментарий: {trade.get('comment', '—')}\n"
                 f"Закрыта: {trade.get('closed_at', '—')}"
             )
-            await query.edit_message_text(detail_text, parse_mode='Markdown')
+            # Добавляем кнопку для комментария прямо в деталях
+            detail_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Добавить комментарий", callback_data=f"comment_{trade_id}")]
+            ])
+            await query.edit_message_text(detail_text, parse_mode='Markdown', reply_markup=detail_keyboard)
         else:
             await query.edit_message_text("❌ Сделка не найдена.")
 
