@@ -11,15 +11,13 @@ from telegram.ext import (
     filters,
 )
 
-from services.bingx_api import get_balance, get_open_positions, get_closed_orders, get_top_tickers, get_kline
-from services.trading_storage import (
-    get_open_trades,
-    get_closed_trades,
-)
+from services.bingx_api import get_balance, get_open_positions, get_closed_orders, get_top_tickers, get_kline, get_ticker
+from services.database import Database
 from services.trading_stats import calculate_stats, format_stats_message
 from services.comment_manager import get_trades_for_comment, save_comment
 from services.auto_sync import sync_trades
 from services.ai_trading import AITradingAnalyzer
+import re
 
 load_dotenv()
 
@@ -33,12 +31,12 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
 ai_analyzer = AITradingAnalyzer()
+db = Database()
 
 # ─── Тексты кнопок ──────────────────────────────────────────────────────────
 
 BTN_TRADING = "📈 Trading"
 BTN_AI = "🤖 AI"
-BTN_SHORTS = "🎬 Shorts"
 BTN_HELP = "ℹ️ Help"
 
 BTN_BALANCE = "💰 Баланс"
@@ -62,12 +60,10 @@ def main_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
             [BTN_TRADING],
-            [BTN_AI, BTN_SHORTS],
-            [BTN_HELP],
+            [BTN_AI, BTN_HELP],
         ],
         resize_keyboard=True
     )
-
 
 def trading_menu_keyboard():
     return ReplyKeyboardMarkup(
@@ -80,7 +76,6 @@ def trading_menu_keyboard():
         resize_keyboard=True
     )
 
-
 def ai_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
@@ -92,27 +87,22 @@ def ai_menu_keyboard():
         resize_keyboard=True
     )
 
-
 def open_positions_keyboard(positions):
     buttons = [[f"{p.get('symbol', '?')} {p.get('side', '')}"] for p in positions]
     buttons.append([BTN_BACK])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-
 
 def comment_select_keyboard(trades):
     buttons = [[t['label']] for t in trades[:8]]
     buttons.append([BTN_CANCEL])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-
 def cancel_keyboard():
     return ReplyKeyboardMarkup([[BTN_CANCEL]], resize_keyboard=True)
-
 
 # ─── Хендлеры ─────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start — показать главное меню."""
     context.user_data.clear()
     text = (
         "👋 *AI Helper Bot*\n\n"
@@ -121,7 +111,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Используй кнопки меню 👇"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
-
 
 async def show_balance(update: Update):
     msg = await update.message.reply_text("⏳ Получаю баланс...")
@@ -138,23 +127,22 @@ async def show_balance(update: Update):
         text = f"❌ Ошибка получения баланса:\n`{result.get('error', 'Неизвестная ошибка')}`"
     await msg.edit_text(text, parse_mode='Markdown')
 
-
 async def show_last_trades(update: Update):
     msg = await update.message.reply_text("⏳ Загружаю сделки...")
 
-    open_trades = get_open_trades()
-    closed_trades = get_closed_trades()[-5:]
+    open_trades = db.get_open_trades()
+    closed_trades = db.get_closed_trades(limit=5)
 
     lines = ["📋 *Последние сделки*\n"]
 
     if open_trades:
         lines.append("🔓 *Открытые позиции:*")
         for t in open_trades:
-            pnl = float(t.get('unrealizedPnl', 0))
+            pnl = float(t.get('unrealized_pnl', 0))
             emoji = "🟢" if pnl >= 0 else "🔴"
             lines.append(
                 f"{emoji} {t.get('symbol')} {t.get('side')} | "
-                f"Вход: ${float(t.get('entryPrice', 0)):.4f} | "
+                f"Вход: ${float(t.get('entry_price', 0)):.4f} | "
                 f"PNL: ${pnl:+.2f}"
             )
     else:
@@ -163,7 +151,7 @@ async def show_last_trades(update: Update):
     if closed_trades:
         lines.append("\n✅ *Последние закрытые:*")
         for t in reversed(closed_trades):
-            pnl = float(t.get('realizedPnl', t.get('pnl', 0)))
+            pnl = float(t.get('realized_pnl', 0))
             emoji = "✅" if pnl >= 0 else "❌"
             comment = f"\n   💬 {t['comment']}" if t.get('comment') else ""
             lines.append(
@@ -175,13 +163,11 @@ async def show_last_trades(update: Update):
     text = "\n".join(lines)
     await msg.edit_text(text, parse_mode='Markdown')
 
-
 async def show_stats(update: Update):
     msg = await update.message.reply_text("⏳ Считаю статистику...")
-    stats = calculate_stats()
+    stats = db.get_stats()
     text = format_stats_message(stats)
     await msg.edit_text(text, parse_mode='Markdown')
-
 
 async def start_comment_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trades = get_trades_for_comment()
@@ -201,12 +187,10 @@ async def start_comment_flow(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=comment_select_keyboard(trades)
     )
 
-
 async def show_ai_analysis(update: Update):
     msg = await update.message.reply_text("🤖 Анализирую...")
     text = ai_analyzer.analyze()
     await msg.edit_text(text, parse_mode='Markdown')
-
 
 async def show_market_overview(update: Update):
     msg = await update.message.reply_text("🌐 Собираю данные рынка...")
@@ -248,7 +232,6 @@ async def show_market_overview(update: Update):
         pass
 
     await update.message.reply_text(f"🌐 Обзор рынка от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
-
 
 async def show_trends(update: Update):
     msg = await update.message.reply_text("📊 Анализирую тренды...")
@@ -310,9 +293,8 @@ async def show_trends(update: Update):
 
     await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
 
-
 async def start_open_position_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    positions = get_open_trades()
+    positions = get_open_positions().get('trades', [])
     if not positions:
         await update.message.reply_text(
             "✅ Нет открытых позиций для анализа.",
@@ -333,7 +315,6 @@ async def start_open_position_analysis(update: Update, context: ContextTypes.DEF
         parse_mode='Markdown',
         reply_markup=open_positions_keyboard(positions)
     )
-
 
 async def analyze_open_position(update: Update, position: dict):
     msg = await update.message.reply_text("🤖 Анализирую позицию...")
@@ -403,7 +384,6 @@ async def analyze_open_position(update: Update, position: dict):
         reply_markup=ai_menu_keyboard()
     )
 
-
 async def show_help(update: Update):
     text = (
         "ℹ️ *Помощь*\n\n"
@@ -420,9 +400,7 @@ async def show_help(update: Update):
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
-
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главный обработчик текстовых сообщений (включает навигацию по меню)."""
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
@@ -431,10 +409,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == BTN_CANCEL:
             context.user_data['state'] = None
             context.user_data.pop('comment_order_id', None)
-            await update.message.reply_text(
-                "Отменено.",
-                reply_markup=trading_menu_keyboard()
-            )
+            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
             return
 
         order_id = context.user_data.get('comment_order_id')
@@ -447,10 +422,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=trading_menu_keyboard()
                 )
             else:
-                await update.message.reply_text(
-                    "❌ Сделка не найдена. Попробуй снова.",
-                    reply_markup=trading_menu_keyboard()
-                )
+                await update.message.reply_text("❌ Сделка не найдена. Попробуй снова.", reply_markup=trading_menu_keyboard())
         context.user_data['state'] = None
         context.user_data.pop('comment_order_id', None)
         return
@@ -460,10 +432,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == BTN_CANCEL:
             context.user_data['state'] = None
             context.user_data.pop('comment_trades', None)
-            await update.message.reply_text(
-                "Отменено.",
-                reply_markup=trading_menu_keyboard()
-            )
+            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
             return
 
         trades_map = context.user_data.get('comment_trades', {})
@@ -473,10 +442,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['state'] = 'entering_comment'
             await update.message.reply_text(
                 f"✏️ *Напиши комментарий* к сделке `{order_id}`:\n\n"
-                "Например:\n"
-                "• Почему вошел\n"
-                "• Что пошло не так\n"
-                "• Что узнал из этой сделки",
+                "Например:\n• Почему вошел\n• Что пошло не так\n• Что узнал из этой сделки",
                 parse_mode='Markdown',
                 reply_markup=cancel_keyboard()
             )
@@ -493,40 +459,81 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'asking_ai':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
-            await update.message.reply_text(
-                "Отменено.",
-                reply_markup=ai_menu_keyboard()
-            )
+            await update.message.reply_text("Отменено.", reply_markup=ai_menu_keyboard())
             return
 
         context.user_data['state'] = None
         msg = await update.message.reply_text("🤖 Думаю...")
 
-        market_context = ""
-        try:
-            tickers_result = get_top_tickers(5)
-            if tickers_result.get('success') and tickers_result.get('tickers'):
-                lines = []
-                for t in tickers_result['tickers']:
-                    symbol = t.get('symbol', '')
-                    price = t.get('lastPrice', t.get('close', ''))
-                    change = float(t.get('priceChangePercent', 0))
-                    lines.append(f"{symbol}: цена {price}, изм за 24ч {change:+.2f}%")
-                market_context = "Актуальные данные рынка (топ-5 по объёму):\n" + "\n".join(lines) + "\n\n"
-        except Exception:
+        # --- НОВОЕ: поиск тикера в вопросе ---
+        ticker_match = re.search(r'\b([A-Z0-9]{2,}-USDT)\b', text.upper())
+        symbol = ticker_match.group(1) if ticker_match else None
+
+        if symbol:
+            ticker_data = get_ticker(symbol)
+            kline_data = get_kline(symbol, "1h", 24)
+
+            extra_context = ""
+            if ticker_data.get('success'):
+                t = ticker_data['ticker']
+                extra_context += (
+                    f"Текущая цена {symbol}: {t.get('lastPrice', 'N/A')} USDT, "
+                    f"изменение за 24ч: {t.get('priceChangePercent', 'N/A')}%, "
+                    f"макс: {t.get('highPrice', 'N/A')}, мин: {t.get('lowPrice', 'N/A')}, "
+                    f"объём: {t.get('quoteVolume', 'N/A')}.\n"
+                )
+            else:
+                extra_context += f"Не удалось получить данные по {symbol}.\n"
+
+            if kline_data.get('success') and kline_data.get('klines'):
+                klines = kline_data['klines']
+                closes = [float(k[4]) for k in klines]
+                if closes[0] != 0:
+                    change_24h = ((closes[-1] - closes[0]) / closes[0]) * 100
+                    high_24h = max(float(k[2]) for k in klines)
+                    low_24h = min(float(k[3]) for k in klines)
+                    extra_context += (
+                        f"За последние 24 часа: изменение {change_24h:+.2f}%, "
+                        f"максимум {high_24h}, минимум {low_24h}."
+                    )
+            else:
+                extra_context += "Не удалось получить свечные данные."
+
+            prompt = (
+                f"Ты — профессиональный трейдер-ментор. Проанализируй монету {symbol} "
+                f"на основе предоставленных данных и вопроса пользователя.\n\n"
+                f"{extra_context}\n\n"
+                f"Вопрос: {text}\n\n"
+                f"Дай конкретный, структурированный ответ: тренд, ключевые уровни, рекомендация (входить/не входить), "
+                f"стоп-лосс и тейк-профит (если применимо). Будь краток."
+            )
+        else:
+            # Без тикера – прежнее поведение (топ-5 рынка)
             market_context = ""
+            try:
+                tickers_result = get_top_tickers(5)
+                if tickers_result.get('success') and tickers_result.get('tickers'):
+                    lines = []
+                    for t in tickers_result['tickers']:
+                        s = t.get('symbol', '')
+                        price = t.get('lastPrice', t.get('close', ''))
+                        change = float(t.get('priceChangePercent', 0))
+                        lines.append(f"{s}: цена {price}, изм за 24ч {change:+.2f}%")
+                    market_context = "Актуальные данные рынка (топ-5 по объёму):\n" + "\n".join(lines) + "\n\n"
+            except Exception:
+                market_context = ""
 
-        full_prompt = (
-            market_context
-            + f"ВОПРОС ТРЕЙДЕРА: {text}\n\n"
-            + "Если вопрос касается цены или текущей рыночной ситуации — используй ТОЛЬКО данные выше. "
-            + "Если нужной монеты нет в данных или вопрос не про рынок — отвечай по своим знаниям, "
-            + "но никогда не придумывай конкретные цифры цен, которых не видел. "
-            + "В таком случае честно скажи, что не можешь дать точную цифру, и предложи проверить на бирже."
-        )
+            prompt = (
+                market_context
+                + f"ВОПРОС ТРЕЙДЕРА: {text}\n\n"
+                + "Если вопрос касается цены или текущей рыночной ситуации — используй ТОЛЬКО данные выше. "
+                + "Если нужной монеты нет в данных или вопрос не про рынок — отвечай по своим знаниям, "
+                + "но никогда не придумывай конкретные цифры цен, которых не видел. "
+                + "В таком случае честно скажи, что не можешь дать точную цифру, и предложи проверить на бирже."
+            )
 
         try:
-            answer = ai_analyzer.analyze_raw(full_prompt)
+            answer = ai_analyzer.analyze_raw(prompt)
         except Exception as e:
             answer = f"Ошибка вызова AI: {e}"
 
@@ -567,54 +574,25 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Навигация по меню ──
     if text == BTN_TRADING:
-        await update.message.reply_text(
-            "📈 *Trading*\nВыбери действие:",
-            parse_mode='Markdown',
-            reply_markup=trading_menu_keyboard()
-        )
-
+        await update.message.reply_text("📈 *Trading*\nВыбери действие:", parse_mode='Markdown', reply_markup=trading_menu_keyboard())
     elif text == BTN_AI:
-        await update.message.reply_text(
-            "🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:",
-            parse_mode='Markdown',
-            reply_markup=ai_menu_keyboard()
-        )
-
-    elif text == BTN_SHORTS:
-        await update.message.reply_text(
-            "🎬 *Shorts*\n\nРаздел в разработке.",
-            parse_mode='Markdown',
-            reply_markup=main_menu_keyboard()
-        )
-
+        await update.message.reply_text("🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
     elif text == BTN_HELP:
         await show_help(update)
-
     elif text == BTN_BACK:
-        await update.message.reply_text(
-            "🏠 *Главное меню*\nВыбери раздел:",
-            parse_mode='Markdown',
-            reply_markup=main_menu_keyboard()
-        )
-
+        await update.message.reply_text("🏠 *Главное меню*\nВыбери раздел:", parse_mode='Markdown', reply_markup=main_menu_keyboard())
     elif text == BTN_BALANCE:
         await show_balance(update)
-
     elif text == BTN_LAST_TRADES:
         await show_last_trades(update)
-
     elif text == BTN_STATS:
         await show_stats(update)
-
     elif text == BTN_COMMENT:
         await start_comment_flow(update, context)
-
     elif text == BTN_AI_ANALYSIS:
         await show_ai_analysis(update)
-
     elif text == BTN_AI_OPEN_ANALYSIS:
         await start_open_position_analysis(update, context)
-
     elif text == BTN_AI_ASK:
         context.user_data['state'] = 'asking_ai'
         await update.message.reply_text(
@@ -623,35 +601,21 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown',
             reply_markup=cancel_keyboard()
         )
-
     elif text == BTN_AI_MARKET:
         await show_market_overview(update)
-
     elif text == BTN_AI_TRENDS:
         await show_trends(update)
-
     else:
-        await update.message.reply_text(
-            "Используй кнопки меню 👇",
-            reply_markup=main_menu_keyboard()
-        )
-
+        await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /sync — ручная синхронизация сделок."""
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
     results = await sync_trades(context.bot, update.effective_chat.id)
     new_open = len(results.get('new_open', []))
     new_closed = len(results.get('new_closed', []))
-    await msg.edit_text(
-        f"✅ Синхронизация завершена!\n\n"
-        f"🆕 Новых позиций: {new_open}\n"
-        f"🔒 Закрыто позиций: {new_closed}"
-    )
-
+    await msg.edit_text(f"✅ Синхронизация завершена!\n\n🆕 Новых позиций: {new_open}\n🔒 Закрыто позиций: {new_closed}")
 
 async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
-    """Фоновая задача автосинхронизации."""
     if not CHAT_ID:
         logger.warning("TELEGRAM_CHAT_ID не задан, авто-синхронизация пропущена")
         return
@@ -660,28 +624,19 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка авто-синхронизации: {e}")
 
-
-# ─── Запуск ───────────────────────────────────────────────────────────────────
-
 def main():
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан! Проверь .env файл.")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Хендлеры команд
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('sync', sync_command))
-
-    # Хендлер текста (вся навигация по меню теперь здесь)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
-
-    # Авто-синхронизация каждые 60 секунд
     app.job_queue.run_repeating(auto_sync_job, interval=60, first=10)
 
     logger.info("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == '__main__':
     main()
