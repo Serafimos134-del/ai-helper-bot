@@ -1,6 +1,7 @@
 import logging
 from services.bingx_api import get_open_positions, get_closed_orders
 from services.database import Database
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup   # <-- добавлено
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,12 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for trade in api_trades:
             oid = str(trade.get('orderId'))
             if oid not in stored_by_id:
+                # Приводим side к LONG/SHORT
+                raw_side = trade.get('side', '')
+                side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
                 db.add_open_trade({
                     'symbol': trade.get('symbol'),
-                    'side': trade.get('side'),
+                    'side': side,
                     'entry_price': float(trade.get('entryPrice', 0)),
                     'quantity': abs(float(trade.get('positionAmt', trade.get('size', 0)))),
                     'leverage': float(trade.get('leverage', 1)),
@@ -40,7 +44,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for stored in stored_open:
             oid = str(stored.get('orderId'))
             if oid and oid not in api_ids:
-                # Переносим в закрытые
                 closed_trade = {
                     'symbol': stored['symbol'],
                     'side': stored['side'],
@@ -59,8 +62,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 }
                 db.add_closed_trade(closed_trade)
                 db.delete_open_trade(stored['symbol'])
-                # Получаем ID только что добавленной записи (простейший способ – последний вставленный)
-                last_id = db.get_last_closed_id()   # нужно добавить метод в Database
+                last_id = db.get_last_closed_id()
                 results['new_closed'].append(stored)
                 await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
 
@@ -72,9 +74,11 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for order in closed_result.get('trades', []):
             oid = str(order.get('orderId'))
             if oid not in stored_closed_ids:
+                raw_side = order.get('side', 'BUY')
+                side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
                 db.add_closed_trade({
                     'symbol': order.get('symbol'),
-                    'side': order.get('side'),
+                    'side': side,
                     'entry_price': float(order.get('avgPrice', 0)),
                     'exit_price': float(order.get('avgPrice', 0)),
                     'quantity': float(order.get('executedQty', 0)),
