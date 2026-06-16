@@ -1,23 +1,25 @@
 import logging
 import os
+import json
+import re
 from dotenv import load_dotenv
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
 from services.bingx_api import get_balance, get_open_positions, get_closed_orders, get_top_tickers, get_kline, get_ticker
 from services.database import Database
-from services.trading_stats import calculate_stats, format_stats_message
+from services.trading_stats import format_stats_message
 from services.comment_manager import get_trades_for_comment, save_comment
 from services.auto_sync import sync_trades
 from services.ai_trading import AITradingAnalyzer
-import re
 
 load_dotenv()
 
@@ -53,6 +55,7 @@ BTN_AI_OPEN_ANALYSIS = "📈 Анализ открытых сделок"
 BTN_AI_ASK = "💬 Задать вопрос AI"
 BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
+BTN_AI_LEARN = "🧑‍🏫 Анализ комментариев"
 
 # ─── Клавиатуры (Reply, снизу) ────────────────────────────────────────────────
 
@@ -82,6 +85,7 @@ def ai_menu_keyboard():
             [BTN_AI_OPEN_ANALYSIS],
             [BTN_AI_ASK],
             [BTN_AI_MARKET, BTN_AI_TRENDS],
+            [BTN_AI_LEARN],
             [BTN_BACK],
         ],
         resize_keyboard=True
@@ -127,6 +131,7 @@ async def show_balance(update: Update):
         text = f"❌ Ошибка получения баланса:\n`{result.get('error', 'Неизвестная ошибка')}`"
     await msg.edit_text(text, parse_mode='Markdown')
 
+# ── Показ последних сделок с inline-кнопками ──
 async def show_last_trades(update: Update):
     msg = await update.message.reply_text("⏳ Загружаю сделки...")
 
@@ -161,7 +166,18 @@ async def show_last_trades(update: Update):
         lines.append("\n✅ Закрытых сделок нет")
 
     text = "\n".join(lines)
-    await msg.edit_text(text, parse_mode='Markdown')
+
+    # Inline-кнопки для каждой закрытой сделки
+    keyboard = []
+    for t in reversed(closed_trades):
+        keyboard.append([
+            InlineKeyboardButton(f"📝 {t['symbol']} комм.", callback_data=f"comment_{t['id']}"),
+            InlineKeyboardButton(f"📊 {t['symbol']} дет.", callback_data=f"detail_{t['id']}")
+        ])
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+
+    await msg.edit_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+
 
 async def show_stats(update: Update):
     msg = await update.message.reply_text("⏳ Считаю статистику...")
@@ -384,6 +400,33 @@ async def analyze_open_position(update: Update, position: dict):
         reply_markup=ai_menu_keyboard()
     )
 
+# ── AI-анализ комментариев (пункт 9) ──
+async def show_learning_analysis(update: Update):
+    msg = await update.message.reply_text("🤖 Анализирую комментарии...")
+    trades = db.get_closed_trades(limit=50)
+    comments = []
+    for t in trades:
+        if t.get('comment'):
+            comments.append({
+                'symbol': t['symbol'],
+                'pnl': t['realized_pnl'],
+                'comment': t['comment']
+            })
+    if not comments:
+        await msg.edit_text("Нет сделок с комментариями.")
+        return
+
+    comments_text = json.dumps(comments, ensure_ascii=False, indent=2)
+    prompt = (
+        "Проанализируй комментарии трейдера к закрытым сделкам. "
+        "Выдели наиболее частые ошибки, успешные действия и повторяющиеся паттерны. "
+        "Дай рекомендации по улучшению стратегии и психологии.\n\n"
+        f"Комментарии:\n{comments_text}"
+    )
+    answer = ai_analyzer.analyze_raw(prompt)
+    await msg.edit_text(f"🧑‍🏫 *Анализ комментариев:*\n\n{answer[:3500]}", parse_mode='Markdown')
+
+
 async def show_help(update: Update):
     text = (
         "ℹ️ *Помощь*\n\n"
@@ -396,15 +439,50 @@ async def show_help(update: Update):
         "🔄 Бот автоматически проверяет новые сделки каждые 60 секунд.\n\n"
         "📌 *Команды:*\n"
         "/start — главное меню\n"
-        "/sync — ручная синхронизация"
+        "/sync — ручная синхронизация\n"
+        "/ai_fix — AI-разбор серии убыточных сделок"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+
+# ── Обработчик inline-кнопок (пункты 2, 11) ──
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith("comment_"):
+        trade_id = int(data.split("_")[1])
+        context.user_data['comment_order_id'] = trade_id
+        context.user_data['state'] = 'entering_comment_inline'
+        await query.edit_message_text(
+            f"✏️ *Напишите комментарий* к сделке #{trade_id}:",
+            parse_mode='Markdown',
+            reply_markup=cancel_keyboard()
+        )
+    elif data.startswith("detail_"):
+        trade_id = int(data.split("_")[1])
+        trade = db.find_trade_by_id(trade_id)
+        if trade:
+            detail_text = (
+                f"📊 *Детали сделки #{trade_id}*\n\n"
+                f"Символ: {trade['symbol']}\n"
+                f"Сторона: {trade['side']}\n"
+                f"Вход: ${trade['entry_price']:.4f}\n"
+                f"Выход: ${trade['exit_price']:.4f}\n"
+                f"Объём: {trade['quantity']}\n"
+                f"PNL: ${trade['realized_pnl']:.2f}\n"
+                f"Комментарий: {trade.get('comment', '—')}\n"
+                f"Закрыта: {trade.get('closed_at', '—')}"
+            )
+            await query.edit_message_text(detail_text, parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Сделка не найдена.")
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
-    # ── Состояние: ожидание комментария к сделке ──
+    # ── Состояние: ожидание комментария к сделке (обычный выбор) ──
     if state == 'entering_comment':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -423,6 +501,24 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await update.message.reply_text("❌ Сделка не найдена. Попробуй снова.", reply_markup=trading_menu_keyboard())
+        context.user_data['state'] = None
+        context.user_data.pop('comment_order_id', None)
+        return
+
+    # ── Состояние: ожидание комментария после inline-кнопки ──
+    if state == 'entering_comment_inline':
+        if text == BTN_CANCEL:
+            context.user_data['state'] = None
+            context.user_data.pop('comment_order_id', None)
+            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
+            return
+        order_id = context.user_data.get('comment_order_id')
+        if order_id:
+            success = save_comment(order_id, text)
+            if success:
+                await update.message.reply_text(f"✅ Комментарий сохранён для сделки #{order_id}!", reply_markup=trading_menu_keyboard())
+            else:
+                await update.message.reply_text("❌ Сделка не найдена.", reply_markup=trading_menu_keyboard())
         context.user_data['state'] = None
         context.user_data.pop('comment_order_id', None)
         return
@@ -465,7 +561,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         msg = await update.message.reply_text("🤖 Думаю...")
 
-        # --- НОВОЕ: поиск тикера в вопросе ---
+        # --- поиск тикера в вопросе ---
         ticker_match = re.search(r'\b([A-Z0-9]{2,}-USDT)\b', text.upper())
         symbol = ticker_match.group(1) if ticker_match else None
 
@@ -605,9 +701,107 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_market_overview(update)
     elif text == BTN_AI_TRENDS:
         await show_trends(update)
+    elif text == BTN_AI_LEARN:
+        await show_learning_analysis(update)
     else:
         await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
 
+# ── Команда /ai_fix (пункт 7) ──
+async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🤖 Анализирую убыточные сделки...")
+    last_trades = db.get_closed_trades(limit=5)
+    losing = [t for t in last_trades if t['realized_pnl'] < 0]
+    if not losing:
+        await msg.edit_text("Убыточных сделок не найдено.")
+        return
+
+    trades_text = json.dumps([{
+        'symbol': t['symbol'],
+        'side': t['side'],
+        'pnl': t['realized_pnl'],
+        'comment': t.get('comment', '')
+    } for t in losing], ensure_ascii=False, indent=2)
+
+    prompt = (
+        "Трейдер только что закрыл серию убыточных сделок. Проанализируй их и дай рекомендации.\n"
+        f"Убыточные сделки:\n{trades_text}\n\n"
+        "Определи возможные причины, ошибки в риск-менеджменте или психологии. "
+        "Дай конкретные советы, как избежать повторения."
+    )
+    answer = ai_analyzer.analyze_raw(prompt)
+    await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}", parse_mode='Markdown')
+
+# ── Автосинхронизация с проверкой серии убытков (пункт 7) ──
+async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
+    if not CHAT_ID:
+        logger.warning("TELEGRAM_CHAT_ID не задан, авто-синхронизация пропущена")
+        return
+    try:
+        results = await sync_trades(context.bot, CHAT_ID)
+        new_closed = len(results.get('new_closed', []))
+        if new_closed > 0:
+            last_trades = db.get_closed_trades(limit=3)
+            if len(last_trades) >= 3 and all(t['realized_pnl'] < 0 for t in last_trades):
+                alert = (
+                    "⚠️ *Обнаружена серия из 3 убыточных сделок!*\n"
+                    "Рекомендую сделать паузу и проанализировать причины.\n"
+                    "Используйте /ai_fix для AI-разбора."
+                )
+                await context.bot.send_message(chat_id=CHAT_ID, text=alert, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Ошибка авто-синхронизации: {e}")
+
+# ── Закреплённое сообщение со статусом (пункт 12) ──
+async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE):
+    if not CHAT_ID:
+        return
+    try:
+        balance = get_balance()
+        open_positions = db.get_open_trades()
+
+        text = "📌 *Текущий статус*\n\n"
+        if balance.get('success'):
+            text += (
+                f"💰 Баланс: ${balance['equity']:.2f}\n"
+                f"Доступно: ${balance['available']:.2f}\n"
+                f"Маржа: ${balance['used_margin']:.2f}\n"
+                f"Нереализ. PNL: ${balance['unrealized_pnl']:.2f}\n\n"
+            )
+        else:
+            text += "❌ Не удалось получить баланс\n\n"
+
+        if open_positions:
+            text += "*Открытые позиции:*\n"
+            for pos in open_positions:
+                text += f"- {pos['symbol']} {pos['side']} (Pnl: {pos.get('unrealized_pnl', 0):.2f})\n"
+        else:
+            text += "🔓 Нет открытых позиций"
+
+        pinned_msg_id = context.bot_data.get('pinned_msg_id')
+        if pinned_msg_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=CHAT_ID,
+                    message_id=pinned_msg_id,
+                    text=text,
+                    parse_mode='Markdown'
+                )
+                return
+            except:
+                pass
+
+        msg = await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=text,
+            parse_mode='Markdown'
+        )
+        await msg.pin()
+        context.bot_data['pinned_msg_id'] = msg.message_id
+
+    except Exception as e:
+        logger.error(f"Ошибка обновления статуса: {e}")
+
+# ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
     results = await sync_trades(context.bot, update.effective_chat.id)
@@ -615,14 +809,7 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_closed = len(results.get('new_closed', []))
     await msg.edit_text(f"✅ Синхронизация завершена!\n\n🆕 Новых позиций: {new_open}\n🔒 Закрыто позиций: {new_closed}")
 
-async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
-    if not CHAT_ID:
-        logger.warning("TELEGRAM_CHAT_ID не задан, авто-синхронизация пропущена")
-        return
-    try:
-        await sync_trades(context.bot, CHAT_ID)
-    except Exception as e:
-        logger.error(f"Ошибка авто-синхронизации: {e}")
+# ─── Запуск ───────────────────────────────────────────────────────────────────
 
 def main():
     if not BOT_TOKEN:
@@ -632,8 +819,12 @@ def main():
 
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('sync', sync_command))
+    app.add_handler(CommandHandler('ai_fix', ai_fix_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
     app.job_queue.run_repeating(auto_sync_job, interval=60, first=10)
+    app.job_queue.run_repeating(update_pinned_status, interval=300, first=30)
 
     logger.info("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
