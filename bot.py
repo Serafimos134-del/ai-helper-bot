@@ -377,54 +377,63 @@ async def analyze_open_position(update: Update, position: dict):
         reply_markup=ai_menu_keyboard()
     )
 
-# ── Журнал сделок ──
+# ── Журнал сделок (до 500 записей, разбивка на части по 15) ──
 async def show_journal(update: Update):
     msg = await update.message.reply_text("📓 Загружаю журнал...")
-    trades = db.get_closed_trades(limit=30)
+    trades = db.get_closed_trades(limit=500)     # <-- лимит 500
     if not trades:
         await msg.edit_text("Нет закрытых сделок для журнала.")
         return
 
-    lines = ["📓 *Журнал сделок*\n"]
-    for t in reversed(trades):
-        symbol = t['symbol']
-        side = t['side']
-        entry = f"${t['entry_price']:.4f}"
-        exit = f"${t['exit_price']:.4f}"
-        pnl = float(t['realized_pnl'])
-        if pnl > 0:
-            emoji = "✅"
-        elif pnl < 0:
-            emoji = "❌"
-        else:
-            emoji = "➖"
-        volume = t['quantity']
-        leverage = t.get('leverage', 1)
-        stop = f"${t['stop_loss']:.4f}" if t.get('stop_loss') else "—"
-        take = f"${t['take_profit']:.4f}" if t.get('take_profit') else "—"
-        open_time = t.get('open_time') or "—"
-        close_time = t.get('close_time') or t.get('closed_at') or "—"
-        entry_comment = t.get('entry_comment', '—')
-        exit_comment = t.get('exit_comment', t.get('comment', '—'))
-        ai_review = t.get('ai_review', '')
+    # Удаляем сообщение "Загружаю журнал..."
+    await msg.delete()
 
-        line = (
-            f"{emoji} *{symbol}* {side}\n"
-            f"   Вход: {entry} | Выход: {exit}\n"
-            f"   Объём: {volume} | Плечо: {leverage}x\n"
-            f"   Стоп: {stop} | Тейк: {take}\n"
-            f"   PNL: ${pnl:.2f}\n"
-            f"   Открыта: {open_time}\n"
-            f"   Закрыта: {close_time}\n"
-            f"   Причина входа: {entry_comment}\n"
-            f"   Вывод: {exit_comment}\n"
-            + (f"   AI-оценка: {ai_review}\n" if ai_review else "")
-            + "\n"
-        )
-        lines.append(line)
+    chunk_size = 15
+    chunks = [trades[i:i+chunk_size] for i in range(0, len(trades), chunk_size)]
 
-    await msg.edit_text("".join(lines), parse_mode='Markdown')
+    for idx, chunk in enumerate(chunks, 1):
+        lines = [f"📓 *Журнал сделок (часть {idx}/{len(chunks)})*\n"]
+        for t in reversed(chunk):
+            symbol = t['symbol']
+            side = t['side']
+            entry = f"${t['entry_price']:.4f}"
+            exit = f"${t['exit_price']:.4f}"
+            pnl = float(t['realized_pnl'])
+            if pnl > 0:
+                emoji = "✅"
+            elif pnl < 0:
+                emoji = "❌"
+            else:
+                emoji = "➖"
+            volume = t['quantity']
+            leverage = t.get('leverage', 1)
+            stop = f"${t['stop_loss']:.4f}" if t.get('stop_loss') else "—"
+            take = f"${t['take_profit']:.4f}" if t.get('take_profit') else "—"
+            open_time = t.get('open_time') or "—"
+            close_time = t.get('close_time') or t.get('closed_at') or "—"
+            entry_comment = t.get('entry_comment', '—')
+            exit_comment = t.get('exit_comment', t.get('comment', '—'))
+            ai_review = t.get('ai_review', '')
 
+            line = (
+                f"{emoji} *{symbol}* {side}\n"
+                f"   Вход: {entry} | Выход: {exit}\n"
+                f"   Объём: {volume} | Плечо: {leverage}x\n"
+                f"   Стоп: {stop} | Тейк: {take}\n"
+                f"   PNL: ${pnl:.2f}\n"
+                f"   Открыта: {open_time}\n"
+                f"   Закрыта: {close_time}\n"
+                f"   Причина входа: {entry_comment}\n"
+                f"   Вывод: {exit_comment}\n"
+                + (f"   AI-оценка: {ai_review}\n" if ai_review else "")
+                + "\n"
+            )
+            lines.append(line)
+
+        text = "".join(lines)
+        if len(text) > 4000:
+            text = text[:4000] + "\n... (обрезано)"
+        await update.message.reply_text(text, parse_mode='Markdown')
 
 # ── Анализ журнала (AI) ──
 async def show_journal_analysis(update: Update):
@@ -552,7 +561,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(data.split("_")[1])
         await generate_ai_review(query, trade_id)
     elif data.startswith("entry_reason_"):
-        # Обработка в будущем (пока заглушка)
         await query.edit_message_text("Функция в разработке.")
     elif data.startswith("exit_reason_"):
         trade_id = int(data.split("_")[2])
@@ -573,7 +581,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
-    # Состояние: ввод комментария после inline-кнопки
     if state == 'entering_comment_inline':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -591,7 +598,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('comment_order_id', None)
         return
 
-    # Состояние: ввод вывода по сделке (exit reason)
     if state == 'entering_exit_reason':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -606,7 +612,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('comment_order_id', None)
         return
 
-    # Состояние: вопрос AI
     if state == 'asking_ai':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -694,7 +699,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"💬 Ответ AI:\n\n{answer[:3500]}", reply_markup=ai_menu_keyboard())
         return
 
-    # Состояние: выбор позиции для AI-анализа
     if state == 'choosing_position':
         if text == BTN_BACK:
             context.user_data['state'] = None
