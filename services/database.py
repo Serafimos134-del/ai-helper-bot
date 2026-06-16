@@ -49,7 +49,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
     """)
-    # Миграция существующих таблиц
     for table, cols in {
         'open_trades': [
             ('stop_loss', 'REAL'),
@@ -163,7 +162,7 @@ class Database:
     @staticmethod
     def get_stats():
         conn = _get_conn()
-        total = conn.execute("SELECT COUNT(*) FROM closed_trades").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0]
         if total == 0:
             conn.close()
             return {
@@ -173,13 +172,13 @@ class Database:
                 'worst_trade': 0.0, 'worst_trade_symbol': '',
                 'unrealized_pnl': 0, 'open_positions': 0
             }
-        pnl_sum = conn.execute("SELECT SUM(realized_pnl) FROM closed_trades").fetchone()[0] or 0.0
+        pnl_sum = conn.execute("SELECT SUM(realized_pnl) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0] or 0.0
         wins = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl > 0").fetchone()[0]
         losses = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl < 0").fetchone()[0]
         avg_profit = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl > 0").fetchone()[0] or 0.0
         avg_loss = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl < 0").fetchone()[0] or 0.0
-        best = conn.execute("SELECT MAX(realized_pnl) FROM closed_trades").fetchone()[0] or 0.0
-        worst = conn.execute("SELECT MIN(realized_pnl) FROM closed_trades").fetchone()[0] or 0.0
+        best = conn.execute("SELECT MAX(realized_pnl) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0] or 0.0
+        worst = conn.execute("SELECT MIN(realized_pnl) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0] or 0.0
         best_row = conn.execute(
             "SELECT symbol FROM closed_trades WHERE realized_pnl = ? ORDER BY close_time DESC LIMIT 1",
             (best,)
