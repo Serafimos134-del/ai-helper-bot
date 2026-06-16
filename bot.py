@@ -56,7 +56,7 @@ BTN_AI_OPEN_ANALYSIS = "📈 Анализ открытых сделок"
 BTN_AI_ASK = "💬 Задать вопрос AI"
 BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
-BTN_AI_LEARN = "🧑‍🏫 Анализ комментариев"
+BTN_AI_LEARN = "📊 Анализ журнала"          # <-- изменено
 
 # ─── Клавиатуры ──────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ def ai_menu_keyboard():
             [BTN_AI_OPEN_ANALYSIS],
             [BTN_AI_ASK],
             [BTN_AI_MARKET, BTN_AI_TRENDS],
-            [BTN_AI_LEARN],
+            [BTN_AI_LEARN],                # <-- кнопка остаётся
             [BTN_BACK],
         ],
         resize_keyboard=True
@@ -445,31 +445,38 @@ async def show_journal(update: Update):
     await msg.edit_text("".join(lines), parse_mode='Markdown')
 
 
-# ── AI-анализ комментариев ──
-async def show_learning_analysis(update: Update):
-    msg = await update.message.reply_text("🤖 Анализирую комментарии...")
+# ── Анализ журнала (замена show_learning_analysis) ──
+async def show_journal_analysis(update: Update):
+    msg = await update.message.reply_text("🤖 Анализирую журнал сделок...")
     trades = db.get_closed_trades(limit=50)
-    comments = []
-    for t in trades:
-        if t.get('comment'):
-            comments.append({
-                'symbol': t['symbol'],
-                'pnl': t['realized_pnl'],
-                'comment': t['comment']
-            })
-    if not comments:
-        await msg.edit_text("Нет сделок с комментариями.")
+    if not trades:
+        await msg.edit_text("Нет закрытых сделок для анализа.")
         return
 
-    comments_text = json.dumps(comments, ensure_ascii=False, indent=2)
+    data_for_ai = []
+    for t in trades:
+        data_for_ai.append({
+            'symbol': t['symbol'],
+            'side': t['side'],
+            'entry_price': t['entry_price'],
+            'exit_price': t['exit_price'],
+            'pnl': t['realized_pnl'],
+            'leverage': t.get('leverage', 1),
+            'stop_loss': t.get('stop_loss'),
+            'take_profit': t.get('take_profit'),
+            'comment': t.get('comment', '')
+        })
+
+    trades_text = json.dumps(data_for_ai, ensure_ascii=False, indent=2)
     prompt = (
-        "Проанализируй комментарии трейдера к закрытым сделкам. "
-        "Выдели наиболее частые ошибки, успешные действия и повторяющиеся паттерны. "
-        "Дай рекомендации по улучшению стратегии и психологии.\n\n"
-        f"Комментарии:\n{comments_text}"
+        "Проанализируй журнал сделок трейдера. "
+        "Выдели повторяющиеся паттерны, главные ошибки в риск-менеджменте, "
+        "психологические ловушки и сильные стороны. "
+        "Дай конкретные рекомендации по улучшению стратегии и дисциплины.\n\n"
+        f"Журнал сделок:\n{trades_text}"
     )
     answer = ai_analyzer.analyze_raw(prompt)
-    await msg.edit_text(f"🧑‍🏫 *Анализ комментариев:*\n\n{answer[:3500]}", parse_mode='Markdown')
+    await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}", parse_mode='Markdown')
 
 
 async def show_help(update: Update):
@@ -752,7 +759,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_AI_TRENDS:
         await show_trends(update)
     elif text == BTN_AI_LEARN:
-        await show_learning_analysis(update)
+        await show_journal_analysis(update)   # <-- вызываем новый анализ журнала
     else:
         await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
 
