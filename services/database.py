@@ -31,11 +31,32 @@ def init_db():
             quantity REAL NOT NULL,
             realized_pnl REAL NOT NULL,
             comment TEXT DEFAULT '',
+            risk_percent REAL DEFAULT 0,
+            leverage REAL DEFAULT 1,
+            stop_loss REAL,
+            take_profit REAL,
+            risk_reward REAL,
+            open_time TIMESTAMP,
+            close_time TIMESTAMP,
             closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
-        CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(closed_at);
+        CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
     """)
+    # Добавление столбцов, если их нет (для существующей БД)
+    for col, col_def in [
+        ('risk_percent', 'REAL DEFAULT 0'),
+        ('leverage', 'REAL DEFAULT 1'),
+        ('stop_loss', 'REAL'),
+        ('take_profit', 'REAL'),
+        ('risk_reward', 'REAL'),
+        ('open_time', 'TIMESTAMP'),
+        ('close_time', 'TIMESTAMP')
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE closed_trades ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -84,10 +105,17 @@ class Database:
     def add_closed_trade(trade: dict):
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO closed_trades (symbol, side, entry_price, exit_price, quantity, realized_pnl, comment)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (trade['symbol'], trade['side'], trade['entry_price'],
-              trade['exit_price'], trade['quantity'], trade['realized_pnl'], trade.get('comment', '')))
+            INSERT INTO closed_trades 
+            (symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
+             risk_percent, leverage, stop_loss, take_profit, risk_reward, open_time, close_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            trade['symbol'], trade['side'], trade['entry_price'], trade['exit_price'],
+            trade['quantity'], trade['realized_pnl'], trade.get('comment', ''),
+            trade.get('risk_percent', 0), trade.get('leverage', 1),
+            trade.get('stop_loss'), trade.get('take_profit'), trade.get('risk_reward'),
+            trade.get('open_time'), trade.get('close_time')
+        ))
         conn.commit()
         conn.close()
 
@@ -99,7 +127,7 @@ class Database:
         if symbol:
             query += " WHERE symbol = ?"
             params.append(symbol)
-        query += " ORDER BY closed_at DESC LIMIT ?"
+        query += " ORDER BY close_time DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(query, params).fetchall()
         conn.close()
@@ -111,8 +139,13 @@ class Database:
         total = conn.execute("SELECT COUNT(*) FROM closed_trades").fetchone()[0]
         if total == 0:
             conn.close()
-            return {'total_trades': 0, 'win_rate': 0, 'total_pnl': 0.0,
-                    'avg_profit': 0.0, 'avg_loss': 0.0, 'best_trade': 0.0, 'worst_trade': 0.0}
+            return {
+                'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
+                'win_rate': 0, 'total_pnl': 0.0, 'avg_profit': 0.0, 'avg_loss': 0.0,
+                'best_trade': 0.0, 'best_trade_symbol': '',
+                'worst_trade': 0.0, 'worst_trade_symbol': '',
+                'unrealized_pnl': 0, 'open_positions': 0
+            }
         pnl_sum = conn.execute("SELECT SUM(realized_pnl) FROM closed_trades").fetchone()[0] or 0.0
         wins = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl > 0").fetchone()[0]
         losses = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl < 0").fetchone()[0]
@@ -120,15 +153,31 @@ class Database:
         avg_loss = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl < 0").fetchone()[0] or 0.0
         best = conn.execute("SELECT MAX(realized_pnl) FROM closed_trades").fetchone()[0] or 0.0
         worst = conn.execute("SELECT MIN(realized_pnl) FROM closed_trades").fetchone()[0] or 0.0
+        best_row = conn.execute(
+            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? ORDER BY close_time DESC LIMIT 1",
+            (best,)
+        ).fetchone()
+        worst_row = conn.execute(
+            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? ORDER BY close_time DESC LIMIT 1",
+            (worst,)
+        ).fetchone()
+        unrealized = conn.execute("SELECT SUM(unrealized_pnl) FROM open_trades").fetchone()[0] or 0.0
+        open_count = conn.execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
         conn.close()
         return {
             'total_trades': total,
+            'winning_trades': wins,
+            'losing_trades': losses,
             'win_rate': (wins / total) * 100 if total > 0 else 0,
             'total_pnl': pnl_sum,
             'avg_profit': avg_profit,
             'avg_loss': avg_loss,
             'best_trade': best,
-            'worst_trade': worst
+            'best_trade_symbol': best_row['symbol'] if best_row else '',
+            'worst_trade': worst,
+            'worst_trade_symbol': worst_row['symbol'] if worst_row else '',
+            'unrealized_pnl': unrealized,
+            'open_positions': open_count
         }
 
     @staticmethod
@@ -144,3 +193,21 @@ class Database:
         row = conn.execute("SELECT * FROM closed_trades WHERE id = ?", (trade_id,)).fetchone()
         conn.close()
         return dict(row) if row else None
+
+    @staticmethod
+    def update_trade_metrics(trade_id: int, risk_percent=None, leverage=None,
+                             stop_loss=None, take_profit=None, risk_reward=None):
+        fields = {}
+        if risk_percent is not None: fields['risk_percent'] = risk_percent
+        if leverage is not None: fields['leverage'] = leverage
+        if stop_loss is not None: fields['stop_loss'] = stop_loss
+        if take_profit is not None: fields['take_profit'] = take_profit
+        if risk_reward is not None: fields['risk_reward'] = risk_reward
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k}=?" for k in fields)
+        values = list(fields.values()) + [trade_id]
+        conn = _get_conn()
+        conn.execute(f"UPDATE closed_trades SET {set_clause} WHERE id=?", values)
+        conn.commit()
+        conn.close()
