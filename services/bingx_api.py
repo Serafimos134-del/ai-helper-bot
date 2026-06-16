@@ -185,3 +185,19 @@ def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -
         return {'success': True, 'klines': klines}
     except Exception as e:
         return {'success': False, 'error': str(e), 'klines': []}
+
+
+def get_ticker(symbol: str) -> dict:
+    """Публичные данные по одному символу (без подписи)."""
+    url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
+    params = {'symbol': symbol}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        tickers = data.get('data', [])
+        if not isinstance(tickers, list) or not tickers:
+            return {'success': False, 'error': 'Symbol not found', 'ticker': {}}
+        return {'success': True, 'ticker': tickers[0]}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'ticker': {}}
