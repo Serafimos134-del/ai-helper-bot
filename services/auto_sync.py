@@ -1,4 +1,3 @@
-cat > /opt/ai-helper-bot/services/auto_sync.py << 'ENDOFFILE'
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -12,60 +11,56 @@ db = Database()
 
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
-
     db.cleanup_orphan_open_trades()
 
     open_result = get_open_positions()
     if not open_result.get('success'):
         logger.warning(f"Ошибка получения открытых позиций: {open_result.get('error')}")
-    else:
-        api_trades = open_result.get('trades', [])
-        stored_open = db.get_open_trades()
-        stored_by_id = {}
-        for t in stored_open:
-            oid = str(t.get('orderId')) if t.get('orderId') else None
-            if oid:
-                stored_by_id[oid] = t
+        return results
 
-        for trade in api_trades:
-            oid = str(trade.get('orderId'))
-            raw_side = trade.get('side', '')
-            side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+    api_trades = open_result.get('trades', [])
+    stored_open = db.get_open_trades()
+    stored_by_id = {str(t['orderId']): t for t in stored_open if t.get('orderId')}
 
-            if oid in stored_by_id:
-                db.update_open_trade_by_order_id(
-                    oid,
-                    unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
-                    leverage=float(trade.get('leverage', 1)),
-                    quantity=abs(float(trade.get('positionAmt', trade.get('size', 0)))),
-                    entry_price=float(trade.get('entryPrice', 0)),
-                    stop_loss=trade.get('stopLoss'),
-                    take_profit=trade.get('takeProfit')
-                )
-                stored_by_id.pop(oid)
-            else:
-                db.add_open_trade({
-                    'orderId': trade.get('orderId'),
-                    'symbol': trade.get('symbol'),
-                    'side': side,
-                    'entry_price': float(trade.get('entryPrice', 0)),
-                    'quantity': abs(float(trade.get('positionAmt', trade.get('size', 0)))),
-                    'leverage': float(trade.get('leverage', 1)),
-                    'unrealized_pnl': float(trade.get('unrealizedPnl', 0)),
-                    'stop_loss': trade.get('stopLoss'),
-                    'take_profit': trade.get('takeProfit'),
-                    'entry_comment': ''
-                })
-                results['new_open'].append(trade)
-                await _notify_new_trade(bot, chat_id, trade)
+    for trade in api_trades:
+        oid = str(trade.get('orderId'))
+        raw_side = trade.get('side', '')
+        side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
 
-        for oid, stored in stored_by_id.items():
-            closed_trade = _build_closed_trade(stored)
-            db.add_closed_trade(closed_trade)
-            db.delete_open_trade_by_order_id(oid)
-            last_id = db.get_last_closed_id()
-            results['new_closed'].append(stored)
-            await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
+        if oid in stored_by_id:
+            db.update_open_trade_by_order_id(
+                oid,
+                unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
+                leverage=float(trade.get('leverage', 1)),
+                quantity=abs(float(trade.get('positionAmt', trade.get('size', 0)))),
+                entry_price=float(trade.get('entryPrice', 0)),
+                stop_loss=trade.get('stopLoss'),
+                take_profit=trade.get('takeProfit')
+            )
+            stored_by_id.pop(oid)
+        else:
+            db.add_open_trade({
+                'orderId': trade.get('orderId'),
+                'symbol': trade.get('symbol'),
+                'side': side,
+                'entry_price': float(trade.get('entryPrice', 0)),
+                'quantity': abs(float(trade.get('positionAmt', trade.get('size', 0)))),
+                'leverage': float(trade.get('leverage', 1)),
+                'unrealized_pnl': float(trade.get('unrealizedPnl', 0)),
+                'stop_loss': trade.get('stopLoss'),
+                'take_profit': trade.get('takeProfit'),
+                'entry_comment': ''
+            })
+            results['new_open'].append(trade)
+            await _notify_new_trade(bot, chat_id, trade)
+
+    for oid, stored in stored_by_id.items():
+        closed_trade = _build_closed_trade(stored)
+        db.add_closed_trade(closed_trade)
+        db.delete_open_trade_by_order_id(oid)
+        last_id = db.get_last_closed_id()
+        results['new_closed'].append(stored)
+        await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
 
     return results
 
@@ -77,10 +72,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
     holding_minutes = None
     if open_time:
         try:
-            if isinstance(open_time, str):
-                open_dt = datetime.fromisoformat(open_time)
-            else:
-                open_dt = open_time
+            open_dt = datetime.fromisoformat(open_time) if isinstance(open_time, str) else open_time
             holding_minutes = int((now - open_dt).total_seconds() / 60)
         except Exception:
             pass
@@ -157,4 +149,3 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
         await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка уведомления о закрытии: {e}")
-ENDOFFILE
