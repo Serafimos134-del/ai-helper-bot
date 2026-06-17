@@ -44,11 +44,19 @@ def init_db():
             entry_comment TEXT DEFAULT '',
             exit_comment TEXT DEFAULT '',
             ai_review TEXT DEFAULT '',
+            holding_minutes INTEGER,
+            btc_price REAL,
+            eth_price REAL,
+            market_trend TEXT,
+            setup_type TEXT,
+            mistakes TEXT,
+            ai_score INTEGER,
             closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
     """)
+    # Автоматическое добавление новых столбцов для существующих баз
     for table, cols in {
         'open_trades': [
             ('stop_loss', 'REAL'),
@@ -65,7 +73,14 @@ def init_db():
             ('close_time', 'TIMESTAMP'),
             ('entry_comment', "TEXT DEFAULT ''"),
             ('exit_comment', "TEXT DEFAULT ''"),
-            ('ai_review', "TEXT DEFAULT ''")
+            ('ai_review', "TEXT DEFAULT ''"),
+            ('holding_minutes', 'INTEGER'),
+            ('btc_price', 'REAL'),
+            ('eth_price', 'REAL'),
+            ('market_trend', 'TEXT'),
+            ('setup_type', 'TEXT'),
+            ('mistakes', 'TEXT'),
+            ('ai_score', 'INTEGER')
         ]
     }.items():
         for col, col_def in cols:
@@ -131,8 +146,9 @@ class Database:
             INSERT INTO closed_trades 
             (symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
              risk_percent, leverage, stop_loss, take_profit, risk_reward,
-             open_time, close_time, entry_comment, exit_comment, ai_review)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             open_time, close_time, entry_comment, exit_comment, ai_review,
+             holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade['symbol'], trade['side'], trade['entry_price'], trade['exit_price'],
             trade['quantity'], trade['realized_pnl'], trade.get('comment', ''),
@@ -140,7 +156,10 @@ class Database:
             trade.get('stop_loss'), trade.get('take_profit'), trade.get('risk_reward'),
             trade.get('open_time'), trade.get('close_time'),
             trade.get('entry_comment', ''), trade.get('exit_comment', ''),
-            trade.get('ai_review', '')
+            trade.get('ai_review', ''),
+            trade.get('holding_minutes'), trade.get('btc_price'), trade.get('eth_price'),
+            trade.get('market_trend'), trade.get('setup_type'), trade.get('mistakes'),
+            trade.get('ai_score')
         ))
         conn.commit()
         conn.close()
@@ -221,22 +240,16 @@ class Database:
         return dict(row) if row else None
 
     @staticmethod
-    def update_trade_metrics(trade_id: int, risk_percent=None, leverage=None,
-                             stop_loss=None, take_profit=None, risk_reward=None,
-                             entry_comment=None, exit_comment=None, ai_review=None):
-        fields = {}
-        if risk_percent is not None: fields['risk_percent'] = risk_percent
-        if leverage is not None: fields['leverage'] = leverage
-        if stop_loss is not None: fields['stop_loss'] = stop_loss
-        if take_profit is not None: fields['take_profit'] = take_profit
-        if risk_reward is not None: fields['risk_reward'] = risk_reward
-        if entry_comment is not None: fields['entry_comment'] = entry_comment
-        if exit_comment is not None: fields['exit_comment'] = exit_comment
-        if ai_review is not None: fields['ai_review'] = ai_review
-        if not fields:
+    def update_trade_metrics(trade_id: int, **kwargs):
+        allowed = ['risk_percent', 'leverage', 'stop_loss', 'take_profit', 'risk_reward',
+                   'entry_comment', 'exit_comment', 'ai_review',
+                   'holding_minutes', 'btc_price', 'eth_price', 'market_trend',
+                   'setup_type', 'mistakes', 'ai_score']
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
             return
-        set_clause = ", ".join(f"{k}=?" for k in fields)
-        values = list(fields.values()) + [trade_id]
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        values = list(updates.values()) + [trade_id]
         conn = _get_conn()
         conn.execute(f"UPDATE closed_trades SET {set_clause} WHERE id=?", values)
         conn.commit()
