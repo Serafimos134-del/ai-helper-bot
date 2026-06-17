@@ -21,15 +21,32 @@ async def sync_trades(bot, chat_id: str) -> dict:
     else:
         api_trades = open_result.get('trades', [])
         stored_open = db.get_open_trades()
-        stored_by_id = {str(t.get('orderId')): t for t in stored_open}
+        stored_by_id = {}
+        for t in stored_open:
+            oid = str(t.get('orderId')) if t.get('orderId') else None
+            if oid:
+                stored_by_id[oid] = t
 
         for trade in api_trades:
             oid = str(trade.get('orderId'))
-            if oid not in stored_by_id:
-                raw_side = trade.get('side', '')
-                side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+            raw_side = trade.get('side', '')
+            side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+
+            if oid in stored_by_id:
+                # Обновляем существующую позицию
+                db.update_open_trade_by_order_id(
+                    oid,
+                    unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
+                    leverage=float(trade.get('leverage', 1)),
+                    quantity=abs(float(trade.get('positionAmt', trade.get('size', 0)))),
+                    entry_price=float(trade.get('entryPrice', 0)),
+                    stop_loss=trade.get('stopLoss'),
+                    take_profit=trade.get('takeProfit')
+                )
+                stored_by_id.pop(oid)  # чтобы не удалить как закрытую
+            else:
                 db.add_open_trade({
-                    'orderId': trade.get('orderId'),          # <-- обязательно
+                    'orderId': trade.get('orderId'),
                     'symbol': trade.get('symbol'),
                     'side': side,
                     'entry_price': float(trade.get('entryPrice', 0)),
@@ -43,21 +60,17 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 results['new_open'].append(trade)
                 await _notify_new_trade(bot, chat_id, trade)
 
-        # Закрытые позиции (исчезнувшие из API)
-        api_ids = {str(t.get('orderId')) for t in api_trades}
-        for stored in stored_open:
-            oid = str(stored.get('orderId'))
-            if oid and oid not in api_ids:
-                closed_trade = _build_closed_trade(stored)
-                db.add_closed_trade(closed_trade)
-                db.delete_open_trade(stored['symbol'])
-                last_id = db.get_last_closed_id()
-                results['new_closed'].append(stored)
-                await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
-                # Автоматический AI-анализ после закрытия
-                asyncio.ensure_future(_auto_ai_review(last_id, closed_trade))
+        # Закрытые позиции – те, что остались в stored_by_id
+        for stored in stored_by_id.values():
+            closed_trade = _build_closed_trade(stored)
+            db.add_closed_trade(closed_trade)
+            db.delete_open_trade(stored['symbol'])
+            last_id = db.get_last_closed_id()
+            results['new_closed'].append(stored)
+            await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
+            asyncio.ensure_future(_auto_ai_review(last_id, closed_trade))
 
-    # --- История закрытых ордеров (только с реальным PNL) ---
+    # --- История закрытых ордеров ---
     closed_result = get_closed_orders(limit=50)
     if closed_result.get('success'):
         stored_closed = db.get_closed_trades(limit=1000)
@@ -65,23 +78,19 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for order in closed_result.get('trades', []):
             oid = str(order.get('orderId'))
             profit = float(order.get('profit', 0))
-            if oid not in stored_closed_ids and profit != 0:      # <-- игнорируем нулевые сделки
+            if oid not in stored_closed_ids and profit != 0:
                 raw_side = order.get('side', 'BUY')
                 side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
-                # Рассчитываем длительность и рыночные данные для ордера из истории
                 open_time = order.get('time')
                 close_time = order.get('updateTime')
                 holding_minutes = None
                 if open_time and close_time:
                     try:
-                        # timestamp в миллисекундах
                         diff = (close_time - open_time) / 1000 / 60
                         holding_minutes = int(diff)
                     except Exception:
                         pass
-
                 btc_price, eth_price, market_trend = _get_market_data()
-
                 db.add_closed_trade({
                     'symbol': order.get('symbol'),
                     'side': side,
@@ -112,12 +121,9 @@ async def sync_trades(bot, chat_id: str) -> dict:
 
 
 def _build_closed_trade(stored_open: dict) -> dict:
-    """Создаёт словарь закрытой сделки с автоматическим заполнением метрик."""
     now = datetime.now(timezone.utc)
     open_time = stored_open.get('created_at')
     close_time = now.isoformat()
-
-    # Длительность в минутах
     holding_minutes = None
     if open_time:
         try:
@@ -128,14 +134,12 @@ def _build_closed_trade(stored_open: dict) -> dict:
             holding_minutes = int((now - open_dt).total_seconds() / 60)
         except Exception:
             pass
-
     btc_price, eth_price, market_trend = _get_market_data()
-
     return {
         'symbol': stored_open['symbol'],
         'side': stored_open['side'],
         'entry_price': float(stored_open.get('entry_price', 0)),
-        'exit_price': float(stored_open.get('entry_price', 0)),  # заглушка, реальная цена выхода будет позже
+        'exit_price': float(stored_open.get('entry_price', 0)),
         'quantity': float(stored_open.get('quantity', 0)),
         'realized_pnl': float(stored_open.get('unrealized_pnl', 0)),
         'leverage': float(stored_open.get('leverage', 1)),
@@ -157,7 +161,6 @@ def _build_closed_trade(stored_open: dict) -> dict:
 
 
 def _get_market_data() -> tuple:
-    """Получает текущие цены BTC, ETH и определяет тренд по BTC."""
     btc_price = None
     eth_price = None
     market_trend = None
@@ -181,7 +184,6 @@ def _get_market_data() -> tuple:
 
 
 async def _auto_ai_review(trade_id: int, closed_trade: dict):
-    """Автоматически запрашивает AI-оценку и сохраняет в базу."""
     try:
         prompt = (
             f"Дай краткую оценку сделке (2-3 предложения): что хорошо, что плохо, оценка от 1 до 10.\n"
@@ -191,7 +193,6 @@ async def _auto_ai_review(trade_id: int, closed_trade: dict):
             f"Причина входа: {closed_trade.get('entry_comment', 'не указана')}."
         )
         review = ai_analyzer.analyze_raw(prompt)
-        # Пытаемся извлечь числовую оценку (например, "Оценка: 7/10")
         import re
         match = re.search(r'(\d+)\s*/\s*10', review)
         ai_score = int(match.group(1)) if match else None
@@ -208,7 +209,6 @@ async def _notify_new_trade(bot, chat_id: str, trade: dict):
         size = trade.get('size', trade.get('positionAmt', '?'))
         leverage = trade.get('leverage', 1)
         side_emoji = "🟢" if side == 'LONG' else "🔴"
-
         text = (
             f"🔔 *Новая позиция открыта!*\n\n"
             f"{side_emoji} {symbol} — {side}\n"
@@ -231,8 +231,6 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
         symbol = trade.get('symbol', '?')
         side = trade.get('side', '?')
         pnl_emoji = "✅" if pnl >= 0 else "❌"
-
-        # Попытка вычислить процент PNL (приблизительно)
         pnl_pct_str = ""
         try:
             entry_price = float(trade.get('entryPrice', 0))
@@ -245,7 +243,6 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
                     pnl_pct_str = f"\n📈 PNL: {pnl_pct:+.1f}%"
         except Exception:
             pass
-
         text = (
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
@@ -264,5 +261,4 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
 
 
 def _get_exit_price_for(order_id: str, stored_open: dict) -> float:
-    # Заглушка, можно улучшить через историю ордеров
     return float(stored_open.get('entry_price', 0))
