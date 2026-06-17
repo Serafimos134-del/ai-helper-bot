@@ -178,7 +178,7 @@ class Database:
              risk_percent, leverage, stop_loss, take_profit, risk_reward,
              open_time, close_time, entry_comment, exit_comment, ai_review,
              holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade['symbol'], trade['side'], trade['entry_price'], trade['exit_price'],
             trade['quantity'], trade['realized_pnl'], trade.get('comment', ''),
