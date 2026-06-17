@@ -14,6 +14,9 @@ ai_analyzer = AITradingAnalyzer()
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
 
+    # Очистка устаревших записей без orderId (страховка от старых дубликатов)
+    db.cleanup_orphan_open_trades()
+
     # --- Открытые позиции ---
     open_result = get_open_positions()
     if not open_result.get('success'):
@@ -64,21 +67,20 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for oid, stored in stored_by_id.items():
             closed_trade = _build_closed_trade(stored)
             db.add_closed_trade(closed_trade)
-            db.delete_open_trade_by_order_id(oid)          # <-- исправлено
+            db.delete_open_trade_by_order_id(oid)
             last_id = db.get_last_closed_id()
             results['new_closed'].append(stored)
             await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
             asyncio.ensure_future(_auto_ai_review(last_id, closed_trade))
 
-    # --- История закрытых ордеров ---
+    # --- История закрытых ордеров (теперь сохраняются все, включая нулевые) ---
     closed_result = get_closed_orders(limit=50)
     if closed_result.get('success'):
         stored_closed = db.get_closed_trades(limit=1000)
         stored_closed_ids = {str(t.get('orderId', t.get('id'))) for t in stored_closed}
         for order in closed_result.get('trades', []):
             oid = str(order.get('orderId'))
-            profit = float(order.get('profit', 0))
-            if oid not in stored_closed_ids and profit != 0:
+            if oid not in stored_closed_ids:               # <-- убран фильтр profit != 0
                 raw_side = order.get('side', 'BUY')
                 side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
                 open_time = order.get('time')
@@ -97,7 +99,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
                     'entry_price': float(order.get('avgPrice', 0)),
                     'exit_price': float(order.get('avgPrice', 0)),
                     'quantity': float(order.get('executedQty', 0)),
-                    'realized_pnl': profit,
+                    'realized_pnl': float(order.get('profit', 0)),
                     'comment': '',
                     'leverage': float(order.get('leverage', 1)),
                     'stop_loss': None,
