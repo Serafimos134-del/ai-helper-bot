@@ -2,15 +2,13 @@ cat > /opt/ai-helper-bot/services/auto_sync.py << 'ENDOFFILE'
 import asyncio
 import logging
 from datetime import datetime, timezone
-from services.bingx_api import get_open_positions, get_closed_orders, get_ticker
+from services.bingx_api import get_open_positions
 from services.database import Database
-from services.ai_trading import AITradingAnalyzer
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
-ai_analyzer = AITradingAnalyzer()
 
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
