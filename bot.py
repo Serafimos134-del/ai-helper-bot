@@ -1,9 +1,7 @@
-import asyncio
 import logging
 import os
 import json
 import re
-from datetime import timedelta
 from dotenv import load_dotenv
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,7 +18,7 @@ from services.bingx_api import get_balance, get_open_positions, get_closed_order
 from services.database import Database
 from services.trading_stats import format_stats_message
 from services.comment_manager import save_comment
-from services.ws_sync import ws_sync_loop
+from services.auto_sync import sync_trades
 from services.ai_trading import AITradingAnalyzer
 
 load_dotenv()
@@ -60,7 +58,6 @@ BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
 BTN_AI_LEARN = "📊 Анализ журнала"
 
-# Список всех навигационных кнопок (для защиты от сохранения как комментариев)
 NAV_BUTTONS = {
     BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_EVALUATION, BTN_AI_ANALYSIS,
@@ -539,10 +536,10 @@ async def show_help(update: Update):
         "  • 📊 Статистика — Win Rate, PNL и др.\n"
         "  • 🤖 Оценка сделки — AI-оценка выбранной сделки\n"
         "  • 🧠 AI-анализ — анализ торговли\n\n"
-        "⚡ Синхронизация через WebSocket — позиции обновляются мгновенно.\n\n"
+        "🔄 Синхронизация каждые 15 секунд.\n\n"
         "📌 *Команды:*\n"
         "/start — главное меню\n"
-        "/sync — статус синхронизации\n"
+        "/sync — ручная синхронизация\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
@@ -873,24 +870,25 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = ai_analyzer.analyze_raw(prompt)
     await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}", parse_mode='Markdown')
 
-# ── WebSocket синхронизация ──
+# ── Автосинхронизация (polling раз в 15 секунд) ──
 async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
-    """Запуск WebSocket-синхронизации (вызывается один раз при старте)"""
     if not CHAT_ID:
-        logger.warning("TELEGRAM_CHAT_ID не задан")
+        logger.warning("TELEGRAM_CHAT_ID не задан, авто-синхронизация пропущена")
         return
-    api_key = os.getenv('BINGX_API_KEY')
-    secret_key = os.getenv('BINGX_SECRET_KEY')
-    if not api_key or not secret_key:
-        logger.error("BINGX_API_KEY или BINGX_SECRET_KEY не заданы")
-        return
-
-    application = context.application
-    application.create_task(
-        ws_sync_loop(context.bot, CHAT_ID, api_key, secret_key),
-        name="ws_sync_loop"
-    )
-    logger.info("WebSocket-синхронизация запущена")
+    try:
+        results = await sync_trades(context.bot, CHAT_ID)
+        new_closed = len(results.get('new_closed', []))
+        if new_closed > 0:
+            last_trades = db.get_closed_trades(limit=3)
+            if len(last_trades) >= 3 and all(t['realized_pnl'] < 0 for t in last_trades):
+                alert = (
+                    "⚠️ *Обнаружена серия из 3 убыточных сделок!*\n"
+                    "Рекомендую сделать паузу и проанализировать причины.\n"
+                    "Используйте /ai_fix для AI-разбора."
+                )
+                await context.bot.send_message(chat_id=CHAT_ID, text=alert, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Ошибка авто-синхронизации: {e}")
 
 # ── Закреплённое сообщение со статусом ──
 async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE):
@@ -944,7 +942,11 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE):
 
 # ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ WebSocket-синхронизация активна. Позиции обновляются мгновенно.")
+    msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
+    results = await sync_trades(context.bot, update.effective_chat.id)
+    new_open = len(results.get('new_open', []))
+    new_closed = len(results.get('new_closed', []))
+    await msg.edit_text(f"✅ Синхронизация завершена!\n\n🆕 Новых позиций: {new_open}\n🔒 Закрыто позиций: {new_closed}")
 
 # ─── Запуск ───────────────────────────────────────────────────────────────────
 
@@ -960,10 +962,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    app.job_queue.run_once(auto_sync_job, when=timedelta(seconds=3))
+    # Синхронизация каждые 15 секунд
+    app.job_queue.run_repeating(auto_sync_job, interval=15, first=10)
     app.job_queue.run_repeating(update_pinned_status, interval=300, first=30)
 
-    logger.info("Бот запущен с WebSocket-синхронизацией!")
+    logger.info("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
