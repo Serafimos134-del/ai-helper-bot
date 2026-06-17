@@ -61,10 +61,10 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 await _notify_new_trade(bot, chat_id, trade)
 
         # Закрытые позиции – те, что остались в stored_by_id
-        for stored in stored_by_id.values():
+        for oid, stored in stored_by_id.items():
             closed_trade = _build_closed_trade(stored)
             db.add_closed_trade(closed_trade)
-            db.delete_open_trade(stored['symbol'])
+            db.delete_open_trade_by_order_id(oid)          # <-- исправлено
             last_id = db.get_last_closed_id()
             results['new_closed'].append(stored)
             await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
