@@ -523,7 +523,7 @@ async def show_help(update: Update):
         "📌 *Команды:*\n"
         "/start — главное меню\n"
         "/sync — ручная синхронизация\n"
-        "/ai_fix — AI-разбор серии убыточных сделок"
+        "/ai\\_fix — AI-разбор серии убыточных сделок"  # ← экранирован символ _
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
