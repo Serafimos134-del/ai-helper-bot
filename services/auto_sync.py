@@ -72,7 +72,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
             await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
             asyncio.ensure_future(_auto_ai_review(last_id, closed_trade))
 
-    # --- История закрытых ордеров (все, включая нулевые) ---
+    # --- История закрытых ордеров (с фильтром нулевых сделок) ---
     closed_result = get_closed_orders(limit=50)
     if closed_result.get('success'):
         stored_closed = db.get_closed_trades(limit=1000)
@@ -80,6 +80,10 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for order in closed_result.get('trades', []):
             oid = str(order.get('orderId'))
             if oid not in stored_closed_ids:
+                # Фильтр: пропускаем сделки с нулевой ценой и нулевым PNL
+                if float(order.get('avgPrice', 0)) == 0 and float(order.get('profit', 0)) == 0:
+                    continue
+
                 raw_side = order.get('side', 'BUY')
                 side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
                 open_time = order.get('time')
