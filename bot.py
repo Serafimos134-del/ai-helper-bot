@@ -58,6 +58,15 @@ BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
 BTN_AI_LEARN = "📊 Анализ журнала"
 
+# Список всех навигационных кнопок (для защиты от сохранения как комментариев)
+NAV_BUTTONS = {
+    BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
+    BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_EVALUATION, BTN_AI_ANALYSIS,
+    BTN_BACK, BTN_CANCEL,
+    BTN_AI_OPEN_ANALYSIS, BTN_AI_ASK, BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
+    "🏠 *Главное меню*\nВыбери раздел:"
+}
+
 # ─── Клавиатуры ──────────────────────────────────────────────────────────────
 
 def main_menu_keyboard():
@@ -158,6 +167,8 @@ async def show_last_trades(update: Update):
     if closed_trades:
         lines.append("\n✅ *Последние закрытые (нажми для деталей):*")
         for t in reversed(closed_trades):
+            if float(t.get('entry_price', 0)) == 0 and float(t.get('realized_pnl', 0)) == 0:
+                continue  # пропускаем нулевые сделки
             pnl = float(t.get('realized_pnl', 0))
             if pnl > 0:
                 emoji = "✅"
@@ -387,6 +398,13 @@ async def show_journal(update: Update):
 
     await msg.delete()
 
+    # Фильтруем нулевые сделки перед отображением
+    trades = [t for t in trades if not (float(t.get('entry_price', 0)) == 0 and float(t.get('realized_pnl', 0)) == 0)]
+
+    if not trades:
+        await update.message.reply_text("Нет реальных сделок для отображения.")
+        return
+
     chunk_size = 15
     chunks = [trades[i:i+chunk_size] for i in range(0, len(trades), chunk_size)]
 
@@ -484,6 +502,8 @@ async def show_trades_for_evaluation(update: Update):
         return
     keyboard = []
     for t in reversed(trades):
+        if float(t.get('entry_price', 0)) == 0 and float(t.get('realized_pnl', 0)) == 0:
+            continue
         label = f"{t['symbol']} {t['side']} PNL: {t['realized_pnl']:.2f}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"eval_{t['id']}")])
     await update.message.reply_text(
@@ -523,11 +543,11 @@ async def show_help(update: Update):
         "📌 *Команды:*\n"
         "/start — главное меню\n"
         "/sync — ручная синхронизация\n"
-        "/ai\\_fix — AI-разбор серии убыточных сделок"  # ← экранирован символ _
+        "/ai\\_fix — AI-разбор серии убыточных сделок"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
-# ── Обработчик inline-кнопок (расширен) ──
+# ── Обработчик inline-кнопок (исправлен) ──
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -573,7 +593,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(data.split("_")[1])
         await generate_ai_review(query, trade_id)
     elif data.startswith("entry_reason_"):
-        # Новое: запрос причины входа
+        # Обработчик кнопки "Комментарий" из уведомления о новой сделке
         order_id = data.split("_", 2)[2]
         context.user_data['entry_order_id'] = order_id
         context.user_data['state'] = 'entering_entry_reason'
@@ -625,6 +645,15 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
+    # Защита: если пользователь ввёл текст навигационной кнопки, не сохраняем его как комментарий
+    if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
+        if text in NAV_BUTTONS or text.startswith("🏠 *"):
+            await update.message.reply_text(
+                "⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.",
+                reply_markup=cancel_keyboard()
+            )
+            return
+
     if state == 'entering_comment_inline':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -656,7 +685,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('comment_order_id', None)
         return
 
-    # ── Новое состояние: причина входа ──
+    # ── Состояние: причина входа ──
     if state == 'entering_entry_reason':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
