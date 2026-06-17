@@ -136,7 +136,8 @@ class Database:
 
     @staticmethod
     def update_open_trade_by_order_id(order_id: str, **kwargs):
-        allowed = ['entry_comment']
+        allowed = ['entry_comment', 'unrealized_pnl', 'leverage', 'quantity', 'entry_price',
+                   'stop_loss', 'take_profit']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
@@ -151,6 +152,13 @@ class Database:
     def delete_open_trade(symbol: str):
         conn = _get_conn()
         conn.execute("DELETE FROM open_trades WHERE symbol=?", (symbol,))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def delete_open_trade_by_order_id(order_id: str):
+        conn = _get_conn()
+        conn.execute("DELETE FROM open_trades WHERE orderId=?", (order_id,))
         conn.commit()
         conn.close()
 
