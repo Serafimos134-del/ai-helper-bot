@@ -14,6 +14,7 @@ def init_db():
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS open_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            orderId TEXT,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
             entry_price REAL NOT NULL,
@@ -56,9 +57,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
     """)
-    # Автоматическое добавление новых столбцов для существующих баз
     for table, cols in {
         'open_trades': [
+            ('orderId', 'TEXT'),
             ('stop_loss', 'REAL'),
             ('take_profit', 'REAL'),
             ('entry_comment', "TEXT DEFAULT ''")
@@ -105,10 +106,11 @@ class Database:
     def add_open_trade(trade: dict):
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO open_trades (symbol, side, entry_price, quantity, leverage,
+            INSERT INTO open_trades (orderId, symbol, side, entry_price, quantity, leverage,
                                     unrealized_pnl, stop_loss, take_profit, entry_comment)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            trade.get('orderId'),
             trade['symbol'], trade['side'], trade['entry_price'],
             trade['quantity'], trade.get('leverage', 1),
             trade.get('unrealized_pnl', 0),
@@ -129,6 +131,19 @@ class Database:
         values = list(updates.values()) + [symbol]
         conn = _get_conn()
         conn.execute(f"UPDATE open_trades SET {set_clause} WHERE symbol=?", values)
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def update_open_trade_by_order_id(order_id: str, **kwargs):
+        allowed = ['entry_comment']
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        values = list(updates.values()) + [order_id]
+        conn = _get_conn()
+        conn.execute(f"UPDATE open_trades SET {set_clause} WHERE orderId=?", values)
         conn.commit()
         conn.close()
 
