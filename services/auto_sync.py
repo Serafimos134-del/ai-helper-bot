@@ -114,10 +114,11 @@ async def _notify_new_trade(bot, chat_id: str, trade: dict):
             f"💵 Цена входа: ${entry:.4f}\n"
             f"📦 Размер: {size}\n"
             f"⚡️ Плечо: {leverage}x\n\n"
-            f"*Напишите причину входа:*"
+            f"*Напишите причину входа или нажмите «Пропустить»:*"
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Написать причину", callback_data=f"entry_reason_{trade.get('orderId')}")]
+            [InlineKeyboardButton("✏️ Комментарий", callback_data=f"entry_reason_{trade.get('orderId')}"),
+             InlineKeyboardButton("⏭ Пропустить", callback_data="skip_entry_reason")]
         ])
         await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
     except Exception as e:
@@ -129,11 +130,26 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
         symbol = trade.get('symbol', '?')
         side = trade.get('side', '?')
         pnl_emoji = "✅" if pnl >= 0 else "❌"
+
+        # Попытка вычислить процент PNL (приблизительно)
+        pnl_pct_str = ""
+        try:
+            entry_price = float(trade.get('entryPrice', 0))
+            quantity = float(trade.get('size', trade.get('quantity', 1)))
+            leverage = float(trade.get('leverage', 1))
+            if entry_price > 0 and quantity > 0:
+                margin = (entry_price * quantity) / leverage
+                if margin != 0:
+                    pnl_pct = (pnl / margin) * 100
+                    pnl_pct_str = f"\n📈 PNL: {pnl_pct:+.1f}%"
+        except Exception:
+            pass
+
         text = (
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
-            f"💰 PNL: ${pnl:+.2f}\n\n"
-            f"*Что сделаете?*"
+            f"💰 PNL: ${pnl:+.2f}{pnl_pct_str}\n\n"
+            f"*Добавьте вывод или получите AI-оценку:*"
         )
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Добавить вывод", callback_data=f"exit_reason_{trade_id}"),
