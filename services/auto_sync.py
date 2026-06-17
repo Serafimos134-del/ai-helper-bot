@@ -1,5 +1,6 @@
 import logging
-from services.bingx_api import get_open_positions, get_closed_orders
+from datetime import datetime, timezone
+from services.bingx_api import get_open_positions, get_closed_orders, get_ticker
 from services.database import Database
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -44,22 +45,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for stored in stored_open:
             oid = str(stored.get('orderId'))
             if oid and oid not in api_ids:
-                closed_trade = {
-                    'symbol': stored['symbol'],
-                    'side': stored['side'],
-                    'entry_price': float(stored.get('entry_price', 0)),
-                    'exit_price': _get_exit_price_for(oid, stored),
-                    'quantity': float(stored.get('quantity', 0)),
-                    'realized_pnl': float(stored.get('unrealized_pnl', 0)),
-                    'leverage': float(stored.get('leverage', 1)),
-                    'stop_loss': stored.get('stop_loss'),
-                    'take_profit': stored.get('take_profit'),
-                    'open_time': stored.get('created_at'),
-                    'close_time': None,
-                    'entry_comment': stored.get('entry_comment', ''),
-                    'exit_comment': '',
-                    'ai_review': ''
-                }
+                closed_trade = _build_closed_trade(stored)
                 db.add_closed_trade(closed_trade)
                 db.delete_open_trade(stored['symbol'])
                 last_id = db.get_last_closed_id()
@@ -77,6 +63,20 @@ async def sync_trades(bot, chat_id: str) -> dict:
             if oid not in stored_closed_ids and profit != 0:      # <-- игнорируем нулевые сделки
                 raw_side = order.get('side', 'BUY')
                 side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+                # Рассчитываем длительность и рыночные данные для ордера из истории
+                open_time = order.get('time')
+                close_time = order.get('updateTime')
+                holding_minutes = None
+                if open_time and close_time:
+                    try:
+                        # timestamp в миллисекундах
+                        diff = (close_time - open_time) / 1000 / 60
+                        holding_minutes = int(diff)
+                    except Exception:
+                        pass
+
+                btc_price, eth_price, market_trend = _get_market_data()
+
                 db.add_closed_trade({
                     'symbol': order.get('symbol'),
                     'side': side,
@@ -90,13 +90,89 @@ async def sync_trades(bot, chat_id: str) -> dict:
                     'take_profit': None,
                     'risk_percent': 0,
                     'risk_reward': None,
-                    'open_time': order.get('time'),
-                    'close_time': order.get('updateTime'),
+                    'open_time': open_time,
+                    'close_time': close_time,
                     'entry_comment': '',
                     'exit_comment': '',
-                    'ai_review': ''
+                    'ai_review': '',
+                    'holding_minutes': holding_minutes,
+                    'btc_price': btc_price,
+                    'eth_price': eth_price,
+                    'market_trend': market_trend,
+                    'setup_type': None,
+                    'mistakes': None,
+                    'ai_score': None
                 })
     return results
+
+
+def _build_closed_trade(stored_open: dict) -> dict:
+    """Создаёт словарь закрытой сделки с автоматическим заполнением метрик."""
+    now = datetime.now(timezone.utc)
+    open_time = stored_open.get('created_at')
+    close_time = now.isoformat()
+
+    # Длительность в минутах
+    holding_minutes = None
+    if open_time:
+        try:
+            if isinstance(open_time, str):
+                open_dt = datetime.fromisoformat(open_time)
+            else:
+                open_dt = open_time
+            holding_minutes = int((now - open_dt).total_seconds() / 60)
+        except Exception:
+            pass
+
+    btc_price, eth_price, market_trend = _get_market_data()
+
+    return {
+        'symbol': stored_open['symbol'],
+        'side': stored_open['side'],
+        'entry_price': float(stored_open.get('entry_price', 0)),
+        'exit_price': float(stored_open.get('entry_price', 0)),  # заглушка, реальная цена выхода будет позже
+        'quantity': float(stored_open.get('quantity', 0)),
+        'realized_pnl': float(stored_open.get('unrealized_pnl', 0)),
+        'leverage': float(stored_open.get('leverage', 1)),
+        'stop_loss': stored_open.get('stop_loss'),
+        'take_profit': stored_open.get('take_profit'),
+        'open_time': open_time,
+        'close_time': close_time,
+        'entry_comment': stored_open.get('entry_comment', ''),
+        'exit_comment': '',
+        'ai_review': '',
+        'holding_minutes': holding_minutes,
+        'btc_price': btc_price,
+        'eth_price': eth_price,
+        'market_trend': market_trend,
+        'setup_type': None,
+        'mistakes': None,
+        'ai_score': None
+    }
+
+
+def _get_market_data() -> tuple:
+    """Получает текущие цены BTC, ETH и определяет тренд по BTC."""
+    btc_price = None
+    eth_price = None
+    market_trend = None
+    try:
+        btc_ticker = get_ticker("BTC-USDT")
+        eth_ticker = get_ticker("ETH-USDT")
+        if btc_ticker.get('success'):
+            btc_price = float(btc_ticker['ticker'].get('lastPrice', 0))
+            change = float(btc_ticker['ticker'].get('priceChangePercent', 0))
+            if change > 1:
+                market_trend = "BULLISH"
+            elif change < -1:
+                market_trend = "BEARISH"
+            else:
+                market_trend = "SIDEWAYS"
+        if eth_ticker.get('success'):
+            eth_price = float(eth_ticker['ticker'].get('lastPrice', 0))
+    except Exception as e:
+        logger.error(f"Ошибка получения рыночных данных: {e}")
+    return btc_price, eth_price, market_trend
 
 
 async def _notify_new_trade(bot, chat_id: str, trade: dict):
@@ -149,12 +225,13 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
             f"💰 PNL: ${pnl:+.2f}{pnl_pct_str}\n\n"
-            f"*Добавьте вывод или получите AI-оценку:*"
+            f"*Добавьте вывод, выберите сетап или получите AI-оценку:*"
         )
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Добавить вывод", callback_data=f"exit_reason_{trade_id}"),
              InlineKeyboardButton("🤖 AI-оценка", callback_data=f"ai_review_{trade_id}")],
-            [InlineKeyboardButton("⏭ Пропустить", callback_data="skip_comment")]
+            [InlineKeyboardButton("📊 Сетап", callback_data=f"setup_{trade_id}"),
+             InlineKeyboardButton("⏭ Пропустить", callback_data="skip_comment")]
         ])
         await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
     except Exception as e:
