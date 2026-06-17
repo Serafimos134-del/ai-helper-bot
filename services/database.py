@@ -164,7 +164,6 @@ class Database:
 
     @staticmethod
     def cleanup_orphan_open_trades():
-        """Удалить все открытые позиции без orderId (устаревшие)"""
         conn = _get_conn()
         conn.execute("DELETE FROM open_trades WHERE orderId IS NULL")
         conn.commit()
