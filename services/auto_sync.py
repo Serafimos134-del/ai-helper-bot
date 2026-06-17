@@ -145,9 +145,12 @@ def _build_closed_trade(stored_open: dict) -> dict:
         'exit_price': float(stored_open.get('entry_price', 0)),
         'quantity': float(stored_open.get('quantity', 0)),
         'realized_pnl': float(stored_open.get('unrealized_pnl', 0)),
+        'comment': '',                    # добавлено
+        'risk_percent': 0,                # добавлено
         'leverage': float(stored_open.get('leverage', 1)),
         'stop_loss': stored_open.get('stop_loss'),
         'take_profit': stored_open.get('take_profit'),
+        'risk_reward': None,              # добавлено
         'open_time': open_time,
         'close_time': close_time,
         'entry_comment': stored_open.get('entry_comment', ''),
