@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
-from services.bingx_api import get_open_positions
+from datetime import datetime, timezone, timedelta
+from services.bingx_api import get_open_positions, get_closed_orders
 from services.database import Database
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -54,8 +54,17 @@ async def sync_trades(bot, chat_id: str) -> dict:
             results['new_open'].append(trade)
             await _notify_new_trade(bot, chat_id, trade)
 
+    # Для закрытых позиций получаем историю ордеров (один раз, чтобы не дёргать API для каждой сделки)
+    closed_orders = None
+    if stored_by_id:
+        closed_result = get_closed_orders(limit=50)
+        if closed_result.get('success'):
+            closed_orders = closed_result.get('trades', [])
+
     for oid, stored in stored_by_id.items():
-        closed_trade = _build_closed_trade(stored)
+        # Пытаемся найти реальную цену выхода
+        exit_price = await _find_exit_price(stored, closed_orders)
+        closed_trade = _build_closed_trade(stored, exit_price)
         db.add_closed_trade(closed_trade)
         db.delete_open_trade_by_order_id(oid)
         last_id = db.get_last_closed_id()
@@ -65,7 +74,49 @@ async def sync_trades(bot, chat_id: str) -> dict:
     return results
 
 
-def _build_closed_trade(stored_open: dict) -> dict:
+async def _find_exit_price(stored: dict, closed_orders: list) -> float:
+    """Ищет реальную цену выхода в истории ордеров BingX."""
+    if not closed_orders:
+        return float(stored.get('entry_price', 0))
+
+    symbol = stored.get('symbol', '')
+    side = stored.get('side', '')
+    close_time = datetime.now(timezone.utc)
+    open_time_str = stored.get('created_at')
+
+    try:
+        if open_time_str:
+            open_time = datetime.fromisoformat(open_time_str) if isinstance(open_time_str, str) else open_time_str
+        else:
+            open_time = close_time - timedelta(hours=1)
+    except Exception:
+        open_time = close_time - timedelta(hours=1)
+
+    best_match = None
+    for order in closed_orders:
+        if order.get('symbol') != symbol:
+            continue
+        if order.get('side', '').upper() != side.upper():
+            continue
+        # Закрывающий ордер должен быть после открытия
+        update_time = order.get('updateTime')
+        if update_time:
+            try:
+                # updateTime в миллисекундах
+                order_time = datetime.fromtimestamp(update_time / 1000, tz=timezone.utc)
+                if order_time >= open_time:
+                    if best_match is None or order_time > best_match[0]:
+                        best_match = (order_time, order)
+            except Exception:
+                pass
+
+    if best_match:
+        return float(best_match[1].get('avgPrice', 0))
+
+    return float(stored.get('entry_price', 0))
+
+
+def _build_closed_trade(stored_open: dict, exit_price: float) -> dict:
     now = datetime.now(timezone.utc)
     open_time = stored_open.get('created_at')
     close_time = now.isoformat()
@@ -81,7 +132,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
         'symbol': stored_open['symbol'],
         'side': stored_open['side'],
         'entry_price': float(stored_open.get('entry_price', 0)),
-        'exit_price': float(stored_open.get('entry_price', 0)),
+        'exit_price': exit_price,
         'quantity': float(stored_open.get('quantity', 0)),
         'realized_pnl': float(stored_open.get('unrealized_pnl', 0)),
         'comment': '',
@@ -105,6 +156,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
     }
 
 
+# ─── Уведомления остаются без изменений ─────────────────────────────────────
 async def _notify_new_trade(bot, chat_id: str, trade: dict):
     try:
         symbol = trade.get('symbol', '?')
