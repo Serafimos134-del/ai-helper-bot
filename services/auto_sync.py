@@ -26,10 +26,10 @@ async def sync_trades(bot, chat_id: str) -> dict:
         for trade in api_trades:
             oid = str(trade.get('orderId'))
             if oid not in stored_by_id:
-                # Приводим side к LONG/SHORT
                 raw_side = trade.get('side', '')
                 side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
                 db.add_open_trade({
+                    'orderId': trade.get('orderId'),          # <-- обязательно
                     'symbol': trade.get('symbol'),
                     'side': side,
                     'entry_price': float(trade.get('entryPrice', 0)),
