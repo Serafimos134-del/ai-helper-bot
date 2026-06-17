@@ -1,12 +1,15 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 from services.bingx_api import get_open_positions, get_closed_orders, get_ticker
 from services.database import Database
+from services.ai_trading import AITradingAnalyzer
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
+ai_analyzer = AITradingAnalyzer()
 
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
@@ -51,6 +54,8 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 last_id = db.get_last_closed_id()
                 results['new_closed'].append(stored)
                 await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
+                # Автоматический AI-анализ после закрытия
+                asyncio.ensure_future(_auto_ai_review(last_id, closed_trade))
 
     # --- История закрытых ордеров (только с реальным PNL) ---
     closed_result = get_closed_orders(limit=50)
@@ -175,6 +180,26 @@ def _get_market_data() -> tuple:
     return btc_price, eth_price, market_trend
 
 
+async def _auto_ai_review(trade_id: int, closed_trade: dict):
+    """Автоматически запрашивает AI-оценку и сохраняет в базу."""
+    try:
+        prompt = (
+            f"Дай краткую оценку сделке (2-3 предложения): что хорошо, что плохо, оценка от 1 до 10.\n"
+            f"Символ: {closed_trade['symbol']}, сторона: {closed_trade['side']}, "
+            f"вход: {closed_trade['entry_price']}, выход: {closed_trade['exit_price']}, "
+            f"плечо: {closed_trade.get('leverage', 1)}, PNL: {closed_trade['realized_pnl']:.2f}.\n"
+            f"Причина входа: {closed_trade.get('entry_comment', 'не указана')}."
+        )
+        review = ai_analyzer.analyze_raw(prompt)
+        # Пытаемся извлечь числовую оценку (например, "Оценка: 7/10")
+        import re
+        match = re.search(r'(\d+)\s*/\s*10', review)
+        ai_score = int(match.group(1)) if match else None
+        db.update_trade_metrics(trade_id, ai_review=review, ai_score=ai_score)
+    except Exception as e:
+        logger.error(f"Ошибка автоматической AI-оценки для сделки {trade_id}: {e}")
+
+
 async def _notify_new_trade(bot, chat_id: str, trade: dict):
     try:
         symbol = trade.get('symbol', '?')
@@ -225,13 +250,13 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
             f"💰 PNL: ${pnl:+.2f}{pnl_pct_str}\n\n"
-            f"*Добавьте вывод, выберите сетап или получите AI-оценку:*"
+            f"*AI-оценка будет готова через несколько секунд.*\n"
+            f"*Добавьте вывод или выберите сетап:*"
         )
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Добавить вывод", callback_data=f"exit_reason_{trade_id}"),
-             InlineKeyboardButton("🤖 AI-оценка", callback_data=f"ai_review_{trade_id}")],
-            [InlineKeyboardButton("📊 Сетап", callback_data=f"setup_{trade_id}"),
-             InlineKeyboardButton("⏭ Пропустить", callback_data="skip_comment")]
+             InlineKeyboardButton("📊 Сетап", callback_data=f"setup_{trade_id}")],
+            [InlineKeyboardButton("⏭ Пропустить", callback_data="skip_comment")]
         ])
         await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
     except Exception as e:
