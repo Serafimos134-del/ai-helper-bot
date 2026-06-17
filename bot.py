@@ -414,6 +414,13 @@ async def show_journal(update: Update):
             entry_comment = t.get('entry_comment', '—')
             exit_comment = t.get('exit_comment', t.get('comment', '—'))
             ai_review = t.get('ai_review', '')
+            holding = t.get('holding_minutes')
+            if holding is not None:
+                duration_str = f"{holding} мин"
+            else:
+                duration_str = "—"
+            market_trend = t.get('market_trend', '—')
+            setup = t.get('setup_type', '—')
 
             line = (
                 f"{emoji} *{symbol}* {side}\n"
@@ -421,6 +428,9 @@ async def show_journal(update: Update):
                 f"   Объём: {volume} | Плечо: {leverage}x\n"
                 f"   Стоп: {stop} | Тейк: {take}\n"
                 f"   PNL: ${pnl:.2f}\n"
+                f"   Длительность: {duration_str}\n"
+                f"   Тренд рынка: {market_trend}\n"
+                f"   Сетап: {setup}\n"
                 f"   Открыта: {open_time}\n"
                 f"   Закрыта: {close_time}\n"
                 f"   Причина входа: {entry_comment}\n"
@@ -499,6 +509,7 @@ async def generate_ai_review(query, trade_id):
         f"Причина входа: {trade.get('entry_comment', 'не указана')}."
     )
     review = ai_analyzer.analyze_raw(prompt)
+    # Сохраняем оценку и пытаемся вытащить числовую оценку для ai_score (просто сохраняем текст в ai_review)
     db.update_trade_metrics(trade_id, ai_review=review)
     await query.edit_message_text(f"🤖 *AI-оценка сделки #{trade_id}:*\n\n{review}", parse_mode='Markdown')
 
@@ -539,6 +550,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(data.split("_")[1])
         trade = db.find_trade_by_id(trade_id)
         if trade:
+            holding = trade.get('holding_minutes')
+            duration_str = f"{holding} мин" if holding is not None else "—"
             detail_text = (
                 f"📊 *Детали сделки #{trade_id}*\n\n"
                 f"Символ: {trade['symbol']}\n"
@@ -547,7 +560,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Выход: ${trade['exit_price']:.4f}\n"
                 f"Объём: {trade['quantity']}\n"
                 f"Плечо: {trade.get('leverage', 1)}x\n"
+                f"Длительность: {duration_str}\n"
                 f"PNL: ${trade['realized_pnl']:.2f}\n"
+                f"Тренд рынка: {trade.get('market_trend', '—')}\n"
+                f"Сетап: {trade.get('setup_type', '—')}\n"
                 f"Комментарий: {trade.get('exit_comment') or trade.get('comment', '—')}\n"
                 f"Закрыта: {trade.get('close_time') or trade.get('closed_at', '—')}"
             )
@@ -575,6 +591,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await generate_ai_review(query, trade_id)
     elif data == "skip_comment":
         await query.edit_message_text("Запись сохранена без комментария.")
+    elif data == "skip_entry_reason":
+        await query.edit_message_text("Причина входа пропущена.")
+    elif data.startswith("setup_"):
+        trade_id = int(data.split("_")[1])
+        context.user_data['setup_trade_id'] = trade_id
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Liquidity Sweep", callback_data=f"set_setup_{trade_id}_LiquiditySweep")],
+            [InlineKeyboardButton("FVG", callback_data=f"set_setup_{trade_id}_FVG")],
+            [InlineKeyboardButton("BOS", callback_data=f"set_setup_{trade_id}_BOS")],
+            [InlineKeyboardButton("CHOCH", callback_data=f"set_setup_{trade_id}_CHOCH")],
+            [InlineKeyboardButton("Retest", callback_data=f"set_setup_{trade_id}_Retest")],
+            [InlineKeyboardButton("Breakout", callback_data=f"set_setup_{trade_id}_Breakout")],
+            [InlineKeyboardButton("Scalp", callback_data=f"set_setup_{trade_id}_Scalp")],
+            [InlineKeyboardButton("Other", callback_data=f"set_setup_{trade_id}_Other")],
+            [InlineKeyboardButton("🔙 Отмена", callback_data="cancel_setup")]
+        ])
+        await query.edit_message_text("📊 *Выберите сетап сделки:*", parse_mode='Markdown', reply_markup=keyboard)
+    elif data.startswith("set_setup_"):
+        parts = data.split("_")
+        trade_id = int(parts[2])
+        setup = parts[3]
+        db.update_trade_metrics(trade_id, setup_type=setup)
+        await query.edit_message_text(f"✅ Сетап сохранён: {setup}")
+    elif data == "cancel_setup":
+        await query.edit_message_text("Выбор сетапа отменён.")
 
 # ── Главный обработчик сообщений (меню и состояния) ──
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
