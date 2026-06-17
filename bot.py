@@ -45,7 +45,7 @@ BTN_HELP = "ℹ️ Help"
 BTN_BALANCE = "💰 Баланс"
 BTN_LAST_TRADES = "📋 Последние сделки"
 BTN_STATS = "📊 Статистика"
-BTN_AI_EVALUATION = "🤖 Оценка сделки"       # вместо "Комментарий"
+BTN_AI_EVALUATION = "🤖 Оценка сделки"
 BTN_AI_ANALYSIS = "🧠 AI-анализ"
 
 BTN_BACK = "🔙 Назад"
@@ -377,15 +377,14 @@ async def analyze_open_position(update: Update, position: dict):
         reply_markup=ai_menu_keyboard()
     )
 
-# ── Журнал сделок (до 500 записей, разбивка на части по 15) ──
+# ── Журнал сделок ──
 async def show_journal(update: Update):
     msg = await update.message.reply_text("📓 Загружаю журнал...")
-    trades = db.get_closed_trades(limit=500)     # <-- лимит 500
+    trades = db.get_closed_trades(limit=500)
     if not trades:
         await msg.edit_text("Нет закрытых сделок для журнала.")
         return
 
-    # Удаляем сообщение "Загружаю журнал..."
     await msg.delete()
 
     chunk_size = 15
@@ -415,10 +414,7 @@ async def show_journal(update: Update):
             exit_comment = t.get('exit_comment', t.get('comment', '—'))
             ai_review = t.get('ai_review', '')
             holding = t.get('holding_minutes')
-            if holding is not None:
-                duration_str = f"{holding} мин"
-            else:
-                duration_str = "—"
+            duration_str = f"{holding} мин" if holding is not None else "—"
             market_trend = t.get('market_trend', '—')
             setup = t.get('setup_type', '—')
 
@@ -480,7 +476,7 @@ async def show_journal_analysis(update: Update):
     await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}", parse_mode='Markdown')
 
 
-# ── Новая функция: выбор сделки для AI-оценки ──
+# ── Выбор сделки для AI-оценки ──
 async def show_trades_for_evaluation(update: Update):
     trades = db.get_closed_trades(limit=15)
     if not trades:
@@ -509,7 +505,7 @@ async def generate_ai_review(query, trade_id):
         f"Причина входа: {trade.get('entry_comment', 'не указана')}."
     )
     review = ai_analyzer.analyze_raw(prompt)
-    # Сохраняем оценку и пытаемся вытащить числовую оценку для ai_score (просто сохраняем текст в ai_review)
+    # Сохраняем только ai_review, ai_score обновится позже в _auto_ai_review
     db.update_trade_metrics(trade_id, ai_review=review)
     await query.edit_message_text(f"🤖 *AI-оценка сделки #{trade_id}:*\n\n{review}", parse_mode='Markdown')
 
@@ -577,7 +573,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(data.split("_")[1])
         await generate_ai_review(query, trade_id)
     elif data.startswith("entry_reason_"):
-        await query.edit_message_text("Функция в разработке.")
+        # Новое: запрос причины входа
+        order_id = data.split("_", 2)[2]
+        context.user_data['entry_order_id'] = order_id
+        context.user_data['state'] = 'entering_entry_reason'
+        await query.edit_message_text(
+            "✏️ Напишите причину входа:",
+            reply_markup=cancel_keyboard()
+        )
+    elif data == "skip_entry_reason":
+        await query.edit_message_text("Причина входа пропущена.")
     elif data.startswith("exit_reason_"):
         trade_id = int(data.split("_")[2])
         context.user_data['comment_order_id'] = trade_id
@@ -591,8 +596,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await generate_ai_review(query, trade_id)
     elif data == "skip_comment":
         await query.edit_message_text("Запись сохранена без комментария.")
-    elif data == "skip_entry_reason":
-        await query.edit_message_text("Причина входа пропущена.")
     elif data.startswith("setup_"):
         trade_id = int(data.split("_")[1])
         context.user_data['setup_trade_id'] = trade_id
@@ -651,6 +654,19 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Вывод сохранён.", reply_markup=trading_menu_keyboard())
         context.user_data['state'] = None
         context.user_data.pop('comment_order_id', None)
+        return
+
+    # ── Новое состояние: причина входа ──
+    if state == 'entering_entry_reason':
+        if text == BTN_CANCEL:
+            context.user_data['state'] = None
+            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
+            return
+        order_id = context.user_data.get('entry_order_id')
+        if order_id:
+            db.update_open_trade_by_order_id(order_id, entry_comment=text)
+            await update.message.reply_text("✅ Причина входа сохранена.", reply_markup=trading_menu_keyboard())
+        context.user_data['state'] = None
         return
 
     if state == 'asking_ai':
