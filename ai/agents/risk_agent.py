@@ -20,28 +20,44 @@ class RiskAgent:
         portfolio = ctx.get("portfolio", {})
         history = ctx.get("history", {})
 
-        # 1. Получаем сигналы от Rule Engine
+        # Получаем сигналы от Rule Engine
         signals = RiskRuleEngine.assess(portfolio, history)
 
-        # 2. Генерируем человеческое summary через LLM
+        # Генерируем human-readable summary через LLM с улучшенным промптом
         try:
-            summary_prompt = (
-                f"Ты — строгий риск-менеджер. На основе сигналов риска дай краткий вывод (1-2 предложения) "
-                f"на русском языке, без воды.\n"
-                f"Уровень риска: {signals['risk_level']}\n"
-                f"Счёт: {signals['risk_score']}/10\n"
-                f"Предупреждения: {', '.join(signals['warnings']) if signals['warnings'] else 'нет'}\n"
-                f"Рекомендация: {signals['recommendation']}\n\n"
-                "Вывод:"
-            )
+            summary_prompt = self._build_summary_prompt(signals)
             summary = self.provider.generate(summary_prompt).strip()
         except Exception as e:
             logger.error(f"Ошибка генерации summary: {e}")
             summary = "Риск-анализ завершён. Смотри детали."
 
-        # 3. Возвращаем JSON + текстовый вывод
         result = {
             "signals": signals,
             "summary": summary
         }
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _build_summary_prompt(self, signals: dict) -> str:
+        """Улучшенный промпт в стиле ponytail: строгий, конкретный, без воды."""
+        risk_level = signals.get('risk_level', 'UNKNOWN')
+        risk_score = signals.get('risk_score', 0)
+        warnings = signals.get('warnings', [])
+        recommendation = signals.get('recommendation', '')
+
+        warnings_text = '\n'.join(f'- {w}' for w in warnings) if warnings else 'нет'
+
+        return (
+            "Ты — строгий риск-менеджер хедж-фонда. Твоя задача — дать краткий, "
+            "максимально конкретный вывод о риск-профиле портфеля на русском языке.\n\n"
+            "ПРАВИЛА:\n"
+            "1. Одна фраза — общая оценка (SAFE/MODERATE/HIGH/EXTREME) и что она значит.\n"
+            "2. Одна фраза — главная проблема (самый критичный warning). Если проблем нет, скажи, что всё в порядке.\n"
+            "3. Одна фраза — конкретное действие (что делать прямо сейчас).\n"
+            "4. Без воды, без markdown, без эмодзи, без общих фраз вроде «будьте осторожны».\n"
+            "Используй цифры из сигналов ниже.\n\n"
+            f"Уровень риска: {risk_level}\n"
+            f"Счёт: {risk_score}/10\n"
+            f"Рекомендация: {recommendation}\n"
+            f"Предупреждения:\n{warnings_text}\n\n"
+            "Вывод:"
+        )
