@@ -9,6 +9,9 @@ BINGX_API_KEY = os.getenv('BINGX_API_KEY', '')
 BINGX_SECRET_KEY = os.getenv('BINGX_SECRET_KEY', '')
 BASE_URL = 'https://open-api.bingx.com'
 
+MAX_RETRIES = 2
+RETRY_DELAY = 1  # секунды
+
 
 def _get_timestamp() -> str:
     return str(int(time.time() * 1000))
@@ -25,8 +28,21 @@ def _sign(params: dict) -> str:
     return signature
 
 
+def _request_with_retry(method: str, path: str, params: dict = None) -> dict:
+    """Выполнить подписанный запрос с повторными попытками."""
+    for attempt in range(MAX_RETRIES + 1):
+        result = _request(method, path, params)
+        if result.get('code') != -1:
+            # Успешный ответ (может быть и ошибка бизнес-логики, но не сетевая)
+            return result
+        # Сетевая ошибка – повторяем, если есть попытки
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY)
+    return result
+
+
 def _request(method: str, path: str, params: dict = None) -> dict:
-    """Выполнить подписанный запрос к BingX API."""
+    """Один подписанный запрос (без retry)."""
     if params is None:
         params = {}
 
@@ -56,10 +72,24 @@ def _request(method: str, path: str, params: dict = None) -> dict:
         return {'error': f'Invalid JSON response: {e}', 'code': -1}
 
 
+def _public_request_with_retry(url: str, params: dict = None) -> dict:
+    """Публичный GET-запрос с повторными попытками."""
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+            else:
+                return {'error': str(e), 'code': -1}
+
+
 def get_balance() -> dict:
     """Получить баланс аккаунта (Perpetual Futures)."""
     path = '/openApi/swap/v2/user/balance'
-    result = _request('GET', path)
+    result = _request_with_retry('GET', path)
 
     if result.get('code') == 0:
         data = result.get('data', {})
@@ -83,7 +113,7 @@ def get_balance() -> dict:
 def get_open_positions() -> dict:
     """Получить открытые позиции."""
     path = '/openApi/swap/v2/user/positions'
-    result = _request('GET', path)
+    result = _request_with_retry('GET', path)
 
     if result.get('code') == 0:
         positions = result.get('data', [])
@@ -118,7 +148,7 @@ def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
     if symbol:
         params['symbol'] = symbol
 
-    result = _request('GET', path, params)
+    result = _request_with_retry('GET', path, params)
 
     if result.get('code') == 0:
         orders = result.get('data', {}).get('orders', [])
@@ -148,23 +178,20 @@ def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
 def get_top_tickers(limit: int = 10) -> dict:
     """Публичные данные по топ парам (без подписи)."""
     url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+    data = _public_request_with_retry(url)
+
+    if isinstance(data, dict) and data.get('code') == 0:
         tickers = data.get('data', [])
         if not isinstance(tickers, list):
             return {'success': False, 'error': 'Unexpected format', 'tickers': []}
-
-        # Сортируем по объёму за 24ч (убывание)
         sorted_tickers = sorted(
             tickers,
             key=lambda x: float(x.get('quoteVolume', 0)),
             reverse=True
         )
         return {'success': True, 'tickers': sorted_tickers[:limit]}
-    except Exception as e:
-        return {'success': False, 'error': str(e), 'tickers': []}
+    else:
+        return {'success': False, 'error': data.get('error', 'Unknown error'), 'tickers': []}
 
 
 def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -> dict:
@@ -175,29 +202,27 @@ def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -
         'interval': interval,
         'limit': limit
     }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+    data = _public_request_with_retry(url, params)
+
+    if isinstance(data, dict) and data.get('code') == 0:
         klines = data.get('data', [])
         if not isinstance(klines, list):
             return {'success': False, 'error': 'Unexpected format', 'klines': []}
         return {'success': True, 'klines': klines}
-    except Exception as e:
-        return {'success': False, 'error': str(e), 'klines': []}
+    else:
+        return {'success': False, 'error': data.get('error', 'Unknown error'), 'klines': []}
 
 
 def get_ticker(symbol: str) -> dict:
     """Публичные данные по одному символу (без подписи)."""
     url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
     params = {'symbol': symbol}
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+    data = _public_request_with_retry(url, params)
+
+    if isinstance(data, dict) and data.get('code') == 0:
         tickers = data.get('data', [])
         if not isinstance(tickers, list) or not tickers:
             return {'success': False, 'error': 'Symbol not found', 'ticker': {}}
         return {'success': True, 'ticker': tickers[0]}
-    except Exception as e:
-        return {'success': False, 'error': str(e), 'ticker': {}}
+    else:
+        return {'success': False, 'error': data.get('error', 'Unknown error'), 'ticker': {}}
