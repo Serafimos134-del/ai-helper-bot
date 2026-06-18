@@ -1,7 +1,7 @@
 import os
 import json
 from dotenv import load_dotenv
-from groq import Groq
+from ai.providers.groq_provider import GroqProvider
 
 from services.database import Database
 
@@ -12,11 +12,10 @@ class AITradingAnalyzer:
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         if self.api_key:
-            self.client = Groq(api_key=self.api_key)
-            self.model = "llama-3.3-70b-versatile"
+            self.provider = GroqProvider(self.api_key)
             print("✅ Groq AI инициализирован")
         else:
-            self.client = None
+            self.provider = None
             print("⚠️ GROQ_API_KEY не найден. AI отключён.")
 
     def analyze(self) -> str:
@@ -32,7 +31,7 @@ class AITradingAnalyzer:
                 "Торгуй больше — AI найдёт паттерны! 📈"
             )
 
-        if not self.client:
+        if not self.provider:
             return self._fallback_analysis(stats)
 
         trades_for_ai = []
@@ -65,40 +64,18 @@ class AITradingAnalyzer:
 6. 🎯 ПЛАН ДЕЙСТВИЙ (2-3 шага)"""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "Ты строгий, но полезный trading coach."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1500
-            )
-            return response.choices[0].message.content + "\n\n🤖 Анализ от Groq (Llama 3.3 70B). Не финансовая рекомендация."
+            response = self.provider.generate(prompt)
+            return response + "\n\n🤖 Анализ от Groq (Llama 3.3 70B). Не финансовая рекомендация."
         except Exception as e:
             print(f"❌ Ошибка Groq: {e}")
             return f"⚠️ Ошибка AI: {e}\n\n{self._fallback_analysis(stats)}"
 
     def analyze_raw(self, prompt: str) -> str:
         """Отправка произвольного промпта в Groq (для вопросов, обзора рынка, трендов и т.д.)"""
-        if not self.client:
+        if not self.provider:
             return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": (
-                        "Ты — строгий, конкретный трейдер-ментор с опытом на крипторынке. "
-                        "Отвечаешь на русском языке, коротко и по делу. "
-                        "Не используешь общие фразы и философию — только конкретику: цифры, уровни, чёткие выводы. "
-                        "Используй эмодзи, но без markdown-разметки звёздочками."
-                    )},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.5,
-                max_tokens=1200
-            )
-            return response.choices[0].message.content
+            return self.provider.generate(prompt)
         except Exception as e:
             print(f"❌ Ошибка Groq (analyze_raw): {e}")
             return f"⚠️ Ошибка AI: {e}"
