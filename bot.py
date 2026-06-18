@@ -166,8 +166,6 @@ async def show_last_trades(update: Update):
     if closed_trades:
         lines.append("\n✅ *Последние закрытые (нажми для деталей):*")
         for t in reversed(closed_trades):
-            if float(t.get('entry_price', 0)) == 0 and float(t.get('realized_pnl', 0)) == 0:
-                continue
             pnl = float(t.get('realized_pnl', 0))
             if pnl > 0:
                 emoji = "✅"
@@ -397,12 +395,6 @@ async def show_journal(update: Update):
 
     await msg.delete()
 
-    trades = [t for t in trades if not (float(t.get('entry_price', 0)) == 0 and float(t.get('realized_pnl', 0)) == 0)]
-
-    if not trades:
-        await update.message.reply_text("Нет реальных сделок для отображения.")
-        return
-
     chunk_size = 15
     chunks = [trades[i:i+chunk_size] for i in range(0, len(trades), chunk_size)]
 
@@ -500,8 +492,6 @@ async def show_trades_for_evaluation(update: Update):
         return
     keyboard = []
     for t in reversed(trades):
-        if float(t.get('entry_price', 0)) == 0 and float(t.get('realized_pnl', 0)) == 0:
-            continue
         label = f"{t['symbol']} {t['side']} PNL: {t['realized_pnl']:.2f}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"eval_{t['id']}")])
     await update.message.reply_text(
