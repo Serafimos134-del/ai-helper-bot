@@ -28,6 +28,7 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS closed_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            orderId TEXT,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
             entry_price REAL NOT NULL,
@@ -56,6 +57,7 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId);
     """)
     for table, cols in {
         'open_trades': [
@@ -65,6 +67,7 @@ def init_db():
             ('entry_comment', "TEXT DEFAULT ''")
         ],
         'closed_trades': [
+            ('orderId', 'TEXT'),
             ('risk_percent', 'REAL DEFAULT 0'),
             ('leverage', 'REAL DEFAULT 1'),
             ('stop_loss', 'REAL'),
@@ -174,12 +177,13 @@ class Database:
         conn = _get_conn()
         conn.execute("""
             INSERT OR IGNORE INTO closed_trades 
-            (symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
+            (orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
              risk_percent, leverage, stop_loss, take_profit, risk_reward,
              open_time, close_time, entry_comment, exit_comment, ai_review,
              holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            trade.get('orderId'),
             trade['symbol'], trade['side'], trade['entry_price'], trade['exit_price'],
             trade['quantity'], trade['realized_pnl'], trade.get('comment', ''),
             trade.get('risk_percent', 0), trade.get('leverage', 1),
@@ -197,10 +201,10 @@ class Database:
     @staticmethod
     def get_closed_trades(limit: int = 50, symbol: str = None):
         conn = _get_conn()
-        query = "SELECT * FROM closed_trades"
+        query = "SELECT * FROM closed_trades WHERE (entry_price != 0 OR realized_pnl != 0)"
         params = []
         if symbol:
-            query += " WHERE symbol = ?"
+            query += " AND symbol = ?"
             params.append(symbol)
         query += " ORDER BY close_time DESC LIMIT ?"
         params.append(limit)
@@ -211,7 +215,7 @@ class Database:
     @staticmethod
     def get_stats():
         conn = _get_conn()
-        total = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0]
         if total == 0:
             conn.close()
             return {
@@ -221,19 +225,19 @@ class Database:
                 'worst_trade': 0.0, 'worst_trade_symbol': '',
                 'unrealized_pnl': 0, 'open_positions': 0
             }
-        pnl_sum = conn.execute("SELECT SUM(realized_pnl) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0] or 0.0
-        wins = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl > 0").fetchone()[0]
-        losses = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl < 0").fetchone()[0]
-        avg_profit = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl > 0").fetchone()[0] or 0.0
-        avg_loss = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl < 0").fetchone()[0] or 0.0
-        best = conn.execute("SELECT MAX(realized_pnl) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0] or 0.0
-        worst = conn.execute("SELECT MIN(realized_pnl) FROM closed_trades WHERE realized_pnl != 0").fetchone()[0] or 0.0
+        pnl_sum = conn.execute("SELECT SUM(realized_pnl) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
+        wins = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl > 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0]
+        losses = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl < 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0]
+        avg_profit = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl > 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
+        avg_loss = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl < 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
+        best = conn.execute("SELECT MAX(realized_pnl) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
+        worst = conn.execute("SELECT MIN(realized_pnl) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
         best_row = conn.execute(
-            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? ORDER BY close_time DESC LIMIT 1",
+            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
             (best,)
         ).fetchone()
         worst_row = conn.execute(
-            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? ORDER BY close_time DESC LIMIT 1",
+            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
             (worst,)
         ).fetchone()
         unrealized = conn.execute("SELECT SUM(unrealized_pnl) FROM open_trades").fetchone()[0] or 0.0
