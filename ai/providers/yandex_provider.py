@@ -16,7 +16,7 @@ class YandexProvider(BaseProvider):
         self.model = "yandexgpt-lite"
         self.temperature = 0.7
         self.max_tokens = 1000
-        self.url = "https://api.ai.studio/v1/chat/completions"
+        self.url = "https://api.ai.studio.yandex.net/v1/chat/completions"
 
     def generate(self, prompt: str, context: dict = None) -> str:
         """Отправляет запрос к YandexGPT и возвращает ответ."""
