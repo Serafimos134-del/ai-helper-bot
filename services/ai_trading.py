@@ -2,6 +2,8 @@ import os
 import json
 from dotenv import load_dotenv
 from ai.providers.groq_provider import GroqProvider
+from ai.context_builder import ContextBuilder
+from ai.agents.market_agent import MarketAgent
 
 from services.database import Database
 
@@ -13,9 +15,11 @@ class AITradingAnalyzer:
         self.api_key = os.getenv("GROQ_API_KEY")
         if self.api_key:
             self.provider = GroqProvider(self.api_key)
+            self.market_agent = MarketAgent(self.provider)  # новый агент
             print("✅ Groq AI инициализирован")
         else:
             self.provider = None
+            self.market_agent = None
             print("⚠️ GROQ_API_KEY не найден. AI отключён.")
 
     def analyze(self) -> str:
@@ -78,6 +82,16 @@ class AITradingAnalyzer:
             return self.provider.generate(prompt)
         except Exception as e:
             print(f"❌ Ошибка Groq (analyze_raw): {e}")
+            return f"⚠️ Ошибка AI: {e}"
+
+    def analyze_market(self) -> str:
+        """Анализ рынка через MarketAgent + ContextBuilder."""
+        if not self.market_agent:
+            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+        try:
+            return self.market_agent.analyze()
+        except Exception as e:
+            print(f"❌ Ошибка MarketAgent: {e}")
             return f"⚠️ Ошибка AI: {e}"
 
     def _fallback_analysis(self, stats: dict = None) -> str:
