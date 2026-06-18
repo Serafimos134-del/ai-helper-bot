@@ -530,9 +530,54 @@ async def show_help(update: Update):
         "📌 *Команды:*\n"
         "/start — главное меню\n"
         "/sync — ручная синхронизация\n"
-        "/ai\\_fix — AI-разбор серии убыточных сделок"
+        "/ai\\_fix — AI-разбор серии убыточных сделок\n"
+        "/health — состояние систем"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+
+# ── Health check ──
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🩺 Проверяю здоровье систем...")
+    status = []
+
+    # 1. Database
+    try:
+        db.get_open_trades()
+        status.append("🗄 База данных: 🟢")
+    except Exception:
+        status.append("🗄 База данных: 🔴")
+
+    # 2. BingX API
+    try:
+        balance = get_balance()
+        if balance.get('success'):
+            status.append("📡 BingX API: 🟢")
+        else:
+            status.append(f"📡 BingX API: 🔴 ({balance.get('error', 'ошибка')})")
+    except Exception as e:
+        status.append(f"📡 BingX API: 🔴 ({e})")
+
+    # 3. Groq AI
+    try:
+        # Быстрый тестовый запрос
+        test = ai_analyzer.analyze_raw("ping")
+        if test:
+            status.append("🧠 Groq AI: 🟢")
+        else:
+            status.append("🧠 Groq AI: 🔴 (пустой ответ)")
+    except Exception as e:
+        status.append(f"🧠 Groq AI: 🔴 ({e})")
+
+    # 4. Proxy
+    if os.getenv('HTTP_PROXY') or os.getenv('HTTPS_PROXY'):
+        status.append("🌐 Прокси: 🟢 (настроен)")
+    else:
+        status.append("🌐 Прокси: ⚪ (не используется)")
+
+    await msg.edit_text(
+        "📊 *Health Check*\n\n" + "\n".join(status),
+        parse_mode='Markdown'
+    )
 
 # ── Обработчик inline-кнопок ──
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -952,6 +997,7 @@ def main():
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('sync', sync_command))
     app.add_handler(CommandHandler('ai_fix', ai_fix_command))
+    app.add_handler(CommandHandler('health', health_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
