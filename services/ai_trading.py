@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 from ai.providers.groq_provider import GroqProvider
 from ai.context_builder import ContextBuilder
 from ai.agents.market_agent import MarketAgent
+from ai.agents.risk_agent import RiskAgent
+from ai.agents.psychology_agent import PsychologyAgent
+from ai.agents.judge_agent import JudgeAgent
 
 from services.database import Database
 
@@ -15,11 +18,17 @@ class AITradingAnalyzer:
         self.api_key = os.getenv("GROQ_API_KEY")
         if self.api_key:
             self.provider = GroqProvider(self.api_key)
-            self.market_agent = MarketAgent(self.provider)  # новый агент
+            self.market_agent = MarketAgent(self.provider)
+            self.risk_agent = RiskAgent(self.provider)
+            self.psychology_agent = PsychologyAgent(self.provider)
+            self.judge_agent = JudgeAgent(self.provider)
             print("✅ Groq AI инициализирован")
         else:
             self.provider = None
             self.market_agent = None
+            self.risk_agent = None
+            self.psychology_agent = None
+            self.judge_agent = None
             print("⚠️ GROQ_API_KEY не найден. AI отключён.")
 
     def analyze(self) -> str:
@@ -93,6 +102,40 @@ class AITradingAnalyzer:
         except Exception as e:
             print(f"❌ Ошибка MarketAgent: {e}")
             return f"⚠️ Ошибка AI: {e}"
+
+    def analyze_risk(self) -> str:
+        """Анализ риска через RiskAgent + RuleEngine."""
+        if not self.risk_agent:
+            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+        try:
+            return self.risk_agent.analyze()
+        except Exception as e:
+            print(f"❌ Ошибка RiskAgent: {e}")
+            return f"⚠️ Ошибка AI: {e}"
+
+    def analyze_psychology(self) -> str:
+        """Анализ психологии через PsychologyAgent."""
+        if not self.psychology_agent:
+            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+        try:
+            return self.psychology_agent.analyze()
+        except Exception as e:
+            print(f"❌ Ошибка PsychologyAgent: {e}")
+            return f"⚠️ Ошибка AI: {e}"
+
+    def synthesize_agents(self) -> str:
+        """Запускает всех агентов и возвращает синтезированное решение."""
+        if not self.judge_agent:
+            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+
+        market = self.analyze_market()
+        risk = self.analyze_risk()
+        psychology = self.analyze_psychology()
+
+        if "⚠️" in market or "⚠️" in risk or "⚠️" in psychology:
+            return "⚠️ Не все агенты смогли дать заключение. Проверьте API-ключи."
+
+        return self.judge_agent.synthesize(market, risk, psychology)
 
     def _fallback_analysis(self, stats: dict = None) -> str:
         """Базовый rule-based анализ (если AI недоступен)."""
