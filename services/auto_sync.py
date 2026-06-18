@@ -3,14 +3,12 @@ import logging
 from datetime import datetime, timezone
 from services.bingx_api import get_open_positions
 from services.database import Database
-from services.ai_trading import AITradingAnalyzer
 from ai.trade_scorer import TradeScorer
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
-ai_analyzer = AITradingAnalyzer()
 trade_scorer = TradeScorer()
 
 async def sync_trades(bot, chat_id: str) -> dict:
@@ -63,14 +61,12 @@ async def sync_trades(bot, chat_id: str) -> dict:
             results['new_open'].append(trade)
             await _notify_new_trade(bot, chat_id, trade)
 
-    # Закрытые позиции
     for oid, stored in stored_by_id.items():
         closed_trade = _build_closed_trade(stored)
         db.add_closed_trade(closed_trade)
         db.delete_open_trade_by_order_id(oid)
         last_id = db.get_last_closed_id()
 
-        # Оцениваем сделку через Trade Scorer
         try:
             score = trade_scorer.score(closed_trade)
             db.update_trade_metrics(last_id, ai_score=score['total_score'])
