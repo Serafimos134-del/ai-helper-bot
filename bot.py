@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from services.bingx_api import get_balance, get_open_positions, get_closed_orders, get_top_tickers, get_kline, get_ticker
-from services.database import Database
+from services.database import Database, init_db
 from services.trading_stats import format_stats_message
 from services.comment_manager import save_comment
 from services.auto_sync import sync_trades
@@ -953,6 +953,9 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан! Проверь .env файл.")
+
+    # Инициализация базы данных (создание таблиц и миграции)
+    init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
