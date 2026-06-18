@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 class PsychologyAgent:
-    """Агент, анализирующий психологические паттерны трейдера."""
+    """Агент, анализирующий психологические паттерны трейдера (строгий стиль)."""
 
     def __init__(self, provider: BaseProvider):
         self.provider = provider
@@ -26,32 +26,28 @@ class PsychologyAgent:
         winning_streak = history.get("winning_streak", 0)
 
         trades_summary = ""
-        for t in recent_trades[:15]:
+        for t in recent_trades[:10]:
             trades_summary += (
                 f"{t.get('symbol')} {t.get('side')}: "
                 f"PNL ${t.get('pnl', 0):+.2f}, "
                 f"плечо {t.get('leverage', 1)}x, "
-                f"комментарий: {t.get('comment', 'нет')}\n"
+                f"комм.: {t.get('comment', '—')}\n"
             )
 
-        prompt = (
-            "Ты — спортивный психолог, специализирующийся на трейдинге. "
-            "Проанализируй историю сделок трейдера и выяви психологические паттерны.\n\n"
+        return (
+            "Ты — спортивный психолог, работающий с профессиональными трейдерами. "
+            "Проанализируй историю сделок и дай КРАТКУЮ, ЖЁСТКУЮ оценку психологического состояния.\n\n"
             "ПРАВИЛА:\n"
-            "1. ОЦЕНИ СОСТОЯНИЕ: CALM / NERVOUS / EMOTIONAL / REVENGE / TILT.\n"
-            "2. НАЙДИ ПАТТЕРН: повторяющиеся ошибки, импульсивные входы, нарушение риск-менеджмента.\n"
-            "3. ДАЙ СОВЕТ: одно конкретное действие для улучшения психологии.\n"
-            "Будь конкретен, ссылайся на данные из истории.\n\n"
-            "ДАННЫЕ:\n"
-            f"Всего сделок: {stats.get('total_trades', 0)}\n"
+            "1. СОСТОЯНИЕ: одно слово — CALM / NERVOUS / EMOTIONAL / REVENGE / TILT.\n"
+            "2. ПАТТЕРН: одно предложение — главная психологическая ошибка (если есть).\n"
+            "3. СОВЕТ: одно конкретное действие для исправления.\n"
+            "4. Без воды, без философии, без markdown. Только факты.\n\n"
+            f"Сделок всего: {stats.get('total_trades', 0)}\n"
             f"Win Rate: {stats.get('win_rate', 0):.1f}%\n"
-            f"Текущая серия убытков: {losing_streak}\n"
-            f"Текущая серия прибылей: {winning_streak}\n"
+            f"Серия убытков: {losing_streak}\n"
+            f"Серия прибылей: {winning_streak}\n"
             f"Средняя прибыль: ${stats.get('avg_profit', 0):.2f}\n"
-            f"Средний убыток: ${stats.get('avg_loss', 0):.2f}\n"
-            f"Лучшая сделка: ${stats.get('best_trade', 0):.2f}\n"
-            f"Худшая сделка: ${stats.get('worst_trade', 0):.2f}\n\n"
-            f"Последние сделки:\n{trades_summary}\n"
-            "Твой анализ:"
+            f"Средний убыток: ${stats.get('avg_loss', 0):.2f}\n\n"
+            f"Последние 10 сделок:\n{trades_summary}\n"
+            "Твой вердикт:"
         )
-        return prompt
