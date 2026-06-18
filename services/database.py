@@ -95,8 +95,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
-
 class Database:
     @staticmethod
     def get_open_trades():
@@ -215,7 +213,22 @@ class Database:
     @staticmethod
     def get_stats():
         conn = _get_conn()
-        total = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0]
+        # Один агрегирующий запрос вместо восьми
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS total_trades,
+                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS winning_trades,
+                SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) AS losing_trades,
+                SUM(realized_pnl) AS total_pnl,
+                AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END) AS avg_profit,
+                AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) AS avg_loss,
+                MAX(realized_pnl) AS best_trade,
+                MIN(realized_pnl) AS worst_trade
+            FROM closed_trades
+            WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)
+        """).fetchone()
+
+        total = row['total_trades'] or 0
         if total == 0:
             conn.close()
             return {
@@ -225,35 +238,33 @@ class Database:
                 'worst_trade': 0.0, 'worst_trade_symbol': '',
                 'unrealized_pnl': 0, 'open_positions': 0
             }
-        pnl_sum = conn.execute("SELECT SUM(realized_pnl) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
-        wins = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl > 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0]
-        losses = conn.execute("SELECT COUNT(*) FROM closed_trades WHERE realized_pnl < 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0]
-        avg_profit = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl > 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
-        avg_loss = conn.execute("SELECT AVG(realized_pnl) FROM closed_trades WHERE realized_pnl < 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
-        best = conn.execute("SELECT MAX(realized_pnl) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
-        worst = conn.execute("SELECT MIN(realized_pnl) FROM closed_trades WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)").fetchone()[0] or 0.0
+
+        # Символы для лучшей/худшей сделки
         best_row = conn.execute(
             "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
-            (best,)
+            (row['best_trade'],)
         ).fetchone()
         worst_row = conn.execute(
             "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
-            (worst,)
+            (row['worst_trade'],)
         ).fetchone()
+
         unrealized = conn.execute("SELECT SUM(unrealized_pnl) FROM open_trades").fetchone()[0] or 0.0
         open_count = conn.execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
+
         conn.close()
+
         return {
             'total_trades': total,
-            'winning_trades': wins,
-            'losing_trades': losses,
-            'win_rate': (wins / total) * 100 if total > 0 else 0,
-            'total_pnl': pnl_sum,
-            'avg_profit': avg_profit,
-            'avg_loss': avg_loss,
-            'best_trade': best,
+            'winning_trades': row['winning_trades'],
+            'losing_trades': row['losing_trades'],
+            'win_rate': (row['winning_trades'] / total) * 100 if total > 0 else 0,
+            'total_pnl': row['total_pnl'] or 0.0,
+            'avg_profit': row['avg_profit'] or 0.0,
+            'avg_loss': row['avg_loss'] or 0.0,
+            'best_trade': row['best_trade'] or 0.0,
             'best_trade_symbol': best_row['symbol'] if best_row else '',
-            'worst_trade': worst,
+            'worst_trade': row['worst_trade'] or 0.0,
             'worst_trade_symbol': worst_row['symbol'] if worst_row else '',
             'unrealized_pnl': unrealized,
             'open_positions': open_count
