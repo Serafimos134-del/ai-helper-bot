@@ -65,6 +65,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(data.split("_")[1])
         await generate_ai_review(query, trade_id)
     elif data.startswith("entry_reason_"):
+        # Обработчик кнопки "Комментарий" из уведомления о новой сделке
         order_id = data.split("_", 2)[2]
         context.user_data['entry_order_id'] = order_id
         context.user_data['state'] = 'entering_entry_reason'
