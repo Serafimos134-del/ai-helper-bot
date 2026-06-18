@@ -14,7 +14,7 @@ def init_db():
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS open_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            orderId TEXT,
+            orderId TEXT UNIQUE,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
             entry_price REAL NOT NULL,
@@ -106,7 +106,7 @@ class Database:
     def add_open_trade(trade: dict):
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO open_trades (orderId, symbol, side, entry_price, quantity, leverage,
+            INSERT OR IGNORE INTO open_trades (orderId, symbol, side, entry_price, quantity, leverage,
                                     unrealized_pnl, stop_loss, take_profit, entry_comment)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -173,7 +173,7 @@ class Database:
     def add_closed_trade(trade: dict):
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO closed_trades 
+            INSERT OR IGNORE INTO closed_trades 
             (symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
              risk_percent, leverage, stop_loss, take_profit, risk_reward,
              open_time, close_time, entry_comment, exit_comment, ai_review,
