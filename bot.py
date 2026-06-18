@@ -17,10 +17,10 @@ from services.bingx_api import get_balance, get_open_positions, get_closed_order
 from services.database import Database, init_db
 from services.trading_stats import format_stats_message
 from services.comment_manager import save_comment
-from services.auto_sync import sync_trades
 from services.ai_trading import AITradingAnalyzer
 from core.keyboards import cancel_keyboard
 from core.router import setup_router
+from core.scheduler import setup_scheduler
 
 load_dotenv()
 
@@ -794,76 +794,6 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = ai_analyzer.analyze_raw(prompt)
     await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}", parse_mode='Markdown')
 
-# ── Автосинхронизация (polling раз в 15 секунд) ──
-async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
-    if not CHAT_ID:
-        logger.warning("TELEGRAM_CHAT_ID не задан, авто-синхронизация пропущена")
-        return
-    try:
-        results = await sync_trades(context.bot, CHAT_ID)
-        new_closed = len(results.get('new_closed', []))
-        if new_closed > 0:
-            last_trades = db.get_closed_trades(limit=3)
-            if len(last_trades) >= 3 and all(t['realized_pnl'] < 0 for t in last_trades):
-                alert = (
-                    "⚠️ *Обнаружена серия из 3 убыточных сделок!*\n"
-                    "Рекомендую сделать паузу и проанализировать причины.\n"
-                    "Используйте /ai_fix для AI-разбора."
-                )
-                await context.bot.send_message(chat_id=CHAT_ID, text=alert, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Ошибка авто-синхронизации: {e}")
-
-# ── Закреплённое сообщение со статусом ──
-async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE):
-    if not CHAT_ID:
-        return
-    try:
-        balance = get_balance()
-        open_positions = db.get_open_trades()
-
-        text = "📌 *Текущий статус*\n\n"
-        if balance.get('success'):
-            text += (
-                f"💰 Баланс: ${balance['equity']:.2f}\n"
-                f"Доступно: ${balance['available']:.2f}\n"
-                f"Маржа: ${balance['used_margin']:.2f}\n"
-                f"Нереализ. PNL: ${balance['unrealized_pnl']:.2f}\n\n"
-            )
-        else:
-            text += "❌ Не удалось получить баланс\n\n"
-
-        if open_positions:
-            text += "*Открытые позиции:*\n"
-            for pos in open_positions:
-                text += f"- {pos['symbol']} {pos['side']} (Pnl: {pos.get('unrealized_pnl', 0):.2f})\n"
-        else:
-            text += "🔓 Нет открытых позиций"
-
-        pinned_msg_id = context.bot_data.get('pinned_msg_id')
-        if pinned_msg_id:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=CHAT_ID,
-                    message_id=pinned_msg_id,
-                    text=text,
-                    parse_mode='Markdown'
-                )
-                return
-            except:
-                pass
-
-        msg = await context.bot.send_message(
-            chat_id=CHAT_ID,
-            text=text,
-            parse_mode='Markdown'
-        )
-        await msg.pin()
-        context.bot_data['pinned_msg_id'] = msg.message_id
-
-    except Exception as e:
-        logger.error(f"Ошибка обновления статуса: {e}")
-
 # ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
@@ -889,10 +819,7 @@ def main():
     app.add_handler(CommandHandler('health', health_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     setup_router(app)
-
-    # Синхронизация каждые 15 секунд
-    app.job_queue.run_repeating(auto_sync_job, interval=15, first=10)
-    app.job_queue.run_repeating(update_pinned_status, interval=300, first=30)
+    setup_scheduler(app, db, CHAT_ID)
 
     logger.info("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
