@@ -28,7 +28,6 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS closed_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            orderId TEXT,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
             entry_price REAL NOT NULL,
@@ -57,8 +56,8 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId);
     """)
+    # Миграции: добавляем недостающие столбцы
     for table, cols in {
         'open_trades': [
             ('orderId', 'TEXT'),
@@ -92,6 +91,8 @@ def init_db():
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
             except sqlite3.OperationalError:
                 pass
+    # Уникальный индекс на orderId (теперь колонка точно существует)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
     conn.commit()
     conn.close()
 
@@ -213,7 +214,6 @@ class Database:
     @staticmethod
     def get_stats():
         conn = _get_conn()
-        # Один агрегирующий запрос вместо восьми
         row = conn.execute("""
             SELECT
                 COUNT(*) AS total_trades,
@@ -239,7 +239,6 @@ class Database:
                 'unrealized_pnl': 0, 'open_positions': 0
             }
 
-        # Символы для лучшей/худшей сделки
         best_row = conn.execute(
             "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
             (row['best_trade'],)
