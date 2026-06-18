@@ -1,7 +1,7 @@
 import os
 import json
 from dotenv import load_dotenv
-from ai.providers.groq_provider import GroqProvider
+from ai.providers.deepseek_provider import DeepSeekProvider
 from ai.context_builder import ContextBuilder
 from ai.agents.market_agent import MarketAgent
 from ai.agents.risk_agent import RiskAgent
@@ -15,21 +15,21 @@ load_dotenv()
 
 class AITradingAnalyzer:
     def __init__(self):
-        self.api_key = os.getenv("GROQ_API_KEY")
+        self.api_key = os.getenv("DEEPSEEK_API_KEY")
         if self.api_key:
-            self.provider = GroqProvider(self.api_key)
+            self.provider = DeepSeekProvider(self.api_key)
             self.market_agent = MarketAgent(self.provider)
             self.risk_agent = RiskAgent(self.provider)
             self.psychology_agent = PsychologyAgent(self.provider)
             self.judge_agent = JudgeAgent(self.provider)
-            print("✅ Groq AI инициализирован")
+            print("✅ DeepSeek AI инициализирован")
         else:
             self.provider = None
             self.market_agent = None
             self.risk_agent = None
             self.psychology_agent = None
             self.judge_agent = None
-            print("⚠️ GROQ_API_KEY не найден. AI отключён.")
+            print("⚠️ DEEPSEEK_API_KEY не найден. AI отключён.")
 
     def analyze(self) -> str:
         """Основной AI-анализ статистики и последних сделок."""
@@ -78,25 +78,25 @@ class AITradingAnalyzer:
 
         try:
             response = self.provider.generate(prompt)
-            return response + "\n\n🤖 Анализ от Groq (Llama 3.3 70B). Не финансовая рекомендация."
+            return response + "\n\n🤖 Анализ от DeepSeek. Не финансовая рекомендация."
         except Exception as e:
-            print(f"❌ Ошибка Groq: {e}")
+            print(f"❌ Ошибка DeepSeek: {e}")
             return f"⚠️ Ошибка AI: {e}\n\n{self._fallback_analysis(stats)}"
 
     def analyze_raw(self, prompt: str) -> str:
-        """Отправка произвольного промпта в Groq (для вопросов, обзора рынка, трендов и т.д.)"""
+        """Отправка произвольного промпта в DeepSeek."""
         if not self.provider:
-            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+            return "⚠️ AI недоступен. Проверь DEEPSEEK_API_KEY."
         try:
             return self.provider.generate(prompt)
         except Exception as e:
-            print(f"❌ Ошибка Groq (analyze_raw): {e}")
+            print(f"❌ Ошибка DeepSeek (analyze_raw): {e}")
             return f"⚠️ Ошибка AI: {e}"
 
     def analyze_market(self) -> str:
         """Анализ рынка через MarketAgent + ContextBuilder."""
         if not self.market_agent:
-            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+            return "⚠️ AI недоступен. Проверь DEEPSEEK_API_KEY."
         try:
             return self.market_agent.analyze()
         except Exception as e:
@@ -106,7 +106,7 @@ class AITradingAnalyzer:
     def analyze_risk(self) -> str:
         """Анализ риска через RiskAgent + RuleEngine."""
         if not self.risk_agent:
-            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+            return "⚠️ AI недоступен. Проверь DEEPSEEK_API_KEY."
         try:
             return self.risk_agent.analyze()
         except Exception as e:
@@ -116,7 +116,7 @@ class AITradingAnalyzer:
     def analyze_psychology(self) -> str:
         """Анализ психологии через PsychologyAgent."""
         if not self.psychology_agent:
-            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+            return "⚠️ AI недоступен. Проверь DEEPSEEK_API_KEY."
         try:
             return self.psychology_agent.analyze()
         except Exception as e:
@@ -126,7 +126,7 @@ class AITradingAnalyzer:
     def synthesize_agents(self) -> str:
         """Запускает всех агентов и возвращает синтезированное решение."""
         if not self.judge_agent:
-            return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
+            return "⚠️ AI недоступен. Проверь DEEPSEEK_API_KEY."
 
         market = self.analyze_market()
         risk = self.analyze_risk()
