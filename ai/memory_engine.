@@ -1,0 +1,188 @@
+import asyncio
+import logging
+from datetime import datetime
+from services.database import Database
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryEngine:
+    """
+    Накопитель знаний о трейдере.
+    Собирает статистику по тикерам, направлениям, дням недели и ошибкам.
+    """
+
+    def __init__(self):
+        self.db = Database()
+
+    async def update(self, trade: dict):
+        """
+        Обновляет статистику после закрытой сделки.
+        Вызывается асинхронно, не блокирует sync loop.
+        """
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._update_sync, trade)
+
+    def _update_sync(self, trade: dict):
+        symbol = trade.get('symbol', '')
+        side = trade.get('side', '')
+        pnl = float(trade.get('realized_pnl', 0))
+
+        # Извлекаем тикер без -USDT
+        ticker = symbol.replace('-USDT', '') if '-USDT' in symbol else symbol
+
+        # --- Win Rate по тикеру ---
+        self._update_counter('ticker', ticker, pnl)
+
+        # --- Win Rate по направлению ---
+        self._update_counter('direction', side, pnl)
+
+        # --- Win Rate по дню недели ---
+        try:
+            close_time = trade.get('close_time', '')
+            if close_time:
+                dt = datetime.fromisoformat(close_time.replace('Z', '+00:00'))
+                day_name = dt.strftime('%A')  # Monday, Tuesday...
+                self._update_counter('weekday', day_name, pnl)
+        except Exception:
+            pass
+
+        # --- Среднее время удержания ---
+        holding = trade.get('holding_minutes')
+        if holding is not None:
+            self._update_average('holding', 'avg_minutes', holding)
+            if pnl > 0:
+                self._update_average('holding', 'avg_win_minutes', holding)
+            else:
+                self._update_average('holding', 'avg_loss_minutes', holding)
+
+        # --- Общий счётчик сделок ---
+        total = int(self.db.memory_get('global', 'total_trades') or 0) + 1
+        self.db.memory_set('global', 'total_trades', str(total))
+
+        if pnl > 0:
+            wins = int(self.db.memory_get('global', 'winning_trades') or 0) + 1
+            self.db.memory_set('global', 'winning_trades', str(wins))
+        else:
+            losses = int(self.db.memory_get('global', 'losing_trades') or 0) + 1
+            self.db.memory_set('global', 'losing_trades', str(losses))
+
+        logger.info(f"Memory Engine: обновлён для {symbol} {side}, PnL={pnl:.2f}")
+
+    def _update_counter(self, category: str, key: str, pnl: float):
+        """Обновляет счётчик побед/поражений для категории."""
+        wins = int(self.db.memory_get(category, f"{key}_wins") or 0)
+        total = int(self.db.memory_get(category, f"{key}_total") or 0)
+        if pnl > 0:
+            wins += 1
+        total += 1
+        self.db.memory_set(category, f"{key}_wins", str(wins))
+        self.db.memory_set(category, f"{key}_total", str(total))
+
+    def _update_average(self, category: str, key: str, value: float):
+        """Обновляет скользящее среднее."""
+        count = int(self.db.memory_get(category, f"{key}_count") or 0)
+        old_avg = float(self.db.memory_get(category, key) or 0)
+        new_count = count + 1
+        new_avg = (old_avg * count + value) / new_count
+        self.db.memory_set(category, f"{key}_count", str(new_count))
+        self.db.memory_set(category, key, str(round(new_avg, 1)))
+
+    async def get_profile(self) -> dict:
+        """Возвращает полный профиль трейдера."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_profile_sync)
+
+    def _get_profile_sync(self) -> dict:
+        profile = {
+            'total_trades': int(self.db.memory_get('global', 'total_trades') or 0),
+            'winning_trades': int(self.db.memory_get('global', 'winning_trades') or 0),
+            'losing_trades': int(self.db.memory_get('global', 'losing_trades') or 0),
+            'best_ticker': None,
+            'worst_ticker': None,
+            'best_direction': None,
+            'best_weekday': None,
+            'worst_weekday': None,
+            'avg_holding_minutes': float(self.db.memory_get('holding', 'avg_minutes') or 0),
+            'avg_win_minutes': float(self.db.memory_get('holding', 'avg_win_minutes') or 0),
+            'avg_loss_minutes': float(self.db.memory_get('holding', 'avg_loss_minutes') or 0),
+        }
+
+        # Лучший/худший тикер
+        tickers = self.db.memory_get_all('ticker')
+        best_wr = -1
+        worst_wr = 101
+        for key, value in tickers.items():
+            if key.endswith('_total'):
+                ticker = key.replace('_total', '')
+                wins = int(tickers.get(f'{ticker}_wins', 0))
+                total = int(value)
+                if total >= 2:
+                    wr = wins / total * 100
+                    if wr > best_wr:
+                        best_wr = wr
+                        profile['best_ticker'] = {'ticker': ticker, 'wr': round(wr, 1), 'trades': total}
+                    if wr < worst_wr:
+                        worst_wr = wr
+                        profile['worst_ticker'] = {'ticker': ticker, 'wr': round(wr, 1), 'trades': total}
+
+        # Лучшее направление
+        directions = self.db.memory_get_all('direction')
+        for key, value in directions.items():
+            if key.endswith('_total'):
+                direction = key.replace('_total', '')
+                wins = int(directions.get(f'{direction}_wins', 0))
+                total = int(value)
+                if total >= 2:
+                    wr = wins / total * 100
+                    profile['best_direction'] = {'direction': direction, 'wr': round(wr, 1), 'trades': total}
+                    break
+
+        # Лучший/худший день недели
+        weekdays = self.db.memory_get_all('weekday')
+        best_wr = -1
+        worst_wr = 101
+        for key, value in weekdays.items():
+            if key.endswith('_total'):
+                day = key.replace('_total', '')
+                wins = int(weekdays.get(f'{day}_wins', 0))
+                total = int(value)
+                if total >= 1:
+                    wr = wins / total * 100
+                    if wr > best_wr:
+                        best_wr = wr
+                        profile['best_weekday'] = {'day': day, 'wr': round(wr, 1), 'trades': total}
+                    if wr < worst_wr:
+                        worst_wr = wr
+                        profile['worst_weekday'] = {'day': day, 'wr': round(wr, 1), 'trades': total}
+
+        return profile
+
+    def get_context_for_prompt(self, profile: dict = None) -> str:
+        """Возвращает текст для вставки в промпты агентов."""
+        if profile is None:
+            try:
+                profile = self._get_profile_sync()
+            except Exception:
+                return ""
+
+        if profile['total_trades'] < 2:
+            return ""
+
+        lines = ["ПРОФИЛЬ ТРЕЙДЕРА (на основе истории):"]
+        lines.append(f"- Всего сделок: {profile['total_trades']} (побед: {profile['winning_trades']}, поражений: {profile['losing_trades']})")
+
+        if profile['best_ticker']:
+            lines.append(f"- Лучший тикер: {profile['best_ticker']['ticker']} (WR: {profile['best_ticker']['wr']}%, {profile['best_ticker']['trades']} сделок)")
+        if profile['worst_ticker']:
+            lines.append(f"- Худший тикер: {profile['worst_ticker']['ticker']} (WR: {profile['worst_ticker']['wr']}%, {profile['worst_ticker']['trades']} сделок)")
+        if profile['best_direction']:
+            lines.append(f"- Лучшее направление: {profile['best_direction']['direction']} (WR: {profile['best_direction']['wr']}%)")
+        if profile['best_weekday']:
+            lines.append(f"- Лучший день: {profile['best_weekday']['day']} (WR: {profile['best_weekday']['wr']}%)")
+        if profile['worst_weekday']:
+            lines.append(f"- Худший день: {profile['worst_weekday']['day']} (WR: {profile['worst_weekday']['wr']}%)")
+        if profile['avg_holding_minutes'] > 0:
+            lines.append(f"- Среднее удержание: {profile['avg_holding_minutes']:.0f} мин (побед: {profile['avg_win_minutes']:.0f}, пораж: {profile['avg_loss_minutes']:.0f})")
+
+        return "\n".join(lines) + "\n\n"
