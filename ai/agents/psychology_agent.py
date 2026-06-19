@@ -7,20 +7,18 @@ logger = logging.getLogger(__name__)
 
 
 class PsychologyAgent:
-    """Агент, анализирующий психологические паттерны трейдера (строгий стиль)."""
+    """Агент, анализирующий психологические паттерны трейдера (v2 с метриками поведения)."""
 
     def __init__(self, provider: BaseProvider):
         self.provider = provider
         self.context_builder = ContextBuilder()
 
     async def analyze(self, context: dict = None) -> str:
-        """Асинхронно анализирует историю сделок и возвращает оценку психологического состояния."""
         loop = asyncio.get_running_loop()
         if context is None:
-            ctx = await self.context_builder.build_full_context()   # ← исправлено: добавлен await
+            ctx = await self.context_builder.build_full_context()
         else:
             ctx = context
-        history = ctx.get("history", {})
         prompt = self._build_psychology_prompt(ctx)
         try:
             return await loop.run_in_executor(None, self.provider.generate, prompt)
@@ -35,6 +33,13 @@ class PsychologyAgent:
         losing_streak = history.get("losing_streak", 0)
         winning_streak = history.get("winning_streak", 0)
 
+        # Новые метрики поведения (Psychology v2)
+        revenge_score = history.get("revenge_score", 0)
+        fomo_score = history.get("fomo_score", 0)
+        overtrading_score = history.get("overtrading_score", 0)
+        premature_exit_score = history.get("premature_exit_score", 0)
+        tilt_probability = history.get("tilt_probability", 0)
+
         trades_summary = ""
         for t in recent_trades[:10]:
             trades_summary += (
@@ -44,7 +49,6 @@ class PsychologyAgent:
                 f"комм.: {t.get('comment', '—')}\n"
             )
 
-        # Извлекаем информацию о текущей ситуации
         idea = ctx.get("idea", {})
         position = ctx.get("position", {})
         ticker = idea.get("ticker") or position.get("symbol", "")
@@ -56,13 +60,22 @@ class PsychologyAgent:
         elif position:
             situation = f"Трейдер удерживает позицию {direction} по {ticker}.\n"
 
+        # Формируем блок с метриками поведения
+        behavior_block = (
+            f"Метрики поведения (0-10, где 0=норма, 10=экстремально):\n"
+            f"- Revenge Trading: {revenge_score}/10\n"
+            f"- FOMO: {fomo_score}/10\n"
+            f"- Overtrading: {overtrading_score}/10\n"
+            f"- Premature Exits: {premature_exit_score}/10\n"
+            f"- Tilt Probability: {tilt_probability}%\n\n"
+        )
+
         prompt = (
             "Ты — спортивный психолог, работающий с профессиональными трейдерами. "
-            "Проанализируй историю сделок и дай КРАТКУЮ, ЖЁСТКУЮ оценку психологического состояния "
-            "на основе предоставленных данных.\n\n"
+            "Проанализируй историю сделок и метрики поведения, дай КРАТКУЮ, ЖЁСТКУЮ оценку психологического состояния.\n\n"
             "ПРАВИЛА:\n"
             "1. СОСТОЯНИЕ: одно слово — CALM / NERVOUS / EMOTIONAL / REVENGE / TILT.\n"
-            "2. ПАТТЕРН: одно предложение — главная психологическая ошибка (если есть).\n"
+            "2. ПАТТЕРН: одно предложение — главная психологическая ошибка (если есть). Используй метрики выше.\n"
             "3. СОВЕТ: одно конкретное действие для исправления (если нужно) или подтверждение правильного настроя.\n"
             "4. Если история пуста (0 сделок), честно напиши: «Нет данных для анализа», но не выдумывай.\n"
             "5. Без воды, без философии, без markdown. Только факты.\n\n"
@@ -73,6 +86,7 @@ class PsychologyAgent:
             f"Серия прибылей: {winning_streak}\n"
             f"Средняя прибыль: ${stats.get('avg_profit', 0):.2f}\n"
             f"Средний убыток: ${stats.get('avg_loss', 0):.2f}\n\n"
+            f"{behavior_block}"
             f"Последние 10 сделок:\n{trades_summary}\n"
             "Твой вердикт:"
         )
