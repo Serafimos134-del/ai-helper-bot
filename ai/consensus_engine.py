@@ -66,6 +66,9 @@ class ConsensusEngine:
 
         verdict = await asyncio.wait_for(self.judge.synthesize(market, risk, psych, mode=mode), timeout=AGENT_TIMEOUT)
 
+        # Извлекаем memory_context из контекста
+        memory = context.get('memory', '')
+
         return {
             'market_review': str(market),
             'risk_review': str(risk),
@@ -73,7 +76,8 @@ class ConsensusEngine:
             'judge_verdict': verdict,
             'confidence': round(confidence, 2),
             'disagreement': round(disagreement, 2),
-            'data_quality': round(data_quality, 2)
+            'data_quality': round(data_quality, 2),
+            'memory': memory
         }
 
     def _calculate_data_quality(self, context: dict) -> float:
@@ -139,5 +143,6 @@ class ConsensusEngine:
             'judge_verdict': 'Невозможно дать заключение из-за ошибки получения данных.',
             'confidence': 0.0,
             'disagreement': 0.0,
-            'data_quality': 0.0
+            'data_quality': 0.0,
+            'memory': ''
         }
