@@ -19,10 +19,24 @@ class MarketAgent:
         return self.provider.generate(prompt)
 
     def _build_market_prompt(self, ctx: dict) -> str:
-        btc = ctx.get("btc", {})
-        eth = ctx.get("eth", {})
-        top = ctx.get("top_movers", [])
-        trend = ctx.get("trend", "NEUTRAL")
+        # Защита от None: если ctx.get вернул None, заменяем на пустой словарь/список
+        btc = ctx.get("btc") or {}
+        eth = ctx.get("eth") or {}
+        top = ctx.get("top_movers") or []
+        trend = ctx.get("trend") or "NEUTRAL"
+
+        # Безопасное получение числовых значений с защитой от None
+        btc_price = btc.get('price', 0) or 0
+        btc_change = btc.get('change_24h', 0) or 0
+        btc_high = btc.get('high', 0) or 0
+        btc_low = btc.get('low', 0) or 0
+        btc_volume = btc.get('volume', 0) or 0
+
+        eth_price = eth.get('price', 0) or 0
+        eth_change = eth.get('change_24h', 0) or 0
+        eth_high = eth.get('high', 0) or 0
+        eth_low = eth.get('low', 0) or 0
+        eth_volume = eth.get('volume', 0) or 0
 
         return (
             "Ты — профессиональный рыночный аналитик. Дай КРАТКИЙ, КОНКРЕТНЫЙ анализ текущей ситуации "
@@ -33,10 +47,10 @@ class MarketAgent:
             "3. СИГНАЛ: BUY / SELL / WAIT с обоснованием в одно предложение.\n"
             "4. Без воды, без markdown, без общих фраз. Только цифры и факты.\n\n"
             f"Тренд: {trend}\n"
-            f"BTC: цена ${btc.get('price', 0):.2f}, изменение за 24ч: {btc.get('change_24h', 0):+.2f}%, "
-            f"макс: ${btc.get('high', 0):.2f}, мин: ${btc.get('low', 0):.2f}, объём: {btc.get('volume', 0):,.0f}\n"
-            f"ETH: цена ${eth.get('price', 0):.2f}, изменение за 24ч: {eth.get('change_24h', 0):+.2f}%, "
-            f"макс: ${eth.get('high', 0):.2f}, мин: ${eth.get('low', 0):.2f}, объём: {eth.get('volume', 0):,.0f}\n"
+            f"BTC: цена ${btc_price:.2f}, изменение за 24ч: {btc_change:+.2f}%, "
+            f"макс: ${btc_high:.2f}, мин: ${btc_low:.2f}, объём: {btc_volume:,.0f}\n"
+            f"ETH: цена ${eth_price:.2f}, изменение за 24ч: {eth_change:+.2f}%, "
+            f"макс: ${eth_high:.2f}, мин: ${eth_low:.2f}, объём: {eth_volume:,.0f}\n"
             f"Топ-5 по объёму: {top}\n\n"
             "Твой анализ:"
         )
