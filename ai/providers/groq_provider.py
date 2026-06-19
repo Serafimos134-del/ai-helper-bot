@@ -1,11 +1,16 @@
 import logging
 import os
+import time
 import requests
 from .base_provider import BaseProvider
 
 logger = logging.getLogger(__name__)
 
 PROXY_URL = "socks5://127.0.0.1:1080"
+
+# Rate limiter: задержка между запросами к Groq (секунды)
+_RATE_LIMIT_DELAY = 2.0
+_last_request_time = 0.0
 
 
 class GroqProvider(BaseProvider):
@@ -19,10 +24,17 @@ class GroqProvider(BaseProvider):
             raise ValueError("GROQ_API_KEY не задан")
         self.model = "llama-3.3-70b-versatile"
         self.temperature = 0.7
-        self.max_tokens = 1024
+        self.max_tokens = 512  # уменьшено с 1024 для снижения нагрузки
 
     def generate(self, prompt: str, context: dict = None) -> str:
-        """Отправляет запрос к Groq через SOCKS5‑прокси."""
+        """Отправляет запрос к Groq через SOCKS5‑прокси с rate limiting."""
+        global _last_request_time
+
+        # Задержка между запросами
+        elapsed = time.time() - _last_request_time
+        if elapsed < _RATE_LIMIT_DELAY:
+            time.sleep(_RATE_LIMIT_DELAY - elapsed)
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -36,6 +48,7 @@ class GroqProvider(BaseProvider):
         proxies = {"http": PROXY_URL, "https": PROXY_URL}
 
         try:
+            _last_request_time = time.time()
             response = requests.post(
                 self.API_URL,
                 headers=headers,
