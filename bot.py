@@ -108,9 +108,11 @@ def open_positions_keyboard(positions):
     buttons.append([BTN_BACK])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ─── Хендлеры ─────────────────────────────────────────────────────────────────
+# ─── Хендлеры (только для владельца) ─────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
     context.user_data.clear()
     text = (
         "👋 *AI Helper Bot*\n\n"
@@ -435,6 +437,8 @@ async def show_help(update: Update):
 
 # ── Health check ──
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
     msg = await update.message.reply_text("🩺 Проверяю здоровье систем...")
     status = []
     try:
@@ -469,6 +473,8 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Главный обработчик сообщений ──
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
     text = update.message.text.strip()
     state = context.user_data.get('state')
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
@@ -641,6 +647,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Команда /ai_fix ──
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
     msg = await update.message.reply_text("🤖 Анализирую убыточные сделки...")
     last_trades = db.get_closed_trades(limit=5)
     losing = [t for t in last_trades if t['realized_pnl'] < 0]
@@ -659,6 +667,8 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
     results = await sync_trades(context.bot, update.effective_chat.id)
     new_open = len(results.get('new_open', []))
