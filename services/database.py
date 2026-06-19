@@ -83,7 +83,12 @@ def init_db():
             ('market_trend', 'TEXT'),
             ('setup_type', 'TEXT'),
             ('mistakes', 'TEXT'),
-            ('ai_score', 'INTEGER')
+            ('ai_score', 'INTEGER'),
+            # Новые поля для Consensus Engine
+            ('market_review', 'TEXT'),
+            ('risk_review', 'TEXT'),
+            ('psychology_review', 'TEXT'),
+            ('judge_verdict', 'TEXT')
         ]
     }.items():
         for col, col_def in cols:
@@ -288,7 +293,8 @@ class Database:
         allowed = ['risk_percent', 'leverage', 'stop_loss', 'take_profit', 'risk_reward',
                    'entry_comment', 'exit_comment', 'ai_review',
                    'holding_minutes', 'btc_price', 'eth_price', 'market_trend',
-                   'setup_type', 'mistakes', 'ai_score']
+                   'setup_type', 'mistakes', 'ai_score',
+                   'market_review', 'risk_review', 'psychology_review', 'judge_verdict']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
