@@ -154,3 +154,127 @@ class ContextBuilder:
             logger.error(f"Ошибка получения истории: {e}")
 
         return context
+
+    # ────────────── Новые методы для Consensus Engine ──────────────
+
+    async def build_for_open_position(self, position: dict) -> dict:
+        """
+        Контекст для анализа открытой позиции.
+        Использует данные позиции, рынка и портфеля.
+        """
+        market = self._build_market_context()
+        portfolio = self._build_portfolio_context()
+
+        # Дополнительно можно получить данные по инструменту позиции
+        ticker_info = None
+        symbol = position.get("symbol", "")
+        if symbol:
+            try:
+                ticker_res = get_ticker(symbol)
+                if ticker_res.get("success"):
+                    t = ticker_res["ticker"]
+                    ticker_info = {
+                        "price": float(t.get("lastPrice", 0)),
+                        "change_24h": float(t.get("priceChangePercent", 0)),
+                        "high": float(t.get("highPrice", 0)),
+                        "low": float(t.get("lowPrice", 0)),
+                    }
+            except Exception as e:
+                logger.error(f"Ошибка получения тикера {symbol}: {e}")
+
+        return {
+            "position": {
+                "symbol": symbol,
+                "side": position.get("side", ""),
+                "entry_price": float(position.get("entry_price", position.get("entryPrice", 0))),
+                "unrealized_pnl": float(position.get("unrealized_pnl", position.get("unrealizedPnl", 0))),
+                "leverage": position.get("leverage", 1),
+                "size": abs(float(position.get("quantity", position.get("positionAmt", 0)))),
+                "stop_loss": position.get("stop_loss"),
+                "take_profit": position.get("take_profit"),
+            },
+            "ticker": ticker_info,
+            "market": market,
+            "portfolio": portfolio,
+            "trader_profile": {
+                "style": "trend/breakout",
+                "holding_period": "up to 2 weeks",
+                "risk_priority": "position size > leverage",
+            },
+        }
+
+    async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
+        """
+        Контекст для оценки нового сетапа.
+        Содержит информацию о рынке, портфеле и конкретном инструменте.
+        """
+        market = self._build_market_context()
+        portfolio = self._build_portfolio_context()
+
+        ticker_info = None
+        symbol = ticker  # предполагаем, что ticker уже в формате BTC-USDT и т.п.
+        if not symbol.endswith("-USDT"):
+            symbol = f"{ticker}-USDT"
+        try:
+            ticker_res = get_ticker(symbol)
+            if ticker_res.get("success"):
+                t = ticker_res["ticker"]
+                ticker_info = {
+                    "price": float(t.get("lastPrice", 0)),
+                    "change_24h": float(t.get("priceChangePercent", 0)),
+                    "high": float(t.get("highPrice", 0)),
+                    "low": float(t.get("lowPrice", 0)),
+                }
+        except Exception as e:
+            logger.error(f"Ошибка получения тикера {symbol}: {e}")
+
+        return {
+            "idea": {
+                "ticker": ticker,
+                "symbol": symbol,
+                "direction": direction,
+                "notes": extra_notes,
+            },
+            "ticker": ticker_info,
+            "market": market,
+            "portfolio": portfolio,
+            "trader_profile": {
+                "style": "trend/breakout",
+                "holding_period": "up to 2 weeks",
+                "risk_priority": "position size > leverage",
+            },
+        }
+
+    async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
+        """
+        Контекст для post-trade анализа.
+        Включает данные сделки, её оценку и историю.
+        """
+        history = self._build_history_context()
+        market = self._build_market_context()
+
+        return {
+            "trade": {
+                "symbol": trade.get("symbol", ""),
+                "side": trade.get("side", ""),
+                "entry_price": float(trade.get("entry_price", 0)),
+                "exit_price": float(trade.get("exit_price", 0)),
+                "quantity": float(trade.get("quantity", 0)),
+                "realized_pnl": float(trade.get("realized_pnl", 0)),
+                "leverage": float(trade.get("leverage", 1)),
+                "stop_loss": trade.get("stop_loss"),
+                "take_profit": trade.get("take_profit"),
+                "entry_comment": trade.get("entry_comment", ""),
+                "exit_comment": trade.get("exit_comment", trade.get("comment", "")),
+                "holding_minutes": trade.get("holding_minutes"),
+                "ai_score": trade.get("ai_score"),
+            },
+            "score": score_result,  # результат Trade Scorer (если есть)
+            "market_snapshot": market,
+            "history_context": history,
+            "trader_profile": {
+                "style": "trend/breakout",
+                "holding_period": "up to 2 weeks",
+                "risk_priority": "position size > leverage",
+            },
+        }
