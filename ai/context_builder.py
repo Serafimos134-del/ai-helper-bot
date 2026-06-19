@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from services.database import Database
 from services.bingx_api import get_balance, get_open_positions, get_ticker, get_top_tickers
@@ -11,12 +12,16 @@ class ContextBuilder:
     def __init__(self):
         self.db = Database()
 
-    def build_full_context(self) -> dict:
-        """Собирает полный контекст: рынок + портфель + история."""
+    async def build_full_context(self) -> dict:
+        """Асинхронно собирает полный контекст: рынок + портфель + история."""
+        loop = asyncio.get_running_loop()
+        market = await loop.run_in_executor(None, self._build_market_context)
+        portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
+        history = await loop.run_in_executor(None, self._build_history_context)
         return {
-            "market": self._build_market_context(),
-            "portfolio": self._build_portfolio_context(),
-            "history": self._build_history_context(),
+            "market": market,
+            "portfolio": portfolio,
+            "history": history,
         }
 
     def _build_market_context(self) -> dict:
@@ -162,15 +167,16 @@ class ContextBuilder:
         Контекст для анализа открытой позиции.
         Использует данные позиции, рынка и портфеля.
         """
-        market = self._build_market_context()
-        portfolio = self._build_portfolio_context()
+        loop = asyncio.get_running_loop()
+        market = await loop.run_in_executor(None, self._build_market_context)
+        portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
 
         # Дополнительно можно получить данные по инструменту позиции
         ticker_info = None
         symbol = position.get("symbol", "")
         if symbol:
             try:
-                ticker_res = get_ticker(symbol)
+                ticker_res = await loop.run_in_executor(None, get_ticker, symbol)
                 if ticker_res.get("success"):
                     t = ticker_res["ticker"]
                     ticker_info = {
@@ -208,15 +214,16 @@ class ContextBuilder:
         Контекст для оценки нового сетапа.
         Содержит информацию о рынке, портфеле и конкретном инструменте.
         """
-        market = self._build_market_context()
-        portfolio = self._build_portfolio_context()
+        loop = asyncio.get_running_loop()
+        market = await loop.run_in_executor(None, self._build_market_context)
+        portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
 
         ticker_info = None
         symbol = ticker  # предполагаем, что ticker уже в формате BTC-USDT и т.п.
         if not symbol.endswith("-USDT"):
             symbol = f"{ticker}-USDT"
         try:
-            ticker_res = get_ticker(symbol)
+            ticker_res = await loop.run_in_executor(None, get_ticker, symbol)
             if ticker_res.get("success"):
                 t = ticker_res["ticker"]
                 ticker_info = {
@@ -250,8 +257,9 @@ class ContextBuilder:
         Контекст для post-trade анализа.
         Включает данные сделки, её оценку и историю.
         """
-        history = self._build_history_context()
-        market = self._build_market_context()
+        loop = asyncio.get_running_loop()
+        history = await loop.run_in_executor(None, self._build_history_context)
+        market = await loop.run_in_executor(None, self._build_market_context)
 
         return {
             "trade": {
