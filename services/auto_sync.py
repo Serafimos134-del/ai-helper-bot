@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 from services.bingx_api import get_open_positions
 from services.database import Database
 from ai.trade_scorer import TradeScorer
+from ai.consensus_engine import ConsensusEngine
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
 trade_scorer = TradeScorer()
+consensus_engine = ConsensusEngine()   # создаём один раз для многократного использования
 
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
@@ -67,12 +69,25 @@ async def sync_trades(bot, chat_id: str) -> dict:
         db.delete_open_trade_by_order_id(oid)
         last_id = db.get_last_closed_id()
 
+        # --- Основной анализ через Consensus Engine ---
         try:
-            score = trade_scorer.score(closed_trade)
-            db.update_trade_metrics(last_id, ai_score=score['total_score'])
-            logger.info(f"Сделка #{last_id} оценена: {score['total_score']}/10 — {score['verdict']}")
+            analysis = await consensus_engine.analyze_closed_trade(closed_trade)
+            db.update_trade_metrics(last_id,
+                                    ai_score=analysis['trade_score'],
+                                    market_review=analysis['market_review'],
+                                    risk_review=analysis['risk_review'],
+                                    psychology_review=analysis['psychology_review'],
+                                    judge_verdict=analysis['judge_verdict'])
+            logger.info(f"Сделка #{last_id} проанализирована консилиумом: {analysis['judge_verdict']}")
         except Exception as e:
-            logger.error(f"Ошибка оценки сделки #{last_id}: {e}")
+            logger.error(f"Ошибка консилиума для сделки #{last_id}: {e}")
+            # fallback — старый скоринг
+            try:
+                score = trade_scorer.score(closed_trade)
+                db.update_trade_metrics(last_id, ai_score=score['total_score'])
+                logger.info(f"Сделка #{last_id} оценена (fallback): {score['total_score']}/10")
+            except Exception as fallback_e:
+                logger.error(f"Ошибка даже fallback-оценки для сделки #{last_id}: {fallback_e}")
 
         results['new_closed'].append(stored)
         await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
@@ -139,7 +154,6 @@ async def _notify_new_trade(bot, chat_id: str, trade: dict):
             f"⚡️ Плечо: {leverage}x\n\n"
             f"*Напишите причину входа или нажмите «Пропустить»:*"
         )
-        # 🔧 Защита от пустого orderId – если orderId нет, пробуем positionId, иначе заглушка
         callback_id = trade.get('orderId') or trade.get('positionId') or 'no-id'
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Комментарий", callback_data=f"entry_reason_{callback_id}"),
