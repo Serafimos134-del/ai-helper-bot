@@ -6,7 +6,6 @@ from services.bingx_api import (
     get_funding_rate, get_open_interest, get_kline,
     _calculate_atr, _detect_market_regime
 )
-from ai.memory_engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,6 @@ class ContextBuilder:
 
     def __init__(self):
         self.db = Database()
-        self.memory = MemoryEngine()
 
     async def build_full_context(self) -> dict:
         loop = asyncio.get_running_loop()
@@ -369,9 +367,10 @@ class ContextBuilder:
         return info if info else None
 
     async def _get_memory_context(self) -> str:
-        """Возвращает строку профиля трейдера из Memory Engine."""
+        """Возвращает строку профиля трейдера из Memory Engine (ленивый импорт)."""
         try:
-            return self.memory.get_context_for_prompt()
+            from ai.memory_engine import MemoryEngine
+            return MemoryEngine().get_context_for_prompt()
         except Exception as e:
             logger.error(f"Ошибка получения memory_context: {e}")
             return ""
