@@ -564,13 +564,7 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
     context.user_data['state'] = None
     msg = await update.message.reply_text("🔄 Анализирую позицию...")
     result = await consensus.analyze_open_position(chosen)
-    response = (
-        f"🧠 Консилиум — {chosen['symbol']} {chosen['side']}\n\n"
-        f"📈 Рынок:\n{result['market_review']}\n\n"
-        f"⚠️ Риск:\n{result['risk_review']}\n\n"
-        f"🧘 Психология:\n{result['psychology_review']}\n\n"
-        f"⚖️ Вердикт: {result['judge_verdict']}"
-    )
+    response = _build_response(result, chosen['symbol'], chosen['side'])
     await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
@@ -594,15 +588,37 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
     context.user_data['state'] = None
     msg = await update.message.reply_text("🔄 Анализирую сетап...")
     result = await consensus.analyze_new_setup(ticker, direction, extra_notes=text)
-    response = (
-        f"🧠 Консилиум — {ticker} {direction}\n\n"
-        f"📈 Рынок:\n{result['market_review']}\n\n"
-        f"⚠️ Риск:\n{result['risk_review']}\n\n"
-        f"🧘 Психология:\n{result['psychology_review']}\n\n"
-        f"⚖️ Вердикт: {result['judge_verdict']}"
-    )
+    response = _build_response(result, ticker, direction)
     await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
+
+def _build_response(result: dict, ticker: str, direction: str) -> str:
+    """Собирает полный ответ Консилиума с метриками уверенности и профилем трейдера."""
+    response = (
+        f"🧠 Консилиум — {ticker} {direction}\n\n"
+        f"📈 Рынок:\n{result.get('market_review', '—')}\n\n"
+        f"⚠️ Риск:\n{result.get('risk_review', '—')}\n\n"
+        f"🧘 Психология:\n{result.get('psychology_review', '—')}\n\n"
+        f"⚖️ Вердикт: {result.get('judge_verdict', '—')}"
+    )
+
+    # Метрики уверенности
+    confidence = result.get('confidence')
+    data_quality = result.get('data_quality')
+    disagreement = result.get('disagreement')
+    if confidence is not None:
+        response += f"\n\n📊 Уверенность: {confidence:.0%}"
+        if data_quality is not None:
+            response += f" | Качество данных: {data_quality:.0%}"
+        if disagreement is not None:
+            response += f" | Разногласия: {disagreement:.0%}"
+
+    # Профиль трейдера из Memory Engine
+    memory = result.get('memory')
+    if memory:
+        response += f"\n\n{memory}"
+
+    return response
 
 def consilium_keyboard():
     return ReplyKeyboardMarkup([[CONSILIUM_OPEN], [CONSILIUM_SETUP], [BTN_BACK]], resize_keyboard=True)
