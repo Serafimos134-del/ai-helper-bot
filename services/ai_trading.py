@@ -1,7 +1,7 @@
 import os
 import json
 from dotenv import load_dotenv
-from ai.providers.gigachat_provider import GigaChatProvider
+from ai.providers.gemini_provider import GeminiProvider
 from ai.context_builder import ContextBuilder
 from ai.agents.market_agent import MarketAgent
 from ai.agents.risk_agent import RiskAgent
@@ -15,21 +15,21 @@ load_dotenv()
 
 class AITradingAnalyzer:
     def __init__(self):
-        self.api_key = os.getenv("GIGACHAT_API_KEY")
+        self.api_key = os.getenv("GEMINI_API_KEY")
         if self.api_key:
-            self.provider = GigaChatProvider(self.api_key)
+            self.provider = GeminiProvider(self.api_key)
             self.market_agent = MarketAgent(self.provider)
             self.risk_agent = RiskAgent(self.provider)
             self.psychology_agent = PsychologyAgent(self.provider)
             self.judge_agent = JudgeAgent(self.provider)
-            print("✅ GigaChat AI инициализирован")
+            print("✅ Gemini AI инициализирован")
         else:
             self.provider = None
             self.market_agent = None
             self.risk_agent = None
             self.psychology_agent = None
             self.judge_agent = None
-            print("⚠️ GIGACHAT_API_KEY не найден. AI отключён.")
+            print("⚠️ GEMINI_API_KEY не найден. AI отключён.")
 
     def analyze(self) -> str:
         """Основной AI-анализ статистики и последних сделок."""
@@ -78,25 +78,25 @@ class AITradingAnalyzer:
 
         try:
             response = self.provider.generate(prompt)
-            return response + "\n\n🤖 Анализ от GigaChat. Не финансовая рекомендация."
+            return response + "\n\n🤖 Анализ от Gemini. Не финансовая рекомендация."
         except Exception as e:
-            print(f"❌ Ошибка GigaChat: {e}")
+            print(f"❌ Ошибка Gemini: {e}")
             return f"⚠️ Ошибка AI: {e}\n\n{self._fallback_analysis(stats)}"
 
     def analyze_raw(self, prompt: str) -> str:
-        """Отправка произвольного промпта в GigaChat."""
+        """Отправка произвольного промпта в Gemini."""
         if not self.provider:
-            return "⚠️ AI недоступен. Проверь GIGACHAT_API_KEY."
+            return "⚠️ AI недоступен. Проверь GEMINI_API_KEY."
         try:
             return self.provider.generate(prompt)
         except Exception as e:
-            print(f"❌ Ошибка GigaChat (analyze_raw): {e}")
+            print(f"❌ Ошибка Gemini (analyze_raw): {e}")
             return f"⚠️ Ошибка AI: {e}"
 
     def analyze_market(self) -> str:
         """Анализ рынка через MarketAgent + ContextBuilder."""
         if not self.market_agent:
-            return "⚠️ AI недоступен. Проверь GIGACHAT_API_KEY."
+            return "⚠️ AI недоступен. Проверь GEMINI_API_KEY."
         try:
             return self.market_agent.analyze()
         except Exception as e:
@@ -106,7 +106,7 @@ class AITradingAnalyzer:
     def analyze_risk(self) -> str:
         """Анализ риска через RiskAgent + RuleEngine."""
         if not self.risk_agent:
-            return "⚠️ AI недоступен. Проверь GIGACHAT_API_KEY."
+            return "⚠️ AI недоступен. Проверь GEMINI_API_KEY."
         try:
             return self.risk_agent.analyze()
         except Exception as e:
@@ -116,7 +116,7 @@ class AITradingAnalyzer:
     def analyze_psychology(self) -> str:
         """Анализ психологии через PsychologyAgent."""
         if not self.psychology_agent:
-            return "⚠️ AI недоступен. Проверь GIGACHAT_API_KEY."
+            return "⚠️ AI недоступен. Проверь GEMINI_API_KEY."
         try:
             return self.psychology_agent.analyze()
         except Exception as e:
@@ -126,7 +126,7 @@ class AITradingAnalyzer:
     def synthesize_agents(self) -> str:
         """Запускает всех агентов и возвращает синтезированное решение."""
         if not self.judge_agent:
-            return "⚠️ AI недоступен. Проверь GIGACHAT_API_KEY."
+            return "⚠️ AI недоступен. Проверь GEMINI_API_KEY."
 
         market = self.analyze_market()
         risk = self.analyze_risk()
