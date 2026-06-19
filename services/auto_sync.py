@@ -139,8 +139,10 @@ async def _notify_new_trade(bot, chat_id: str, trade: dict):
             f"⚡️ Плечо: {leverage}x\n\n"
             f"*Напишите причину входа или нажмите «Пропустить»:*"
         )
+        # 🔧 Защита от пустого orderId – если orderId нет, пробуем positionId, иначе заглушка
+        callback_id = trade.get('orderId') or trade.get('positionId') or 'no-id'
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ Комментарий", callback_data=f"entry_reason_{trade.get('orderId')}"),
+            [InlineKeyboardButton("✏️ Комментарий", callback_data=f"entry_reason_{callback_id}"),
              InlineKeyboardButton("⏭ Пропустить", callback_data="skip_entry_reason")]
         ])
         await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
