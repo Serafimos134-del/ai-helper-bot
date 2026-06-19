@@ -5,13 +5,13 @@ from services.bingx_api import get_open_positions
 from services.database import Database
 from ai.trade_scorer import TradeScorer
 from ai.consensus_engine import ConsensusEngine
+from services.ai_trading import AITradingAnalyzer
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
 trade_scorer = TradeScorer()
-consensus_engine = ConsensusEngine()   # создаём один раз для многократного использования
 
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
@@ -63,15 +63,19 @@ async def sync_trades(bot, chat_id: str) -> dict:
             results['new_open'].append(trade)
             await _notify_new_trade(bot, chat_id, trade)
 
+    # Получаем провайдер AI один раз для анализа закрытых сделок
+    ai_provider = AITradingAnalyzer().provider
+
     for oid, stored in stored_by_id.items():
         closed_trade = _build_closed_trade(stored)
         db.add_closed_trade(closed_trade)
         db.delete_open_trade_by_order_id(oid)
         last_id = db.get_last_closed_id()
 
-        # --- Основной анализ через Consensus Engine ---
+        # --- Анализ через Consensus Engine ---
         try:
-            analysis = await consensus_engine.analyze_closed_trade(closed_trade)
+            engine = ConsensusEngine(ai_provider)
+            analysis = await engine.analyze_closed_trade(closed_trade)
             db.update_trade_metrics(last_id,
                                     ai_score=analysis['trade_score'],
                                     market_review=analysis['market_review'],
