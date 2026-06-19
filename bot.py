@@ -47,7 +47,6 @@ BTN_HELP = "ℹ️ Help"
 BTN_BALANCE = "💰 Баланс"
 BTN_LAST_TRADES = "📋 Последние сделки"
 BTN_STATS = "📊 Статистика"
-BTN_AI_EVALUATION = "🤖 Оценка сделки"          # удалена из меню, оставлена для обратной совместимости
 BTN_AI_ANALYSIS = "🧠 AI-анализ"                # общий AI-анализ (оставлен в trading-меню)
 
 BTN_BACK = "🔙 Назад"
@@ -62,16 +61,12 @@ BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
 BTN_AI_LEARN = "📊 Анализ журнала"
 
-# Удалённые кнопки (больше не используются)
-# BTN_AI_OPEN_ANALYSIS = "📈 Анализ открытых сделок"
-# BTN_AI_ASK = "💬 Задать вопрос AI"
-
 NAV_BUTTONS = {
     BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
-    BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_EVALUATION, BTN_AI_ANALYSIS,
+    BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
     BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
-    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,   # новые
+    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
     "🏠 *Главное меню*\nВыбери раздел:"
 }
 
@@ -91,8 +86,7 @@ def trading_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
             [BTN_BALANCE, BTN_LAST_TRADES],
-            [BTN_STATS, BTN_AI_EVALUATION],
-            [BTN_AI_ANALYSIS],
+            [BTN_STATS, BTN_AI_ANALYSIS],
             [BTN_BACK],
         ],
         resize_keyboard=True
@@ -350,6 +344,7 @@ async def show_help(update: Update):
         "  • 💰 Баланс — текущий баланс BingX\n"
         "  • 📋 Последние сделки — открытые и закрытые позиции\n"
         "  • 📊 Статистика — Win Rate, PNL и др.\n"
+        "  • 🧠 AI-анализ — общий анализ портфеля\n"
         "  • 🧠 Консилиум — AI-анализ позиций и новых сетапов\n\n"
         "🔄 Синхронизация каждые 15 секунд.\n\n"
         "📌 *Команды:*\n"
@@ -460,7 +455,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await consilium_process_setup(update, context)
         return
 
-    # Навигация по меню (удалены старые кнопки AI-меню)
+    # Навигация по меню
     if text == BTN_TRADING:
         await update.message.reply_text("📈 *Trading*\nВыбери действие:", parse_mode='Markdown', reply_markup=trading_menu_keyboard())
     elif text == BTN_AI:
@@ -477,11 +472,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_last_trades(update)
     elif text == BTN_STATS:
         await show_stats(update)
-    elif text == BTN_AI_EVALUATION:
-        # оставлено для совместимости, но фактически перенаправляем на Консилиум?
-        # Пока оставим заглушку, т.к. кнопка еще в trading-меню, но лучше убрать.
-        # Удалим вызов, чтобы не путать.
-        await update.message.reply_text("Эта функция объединена с Консилиумом. Используйте 🧠 Консилиум.", reply_markup=ai_menu_keyboard())
     elif text == BTN_AI_ANALYSIS:
         await show_ai_analysis(update)
     elif text == BTN_CONSILIUM:
@@ -542,7 +532,7 @@ async def consilium_menu(update: Update):
         [CONSILIUM_SETUP],
         [BTN_BACK]
     ], resize_keyboard=True)
-    await update.message.reply_text("🧠 *Консилиум*\nВыбери режим:", parse_mode='Markdown', reply_markup=keyboard)
+    await update.message.reply_text("🧠 Консилиум\nВыбери режим:", reply_markup=keyboard)
 
 async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = get_open_positions()
@@ -576,11 +566,11 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
     msg = await update.message.reply_text("🔄 Анализирую позицию...")
     result = await consensus.analyze_open_position(chosen)
     response = (
-        f"🧠 *Консилиум — {chosen['symbol']} {chosen['side']}*\n\n"
-        f"📈 *Рынок:*\n{result['market_review']}\n\n"
-        f"⚠️ *Риск:*\n{result['risk_review']}\n\n"
-        f"🧘 *Психология:*\n{result['psychology_review']}\n\n"
-        f"⚖️ *Вердикт:* {result['judge_verdict']}"
+        f"🧠 Консилиум — {chosen['symbol']} {chosen['side']}\n\n"
+        f"📈 Рынок:\n{result['market_review']}\n\n"
+        f"⚠️ Риск:\n{result['risk_review']}\n\n"
+        f"🧘 Психология:\n{result['psychology_review']}\n\n"
+        f"⚖️ Вердикт: {result['judge_verdict']}"
     )
     await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
@@ -606,11 +596,11 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
     msg = await update.message.reply_text("🔄 Анализирую сетап...")
     result = await consensus.analyze_new_setup(ticker, direction, extra_notes=text)
     response = (
-        f"🧠 *Консилиум — {ticker} {direction}*\n\n"
-        f"📈 *Рынок:*\n{result['market_review']}\n\n"
-        f"⚠️ *Риск:*\n{result['risk_review']}\n\n"
-        f"🧘 *Психология:*\n{result['psychology_review']}\n\n"
-        f"⚖️ *Вердикт:* {result['judge_verdict']}"
+        f"🧠 Консилиум — {ticker} {direction}\n\n"
+        f"📈 Рынок:\n{result['market_review']}\n\n"
+        f"⚠️ Риск:\n{result['risk_review']}\n\n"
+        f"🧘 Психология:\n{result['psychology_review']}\n\n"
+        f"⚖️ Вердикт: {result['judge_verdict']}"
     )
     await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
