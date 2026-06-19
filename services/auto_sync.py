@@ -14,7 +14,6 @@ db = Database()
 trade_scorer = TradeScorer()
 
 # Защита от ложных закрытий: позиция должна отсутствовать 2 цикла подряд
-# Ключ: orderId, значение: количество циклов, в которых позиция отсутствовала в API
 _missing_cycles: dict = {}
 _MISSING_THRESHOLD = 2   # закрываем только после 2 пропусков (30+ сек)
 
@@ -60,7 +59,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
         raw_side = trade.get('side', '')
         side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
 
-        # Позиция вернулась — сбрасываем счётчик пропусков
         _missing_cycles.pop(oid, None)
 
         if oid in stored_by_id:
@@ -91,30 +89,25 @@ async def sync_trades(bot, chat_id: str) -> dict:
             await _notify_new_trade(bot, chat_id, trade)
 
     # Обработка позиций, которых нет в API (с защитой от ложных закрытий)
-    truly_closed = {}   # oid → stored, которые реально закрыты
+    truly_closed = {}
     for oid, stored in stored_by_id.items():
         if oid in api_ids:
-            continue   # такого быть не должно, но перестраховка
+            continue
 
-        # Позиция отсутствует в API — увеличиваем счётчик пропусков
         cycles = _missing_cycles.get(oid, 0) + 1
         _missing_cycles[oid] = cycles
 
         if cycles >= _MISSING_THRESHOLD:
-            # Закрыта — удаляем из словаря пропусков и готовим к переносу
             _missing_cycles.pop(oid, None)
             truly_closed[oid] = stored
             stored_by_id.pop(oid)
         else:
             logger.info(f"Позиция {oid} ({stored.get('symbol')}) отсутствует {cycles}/{_MISSING_THRESHOLD} циклов — ждём подтверждения")
-            # Не удаляем из stored_by_id, чтобы не терять позицию
 
-    # Убираем из _missing_cycles позиции, которые уже удалены из БД (чистка на всякий случай)
     for oid in list(_missing_cycles.keys()):
         if oid not in stored_by_id:
             _missing_cycles.pop(oid, None)
 
-    # Получаем провайдер AI один раз
     ai_provider = AITradingAnalyzer().provider
     engine = ConsensusEngine(ai_provider)
 
@@ -124,7 +117,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
         db.delete_open_trade_by_order_id(oid)
         last_id = db.get_last_closed_id()
 
-        # --- Анализ через Consensus Engine ---
         try:
             analysis = await engine.analyze_closed_trade(closed_trade)
             score = trade_scorer.score(closed_trade)
@@ -166,12 +158,14 @@ def _build_closed_trade(stored_open: dict) -> dict:
             pass
 
     exit_price = _calculate_exit_price(stored_open)
+    exit_price_source = "estimated"  # вычислено из PnL, не от биржи
 
     return {
         'symbol': stored_open['symbol'],
         'side': stored_open['side'],
         'entry_price': float(stored_open.get('entry_price', 0)),
         'exit_price': exit_price,
+        'exit_price_source': exit_price_source,
         'quantity': float(stored_open.get('quantity', 0)),
         'realized_pnl': float(stored_open.get('unrealized_pnl', 0)),
         'comment': '',
@@ -227,10 +221,14 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
         symbol = trade.get('symbol', '?')
         side = trade.get('side', '?')
         pnl_emoji = "✅" if pnl >= 0 else "❌"
+        exit_price = trade.get('exit_price', 0)
+        exit_source = trade.get('exit_price_source', '')
+        estimated_note = " (оценка)" if exit_source == "estimated" else ""
         text = (
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
-            f"💰 PNL: ${pnl:+.2f}\n\n"
+            f"💰 PNL: ${pnl:+.2f}\n"
+            f"💵 Цена выхода: ${exit_price:.4f}{estimated_note}\n\n"
             f"*Добавьте вывод или выберите сетап:*"
         )
         keyboard = InlineKeyboardMarkup([
