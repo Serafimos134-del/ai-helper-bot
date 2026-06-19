@@ -34,22 +34,8 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
-# Преобразуем в int для сравнения
-try:
-    ALLOWED_CHAT_ID = int(CHAT_ID) if CHAT_ID else None
-except ValueError:
-    ALLOWED_CHAT_ID = None
-
 ai_analyzer = AITradingAnalyzer()
 db = Database()
-
-# ─── Проверка доступа ───────────────────────────────────────────────────────
-
-def is_allowed(update: Update) -> bool:
-    """Проверяет, что сообщение пришло от владельца бота."""
-    if ALLOWED_CHAT_ID is None:
-        return True  # если ID не задан, разрешаем всем (но логируем предупреждение)
-    return update.effective_chat.id == ALLOWED_CHAT_ID
 
 # ─── Тексты кнопок ──────────────────────────────────────────────────────────
 
@@ -122,10 +108,9 @@ def open_positions_keyboard(positions):
     buttons.append([BTN_BACK])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ─── Хендлеры (все с проверкой is_allowed) ───────────────────────────────────
+# ─── Хендлеры ─────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     context.user_data.clear()
     text = (
         "👋 *AI Helper Bot*\n\n"
@@ -136,7 +121,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
 async def show_balance(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("⏳ Получаю баланс...")
     result = get_balance()
     if result.get('success'):
@@ -152,7 +136,6 @@ async def show_balance(update: Update):
     await msg.edit_text(text, parse_mode='Markdown')
 
 async def show_last_trades(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("⏳ Загружаю сделки...")
     open_trades = db.get_open_trades()
     closed_trades = db.get_closed_trades(limit=15)
@@ -183,20 +166,17 @@ async def show_last_trades(update: Update):
     await msg.edit_text("\n".join(lines), parse_mode='Markdown', reply_markup=reply_markup)
 
 async def show_stats(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("⏳ Считаю статистику...")
     stats = db.get_stats()
     text = format_stats_message(stats)
     await msg.edit_text(text, parse_mode='Markdown')
 
 async def show_ai_analysis(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🤖 Анализирую...")
     text = ai_analyzer.analyze()
     await msg.edit_text(text, parse_mode='Markdown')
 
 async def show_market_overview(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🌐 Собираю данные рынка...")
     result = get_top_tickers(10)
     if not result.get('success') or not result.get('tickers'):
@@ -222,14 +202,11 @@ async def show_market_overview(update: Update):
         analysis = ai_analyzer.analyze_raw(prompt)
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
-    try:
-        await msg.delete()
-    except Exception:
-        pass
+    try: await msg.delete()
+    except Exception: pass
     await update.message.reply_text(f"🌐 Обзор рынка от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
 
 async def show_trends(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("📊 Анализирую тренды...")
     symbols = ["BTC-USDT", "ETH-USDT"]
     data_lines = []
@@ -271,7 +248,6 @@ async def show_trends(update: Update):
     await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
 
 async def start_open_position_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     positions = get_open_positions().get('trades', [])
     if not positions:
         await update.message.reply_text("✅ Нет открытых позиций для анализа.", reply_markup=ai_menu_keyboard())
@@ -285,7 +261,6 @@ async def start_open_position_analysis(update: Update, context: ContextTypes.DEF
     await update.message.reply_text("📈 *Выбери позицию для AI-анализа:*", parse_mode='Markdown', reply_markup=open_positions_keyboard(positions))
 
 async def analyze_open_position(update: Update, position: dict):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🤖 Анализирую позицию...")
     symbol = position.get('symbol', '')
     side = position.get('side', '')
@@ -342,7 +317,6 @@ async def analyze_open_position(update: Update, position: dict):
 
 # ── Журнал сделок ──
 async def show_journal(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("📓 Загружаю журнал...")
     trades = db.get_closed_trades(limit=500)
     if not trades:
@@ -399,7 +373,6 @@ async def show_journal(update: Update):
 
 # ── Анализ журнала (AI) ──
 async def show_journal_analysis(update: Update):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🤖 Анализирую журнал сделок...")
     trades = db.get_closed_trades(limit=50)
     if not trades:
@@ -432,7 +405,6 @@ async def show_journal_analysis(update: Update):
 
 # ── Выбор сделки для AI-оценки ──
 async def show_trades_for_evaluation(update: Update):
-    if not is_allowed(update): return
     trades = db.get_closed_trades(limit=15)
     if not trades:
         await update.message.reply_text("Нет закрытых сделок для оценки.")
@@ -444,7 +416,6 @@ async def show_trades_for_evaluation(update: Update):
     await update.message.reply_text("🤖 *Выберите сделку для AI-оценки:*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_help(update: Update):
-    if not is_allowed(update): return
     text = (
         "ℹ️ *Помощь*\n\n"
         "📈 *Trading* — работа со сделками:\n"
@@ -464,7 +435,6 @@ async def show_help(update: Update):
 
 # ── Health check ──
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🩺 Проверяю здоровье систем...")
     status = []
     try:
@@ -499,7 +469,6 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Главный обработчик сообщений ──
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     text = update.message.text.strip()
     state = context.user_data.get('state')
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
@@ -672,7 +641,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Команда /ai_fix ──
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🤖 Анализирую убыточные сделки...")
     last_trades = db.get_closed_trades(limit=5)
     losing = [t for t in last_trades if t['realized_pnl'] < 0]
@@ -691,7 +659,6 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update): return
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
     results = await sync_trades(context.bot, update.effective_chat.id)
     new_open = len(results.get('new_open', []))
