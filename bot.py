@@ -341,7 +341,7 @@ async def show_journal_analysis(update: Update):
         f"Журнал сделок:\n{trades_text}"
     )
     answer = ai_analyzer.analyze_raw(prompt)
-    await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}", parse_mode='Markdown')
+    await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}")
 
 async def show_help(update: Update):
     text = (
@@ -517,7 +517,7 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Дай конкретные советы, как избежать повторения."
     )
     answer = ai_analyzer.analyze_raw(prompt)
-    await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}", parse_mode='Markdown')
+    await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}")
 
 # ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -582,7 +582,7 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
         f"🧘 *Психология:*\n{result['psychology_review']}\n\n"
         f"⚖️ *Вердикт:* {result['judge_verdict']}"
     )
-    await msg.edit_text(response, parse_mode='Markdown')
+    await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
 async def consilium_new_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -612,7 +612,7 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
         f"🧘 *Психология:*\n{result['psychology_review']}\n\n"
         f"⚖️ *Вердикт:* {result['judge_verdict']}"
     )
-    await msg.edit_text(response, parse_mode='Markdown')
+    await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
 def consilium_keyboard():
