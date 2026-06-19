@@ -6,14 +6,12 @@ from services.database import Database
 from ai.trade_scorer import TradeScorer
 from ai.consensus_engine import ConsensusEngine
 from services.ai_trading import AITradingAnalyzer
-from ai.memory_engine import MemoryEngine
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
 trade_scorer = TradeScorer()
-memory_engine = MemoryEngine()
 
 # Защита от ложных закрытий: позиция должна отсутствовать 2 цикла подряд
 _missing_cycles: dict = {}
@@ -39,6 +37,8 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
     Фоновый анализ закрытой сделки: Consensus Engine + Trade Scorer.
     Выполняется асинхронно, не блокирует основной sync loop.
     """
+    from ai.memory_engine import MemoryEngine
+
     try:
         ai_provider = AITradingAnalyzer().provider
         engine = ConsensusEngine(ai_provider)
@@ -54,7 +54,8 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
 
         # Обновляем Memory Engine
         try:
-            await memory_engine.update(closed_trade)
+            mem = MemoryEngine()
+            await mem.update(closed_trade)
             logger.info(f"Memory Engine обновлён для сделки #{trade_id}")
         except Exception as mem_e:
             logger.error(f"Ошибка обновления Memory Engine для сделки #{trade_id}: {mem_e}")
