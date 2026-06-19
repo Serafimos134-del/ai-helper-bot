@@ -17,7 +17,7 @@ class PsychologyAgent:
         """Асинхронно анализирует историю сделок и возвращает оценку психологического состояния."""
         loop = asyncio.get_running_loop()
         if context is None:
-            ctx = self.context_builder.build_full_context()
+            ctx = await self.context_builder.build_full_context()   # ← исправлено: добавлен await
         else:
             ctx = context
         history = ctx.get("history", {})
