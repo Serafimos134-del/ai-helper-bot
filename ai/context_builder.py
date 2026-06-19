@@ -73,6 +73,8 @@ class ContextBuilder:
         elif context["btc"] and context["btc"]["change_24h"] < -1:
             context["trend"] = "BEARISH"
 
+        # ДИАГНОСТИКА: лог собранных рыночных данных
+        logger.info(f"CONTEXT BUILDER (market): btc={context.get('btc')}, eth={context.get('eth')}")
         return context
 
     def _build_portfolio_context(self) -> dict:
@@ -234,6 +236,9 @@ class ContextBuilder:
                 }
         except Exception as e:
             logger.error(f"Ошибка получения тикера {symbol}: {e}")
+
+        # ДИАГНОСТИКА: лог данных по инструменту
+        logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
         return {
             "idea": {
