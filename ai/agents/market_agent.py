@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from ai.providers.base_provider import BaseProvider
 from ai.context_builder import ContextBuilder
@@ -12,11 +13,17 @@ class MarketAgent:
         self.provider = provider
         self.context_builder = ContextBuilder()
 
-    def analyze(self) -> str:
-        """Анализирует рыночный контекст и возвращает структурированное заключение."""
-        context = self.context_builder._build_market_context()
+    async def analyze(self, context: dict = None) -> str:
+        """Асинхронно анализирует рыночный контекст и возвращает структурированное заключение."""
+        loop = asyncio.get_running_loop()
+        if context is None:
+            context = self.context_builder._build_market_context()
         prompt = self._build_market_prompt(context)
-        return self.provider.generate(prompt)
+        try:
+            return await loop.run_in_executor(None, self.provider.generate, prompt)
+        except Exception as e:
+            logger.error(f"MarketAgent error: {e}")
+            return f"Рыночный анализ недоступен: {e}"
 
     def _build_market_prompt(self, ctx: dict) -> str:
         # Защита от None: если ctx.get вернул None, заменяем на пустой словарь/список
