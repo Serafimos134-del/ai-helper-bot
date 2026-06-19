@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 from ai.providers.base_provider import BaseProvider
@@ -14,9 +15,13 @@ class RiskAgent:
         self.provider = provider
         self.context_builder = ContextBuilder()
 
-    def analyze(self) -> str:
-        """Возвращает JSON с сигналами риска + текстовое summary."""
-        ctx = self.context_builder.build_full_context()
+    async def analyze(self, context: dict = None) -> str:
+        """Асинхронно возвращает JSON с сигналами риска + текстовое summary."""
+        loop = asyncio.get_running_loop()
+        if context is None:
+            ctx = self.context_builder.build_full_context()
+        else:
+            ctx = context
         portfolio = ctx.get("portfolio", {})
         history = ctx.get("history", {})
 
@@ -26,7 +31,8 @@ class RiskAgent:
         # Генерируем human-readable summary через LLM с улучшенным промптом
         try:
             summary_prompt = self._build_summary_prompt(signals)
-            summary = self.provider.generate(summary_prompt).strip()
+            summary = await loop.run_in_executor(None, self.provider.generate, summary_prompt)
+            summary = summary.strip()
         except Exception as e:
             logger.error(f"Ошибка генерации summary: {e}")
             summary = "Риск-анализ завершён. Смотри детали."
