@@ -6,12 +6,14 @@ from services.database import Database
 from ai.trade_scorer import TradeScorer
 from ai.consensus_engine import ConsensusEngine
 from services.ai_trading import AITradingAnalyzer
+from ai.memory_engine import MemoryEngine
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
 db = Database()
 trade_scorer = TradeScorer()
+memory_engine = MemoryEngine()
 
 # Защита от ложных закрытий: позиция должна отсутствовать 2 цикла подряд
 _missing_cycles: dict = {}
@@ -50,6 +52,13 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
                                 judge_verdict=analysis['judge_verdict'])
         logger.info(f"Сделка #{trade_id} проанализирована консилиумом: {analysis['judge_verdict']}")
 
+        # Обновляем Memory Engine
+        try:
+            await memory_engine.update(closed_trade)
+            logger.info(f"Memory Engine обновлён для сделки #{trade_id}")
+        except Exception as mem_e:
+            logger.error(f"Ошибка обновления Memory Engine для сделки #{trade_id}: {mem_e}")
+
         # Отправляем результаты AI-анализа отдельным сообщением
         try:
             symbol = stored.get('symbol', '?')
@@ -67,7 +76,6 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
 
     except Exception as e:
         logger.error(f"Ошибка фонового анализа сделки #{trade_id}: {e}")
-        # fallback — старый скоринг
         try:
             score = trade_scorer.score(closed_trade)
             db.update_trade_metrics(trade_id, ai_score=score['total_score'])
@@ -97,7 +105,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
         if oid:
             stored_by_id[oid] = t
 
-    # Обработка позиций, которые есть в API
     for trade in api_trades:
         oid = str(trade.get('orderId'))
         raw_side = trade.get('side', '')
@@ -132,7 +139,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
             results['new_open'].append(trade)
             await _notify_new_trade(bot, chat_id, trade)
 
-    # Обработка позиций, которых нет в API (с защитой от ложных закрытий)
     truly_closed = {}
     for oid, stored in stored_by_id.items():
         if oid in api_ids:
@@ -159,11 +165,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
         last_id = db.get_last_closed_id()
 
         results['new_closed'].append(stored)
-
-        # Уведомление о закрытии — СРАЗУ
         await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
-
-        # AI-анализ — в фоне, не блокирует sync
         asyncio.create_task(_analyze_and_notify(bot, chat_id, last_id, closed_trade, stored))
 
     return results
