@@ -73,7 +73,6 @@ class ContextBuilder:
         elif context["btc"] and context["btc"]["change_24h"] < -1:
             context["trend"] = "BEARISH"
 
-        # ДИАГНОСТИКА: лог собранных рыночных данных
         logger.info(f"CONTEXT BUILDER (market): btc={context.get('btc')}, eth={context.get('eth')}")
         return context
 
@@ -167,11 +166,12 @@ class ContextBuilder:
     async def build_for_open_position(self, position: dict) -> dict:
         """
         Контекст для анализа открытой позиции.
-        Использует данные позиции, рынка и портфеля.
+        Использует данные позиции, рынка, портфеля и историю.
         """
         loop = asyncio.get_running_loop()
         market = await loop.run_in_executor(None, self._build_market_context)
         portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
+        history = await loop.run_in_executor(None, self._build_history_context)
 
         # Дополнительно можно получить данные по инструменту позиции
         ticker_info = None
@@ -204,6 +204,7 @@ class ContextBuilder:
             "ticker": ticker_info,
             "market": market,
             "portfolio": portfolio,
+            "history": history,          # <-- добавили историю
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -214,11 +215,12 @@ class ContextBuilder:
     async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
         """
         Контекст для оценки нового сетапа.
-        Содержит информацию о рынке, портфеле и конкретном инструменте.
+        Содержит информацию о рынке, портфеле, конкретном инструменте и историю.
         """
         loop = asyncio.get_running_loop()
         market = await loop.run_in_executor(None, self._build_market_context)
         portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
+        history = await loop.run_in_executor(None, self._build_history_context)
 
         ticker_info = None
         symbol = ticker  # предполагаем, что ticker уже в формате BTC-USDT и т.п.
@@ -237,7 +239,6 @@ class ContextBuilder:
         except Exception as e:
             logger.error(f"Ошибка получения тикера {symbol}: {e}")
 
-        # ДИАГНОСТИКА: лог данных по инструменту
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
         return {
@@ -250,6 +251,7 @@ class ContextBuilder:
             "ticker": ticker_info,
             "market": market,
             "portfolio": portfolio,
+            "history": history,          # <-- добавили историю
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -282,9 +284,10 @@ class ContextBuilder:
                 "holding_minutes": trade.get("holding_minutes"),
                 "ai_score": trade.get("ai_score"),
             },
-            "score": score_result,  # результат Trade Scorer (если есть)
+            "score": score_result,
             "market_snapshot": market,
-            "history_context": history,
+            "history_context": history,   # уже было, оставим
+            "history": history,           # дублируем для единообразия
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
