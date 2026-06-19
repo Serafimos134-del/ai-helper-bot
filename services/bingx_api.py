@@ -33,9 +33,7 @@ def _request_with_retry(method: str, path: str, params: dict = None) -> dict:
     for attempt in range(MAX_RETRIES + 1):
         result = _request(method, path, params)
         if result.get('code') != -1:
-            # Успешный ответ (может быть и ошибка бизнес-логики, но не сетевая)
             return result
-        # Сетевая ошибка – повторяем, если есть попытки
         if attempt < MAX_RETRIES:
             time.sleep(RETRY_DELAY)
     return result
@@ -220,9 +218,16 @@ def get_ticker(symbol: str) -> dict:
     data = _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
-        tickers = data.get('data', [])
-        if not isinstance(tickers, list) or not tickers:
-            return {'success': False, 'error': 'Symbol not found', 'ticker': {}}
-        return {'success': True, 'ticker': tickers[0]}
+        # API возвращает либо список, либо одиночный объект
+        ticker_data = data.get('data', {})
+        if isinstance(ticker_data, list):
+            if not ticker_data:
+                return {'success': False, 'error': 'Symbol not found', 'ticker': {}}
+            ticker_obj = ticker_data[0]
+        elif isinstance(ticker_data, dict):
+            ticker_obj = ticker_data
+        else:
+            return {'success': False, 'error': 'Unexpected format', 'ticker': {}}
+        return {'success': True, 'ticker': ticker_obj}
     else:
         return {'success': False, 'error': data.get('error', 'Unknown error'), 'ticker': {}}
