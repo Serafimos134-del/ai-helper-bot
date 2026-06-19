@@ -1,51 +1,5 @@
-import logging
-from typing import Dict, List, Tuple
-
-logger = logging.getLogger(__name__)
-
-
-class RiskRuleEngine:
-    """Рассчитывает риск-метрики без использования LLM."""
-
-    # Пороговые значения
-    RISK_PER_TRADE_WARN = 2.0       # % от депозита
-    RISK_PER_TRADE_HIGH = 3.0
-    LEVERAGE_WARN = 20
-    LEVERAGE_HIGH = 30
-    EXPOSURE_WARN = 50.0
-    EXPOSURE_HIGH = 75.0
-    LOSING_STREAK_WARN = 3
-    DAILY_PNL_HIGH = -5.0           # %
-    RR_BAD = 1.5
-    DRAWDOWN_CAUTION = 5.0          # %
-    DRAWDOWN_DEFENSIVE = 10.0
-    DRAWDOWN_CRITICAL = 15.0
-
-    # Классификация волатильности активов (упрощённо)
-    LOW_VOLATILITY = {"BTC-USDT", "ETH-USDT"}
-    MEDIUM_VOLATILITY = {"SOL-USDT", "BNB-USDT", "XRP-USDT", "ADA-USDT"}
-    # всё остальное — высокая волатильность
-
-    @staticmethod
-    def _get_volatility_class(symbol: str) -> str:
-        if symbol in RiskRuleEngine.LOW_VOLATILITY:
-            return "LOW"
-        if symbol in RiskRuleEngine.MEDIUM_VOLATILITY:
-            return "MEDIUM"
-        return "HIGH"
-
-    @staticmethod
+@staticmethod
     def assess(portfolio: Dict, history: Dict) -> Dict:
-        """
-        Основной метод оценки риска.
-
-        Args:
-            portfolio: данные портфеля из ContextBuilder
-            history: исторические данные из ContextBuilder
-
-        Returns:
-            Словарь с сигналами риска
-        """
         balance = portfolio.get("balance") or 0
         used_margin = portfolio.get("used_margin") or 0
         unrealized_pnl = portfolio.get("unrealized_pnl") or 0
@@ -59,9 +13,27 @@ class RiskRuleEngine:
         # 1. Exposure
         exposure_pct = (used_margin / balance) * 100
 
-        # 2. Риск на позицию (средняя маржа на позицию / баланс)
-        avg_margin_per_pos = used_margin / pos_count if pos_count > 0 else 0
-        risk_per_trade_pct = (avg_margin_per_pos / balance) * 100 if balance > 0 else 0
+        # 2. Реальный риск на позиции (с учётом стоп-лосса)
+        total_risk = 0.0
+        max_individual_risk = 0.0
+        for p in open_positions:
+            entry = float(p.get("entry_price", 0))
+            qty = abs(float(p.get("size", p.get("quantity", 0))))
+            stop_loss = p.get("stop_loss")
+            if stop_loss and entry > 0:
+                # Риск = расстояние до стоп-лосса × количество
+                risk = abs(entry - float(stop_loss)) * qty
+            elif entry > 0:
+                # Без стоп-лосса оцениваем как 2% от цены входа (оценка волатильности)
+                risk = 0.02 * entry * qty
+            else:
+                risk = 0.0
+            total_risk += risk
+            if risk > max_individual_risk:
+                max_individual_risk = risk
+
+        risk_per_trade_pct = (total_risk / balance) * 100 if balance > 0 else 0
+        max_individual_risk_pct = (max_individual_risk / balance) * 100 if balance > 0 else 0
 
         # 3. Максимальное плечо
         max_leverage = max((p.get("leverage", 1) for p in open_positions), default=1)
@@ -88,7 +60,7 @@ class RiskRuleEngine:
         short_count = sum(1 for p in open_positions if p.get("side") == "SHORT")
         correlation_risk = "HIGH" if (long_count >= 2 or short_count >= 2) else "LOW"
 
-        # 8. Drawdown mode (приблизительно по текущему PnL)
+        # 8. Drawdown mode
         drawdown_pct = abs(daily_pnl_pct) if daily_pnl_pct < 0 else 0
         if drawdown_pct > RiskRuleEngine.DRAWDOWN_CRITICAL:
             drawdown_mode = "CRITICAL"
@@ -111,13 +83,17 @@ class RiskRuleEngine:
                 risk_level = new_level
             risk_score = max(risk_score, new_score)
 
-        # Risk per trade
+        # Risk per trade (теперь реальный, с учётом стоп-лосса)
         if risk_per_trade_pct >= RiskRuleEngine.RISK_PER_TRADE_HIGH:
-            warnings.append(f"Риск на сделку: {risk_per_trade_pct:.1f}% депозита (критический)")
-            escalate("HIGH", 7)
+            warnings.append(f"Риск на все позиции: {risk_per_trade_pct:.1f}% депозита (критический)")
+            escalate("HIGH", 8)
         elif risk_per_trade_pct >= RiskRuleEngine.RISK_PER_TRADE_WARN:
-            warnings.append(f"Риск на сделку: {risk_per_trade_pct:.1f}% депозита (повышен)")
+            warnings.append(f"Риск на все позиции: {risk_per_trade_pct:.1f}% депозита (повышен)")
             escalate("MODERATE", 5)
+
+        if max_individual_risk_pct >= RiskRuleEngine.RISK_PER_TRADE_HIGH:
+            warnings.append(f"Максимальный риск на позицию: {max_individual_risk_pct:.1f}% депозита")
+            escalate("HIGH", 7)
 
         # Leverage
         if max_leverage >= RiskRuleEngine.LEVERAGE_HIGH:
@@ -192,6 +168,7 @@ class RiskRuleEngine:
             "exposure_pct": round(exposure_pct, 1),
             "max_leverage": max_leverage,
             "risk_per_trade_pct": round(risk_per_trade_pct, 1),
+            "max_individual_risk_pct": round(max_individual_risk_pct, 1),
             "rr_ratio": round(rr, 2),
             "losing_streak": losing_streak,
             "volatility_risk": volatility_risk,
