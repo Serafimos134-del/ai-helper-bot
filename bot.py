@@ -534,7 +534,7 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════════════════════
 
 from ai.consensus_engine import ConsensusEngine
-consensus = ConsensusEngine()
+consensus = ConsensusEngine(ai_analyzer.provider)
 
 async def consilium_menu(update: Update):
     keyboard = ReplyKeyboardMarkup([
