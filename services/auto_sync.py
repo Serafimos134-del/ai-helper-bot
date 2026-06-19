@@ -130,8 +130,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
         except Exception:
             pass
 
-    # Раньше был баг: exit_price = entry_price
-    # Теперь вычисляем реальную цену выхода через PnL
+    # Вычисляем реальную цену выхода через PnL
     exit_price = _calculate_exit_price(stored_open)
 
     return {
@@ -165,7 +164,8 @@ def _build_closed_trade(stored_open: dict) -> dict:
 async def _notify_new_trade(bot, chat_id: str, trade: dict):
     try:
         symbol = trade.get('symbol', '?')
-        side = 'LONG' if trade.get('side') == 'LONG' else 'SHORT'
+        raw_side = trade.get('side', '')
+        side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
         entry = float(trade.get('entryPrice', 0))
         size = abs(float(trade.get('positionAmt', trade.get('size', 0))))
         leverage = trade.get('leverage', 1)
