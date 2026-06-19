@@ -6,6 +6,7 @@ from services.bingx_api import (
     get_funding_rate, get_open_interest, get_kline,
     _calculate_atr, _detect_market_regime
 )
+from ai.memory_engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class ContextBuilder:
 
     def __init__(self):
         self.db = Database()
+        self.memory = MemoryEngine()
 
     async def build_full_context(self) -> dict:
         loop = asyncio.get_running_loop()
@@ -104,11 +106,8 @@ class ContextBuilder:
         context = {
             "stats": None, "recent_trades": [],
             "losing_streak": 0, "winning_streak": 0,
-            # Новые метрики Psychology v2
-            "revenge_score": 0,
-            "fomo_score": 0,
-            "overtrading_score": 0,
-            "premature_exit_score": 0,
+            "revenge_score": 0, "fomo_score": 0,
+            "overtrading_score": 0, "premature_exit_score": 0,
             "tilt_probability": 0,
         }
 
@@ -144,7 +143,6 @@ class ContextBuilder:
                 else:
                     break
 
-            # === Расчёт метрик поведения (Psychology v2) ===
             context.update(self._calculate_behavior_metrics(trades, context["losing_streak"]))
 
         except Exception as e:
@@ -153,35 +151,26 @@ class ContextBuilder:
         return context
 
     def _calculate_behavior_metrics(self, trades: list, losing_streak: int) -> dict:
-        """Рассчитывает revenge_score, fomo_score, overtrading_score, premature_exit_score, tilt_probability."""
         result = {
-            "revenge_score": 0,
-            "fomo_score": 0,
-            "overtrading_score": 0,
-            "premature_exit_score": 0,
+            "revenge_score": 0, "fomo_score": 0,
+            "overtrading_score": 0, "premature_exit_score": 0,
             "tilt_probability": 0,
         }
 
         if not trades:
             return result
 
-        recent = trades[:10]  # последние 10 сделок
+        recent = trades[:10]
 
-        # 1. Revenge Score: серия убытков + рост плеча или размера
         if losing_streak >= 2:
             result["revenge_score"] += min(losing_streak * 2, 6)
-
             leverages = [float(t.get("leverage", 1)) for t in recent]
             sizes = [abs(float(t.get("pnl", 0))) for t in recent]
+            if len(leverages) >= 2 and leverages[0] > leverages[-1]:
+                result["revenge_score"] += 2
+            if len(sizes) >= 2 and sizes[0] > sizes[-1]:
+                result["revenge_score"] += 2
 
-            if len(leverages) >= 2:
-                if leverages[0] > leverages[-1]:
-                    result["revenge_score"] += 2
-            if len(sizes) >= 2:
-                if sizes[0] > sizes[-1]:
-                    result["revenge_score"] += 2
-
-        # 2. FOMO Score: много сделок за короткий период
         if len(recent) >= 3:
             try:
                 times = [t.get("close_time", "") for t in recent if t.get("close_time")]
@@ -204,11 +193,9 @@ class ContextBuilder:
             except:
                 pass
 
-        # 3. Overtrading Score: >5 сделок за день
         if len(recent) >= 5:
             result["overtrading_score"] = min(len(recent), 10)
 
-        # 4. Premature Exit Score: короткое удержание прибыльных сделок
         profitable = [t for t in recent if float(t.get("pnl", 0)) > 0]
         if profitable:
             premature_count = 0
@@ -222,7 +209,6 @@ class ContextBuilder:
                         premature_count += 1
             result["premature_exit_score"] = min(premature_count * 2, 8)
 
-        # 5. Tilt Probability: комбинация всех метрик
         tilt = 0
         if result["revenge_score"] >= 6:
             tilt += 40
@@ -252,6 +238,7 @@ class ContextBuilder:
             ticker_info = self._build_ticker_info(symbol)
 
         market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+        memory_context = await self._get_memory_context()
 
         return {
             "position": {
@@ -268,6 +255,7 @@ class ContextBuilder:
             "market": market,
             "portfolio": portfolio,
             "history": history,
+            "memory": memory_context,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -287,6 +275,7 @@ class ContextBuilder:
 
         ticker_info = self._build_ticker_info(symbol)
         market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+        memory_context = await self._get_memory_context()
 
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
@@ -296,6 +285,7 @@ class ContextBuilder:
             "market": market,
             "portfolio": portfolio,
             "history": history,
+            "memory": memory_context,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -308,6 +298,7 @@ class ContextBuilder:
         history_task = loop.run_in_executor(None, self._build_history_context)
         market_task = loop.run_in_executor(None, self._build_market_context)
         history, market = await asyncio.gather(history_task, market_task)
+        memory_context = await self._get_memory_context()
 
         return {
             "trade": {
@@ -328,6 +319,7 @@ class ContextBuilder:
             "score": score_result,
             "market": market,
             "history": history,
+            "memory": memory_context,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -375,3 +367,11 @@ class ContextBuilder:
             logger.error(f"Ошибка расчёта ATR/regime {symbol}: {e}")
 
         return info if info else None
+
+    async def _get_memory_context(self) -> str:
+        """Возвращает строку профиля трейдера из Memory Engine."""
+        try:
+            return self.memory.get_context_for_prompt()
+        except Exception as e:
+            logger.error(f"Ошибка получения memory_context: {e}")
+            return ""
