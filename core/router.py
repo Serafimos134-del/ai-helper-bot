@@ -65,8 +65,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(data.split("_")[1])
         await generate_ai_review(query, trade_id)
     elif data.startswith("entry_reason_"):
-        # Обработчик кнопки "Комментарий" из уведомления о новой сделке
-        order_id = data.split("_", 2)[2]
+        # 🔧 Защита от неполного callback_data
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            logger.warning(f"Invalid entry_reason callback_data: {data}")
+            await query.edit_message_text("❌ Ошибка: неверный ID позиции.")
+            return
+        order_id = parts[2]
         context.user_data['entry_order_id'] = order_id
         context.user_data['state'] = 'entering_entry_reason'
         await query.edit_message_text(
