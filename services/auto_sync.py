@@ -13,6 +13,19 @@ logger = logging.getLogger(__name__)
 db = Database()
 trade_scorer = TradeScorer()
 
+def _calculate_exit_price(trade: dict) -> float:
+    """Вычисляет реальную цену выхода на основе PnL и размера позиции."""
+    entry = float(trade.get('entry_price', 0))
+    qty = float(trade.get('quantity', 0))
+    pnl = float(trade.get('unrealized_pnl', 0))
+    side = trade.get('side', 'LONG')
+    if qty == 0:
+        return entry
+    if side == 'LONG':
+        return entry + (pnl / qty)
+    else:
+        return entry - (pnl / qty)
+
 async def sync_trades(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
 
@@ -63,8 +76,10 @@ async def sync_trades(bot, chat_id: str) -> dict:
             results['new_open'].append(trade)
             await _notify_new_trade(bot, chat_id, trade)
 
-    # Получаем провайдер AI один раз для анализа закрытых сделок
+    # Получаем провайдер AI один раз
     ai_provider = AITradingAnalyzer().provider
+    # Создаём ConsensusEngine один раз для всех закрытых сделок
+    engine = ConsensusEngine(ai_provider)
 
     for oid, stored in stored_by_id.items():
         closed_trade = _build_closed_trade(stored)
@@ -74,10 +89,11 @@ async def sync_trades(bot, chat_id: str) -> dict:
 
         # --- Анализ через Consensus Engine ---
         try:
-            engine = ConsensusEngine(ai_provider)
             analysis = await engine.analyze_closed_trade(closed_trade)
+            # trade_score берём отдельно из TradeScorer
+            score = trade_scorer.score(closed_trade)
             db.update_trade_metrics(last_id,
-                                    ai_score=analysis['trade_score'],
+                                    ai_score=score['total_score'],
                                     market_review=analysis['market_review'],
                                     risk_review=analysis['risk_review'],
                                     psychology_review=analysis['psychology_review'],
@@ -114,11 +130,15 @@ def _build_closed_trade(stored_open: dict) -> dict:
         except Exception:
             pass
 
+    # Раньше был баг: exit_price = entry_price
+    # Теперь вычисляем реальную цену выхода через PnL
+    exit_price = _calculate_exit_price(stored_open)
+
     return {
         'symbol': stored_open['symbol'],
         'side': stored_open['side'],
         'entry_price': float(stored_open.get('entry_price', 0)),
-        'exit_price': float(stored_open.get('entry_price', 0)),
+        'exit_price': exit_price,
         'quantity': float(stored_open.get('quantity', 0)),
         'realized_pnl': float(stored_open.get('unrealized_pnl', 0)),
         'comment': '',
