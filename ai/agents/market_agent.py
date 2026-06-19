@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class MarketAgent:
-    """Агент, анализирующий рыночную ситуацию в стиле ponytail."""
+    """Агент, анализирующий рыночную ситуацию (расширенный контекст v2)."""
 
     def __init__(self, provider: BaseProvider):
         self.provider = provider
@@ -33,6 +33,7 @@ class MarketAgent:
         eth = market.get("eth") or {}
         top = market.get("top_movers") or []
         trend = market.get("trend") or "NEUTRAL"
+        market_regime = market.get("market_regime", "UNKNOWN")
 
         # Данные по конкретному инструменту (если есть)
         ticker_info = ctx.get("ticker") or {}
@@ -60,10 +61,25 @@ class MarketAgent:
         if ticker_info:
             symbol = idea.get("symbol", ticker_info.get("symbol", ""))
             direction = idea.get("direction", "")
+            price = ticker_info.get('price', 'N/A')
+            change = ticker_info.get('change_24h', 0)
+            high = ticker_info.get('high', 'N/A')
+            low = ticker_info.get('low', 'N/A')
+            volume = ticker_info.get('volume', 0)
+            funding = ticker_info.get('funding_rate', 'N/A')
+            oi = ticker_info.get('open_interest', 'N/A')
+            atr = ticker_info.get('atr', 'N/A')
+            ticker_regime = ticker_info.get('market_regime', 'UNKNOWN')
+
             prompt += (
-                f"2. АНАЛИЗ {symbol}: текущая цена {ticker_info.get('price', 'N/A')}, "
-                f"изменение за 24ч: {ticker_info.get('change_24h', 0):+.2f}%, "
-                f"макс: {ticker_info.get('high', 'N/A')}, мин: {ticker_info.get('low', 'N/A')}.\n"
+                f"2. АНАЛИЗ {symbol}:\n"
+                f"   - Цена: {price}, изменение 24ч: {change:+.2f}%\n"
+                f"   - Макс 24ч: {high}, Мин 24ч: {low}\n"
+                f"   - Объём 24ч: {volume:,.0f}\n"
+                f"   - Funding Rate: {funding}\n"
+                f"   - Open Interest: {oi}\n"
+                f"   - ATR (14): {atr} (волатильность)\n"
+                f"   - Режим рынка: {ticker_regime}\n"
                 f"3. СИГНАЛ ДЛЯ {direction if direction else 'сделки'}: BUY / SELL / WAIT с обоснованием в одно предложение.\n"
             )
         else:
@@ -75,9 +91,10 @@ class MarketAgent:
         prompt += (
             "4. Без воды, без markdown, без общих фраз. Только цифры и факты.\n\n"
             f"Тренд: {trend}\n"
-            f"BTC: цена ${btc_price:.2f}, изменение за 24ч: {btc_change:+.2f}%, "
+            f"Режим рынка BTC: {market_regime}\n"
+            f"BTC: цена ${btc_price:.2f}, изм 24ч: {btc_change:+.2f}%, "
             f"макс: ${btc_high:.2f}, мин: ${btc_low:.2f}\n"
-            f"ETH: цена ${eth_price:.2f}, изменение за 24ч: {eth_change:+.2f}%, "
+            f"ETH: цена ${eth_price:.2f}, изм 24ч: {eth_change:+.2f}%, "
             f"макс: ${eth_high:.2f}, мин: ${eth_low:.2f}\n"
             f"Топ-5 по объёму: {top}\n\n"
             "Твой анализ:"
