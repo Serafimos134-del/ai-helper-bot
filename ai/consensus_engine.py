@@ -70,18 +70,24 @@ class ConsensusEngine:
         }
 
     def _is_market_data_valid(self, context: dict) -> bool:
-        """Проверяем, что есть хотя бы какой-то рыночный контекст (BTC или инструмент)."""
-        ticker = context.get('ticker')
+        """Проверяем, что есть рыночные данные, соответствующие запросу."""
+        # Если есть идея сделки (новый сетап) или ticker — требуем данные по инструменту
+        if context.get('idea') or context.get('ticker'):
+            ticker = context.get('ticker')
+            if ticker and ticker.get('price', 0) > 0:
+                return True
+            # Если есть idea, но ticker_info пуст — невалидно
+            if context.get('idea'):
+                return False
+
+        # Для общего анализа без конкретного инструмента проверяем BTC/ETH
         market = context.get('market', {})
-        if ticker and ticker.get('price', 0) > 0:
+        btc = market.get('btc', {}) if market else {}
+        eth = market.get('eth', {}) if market else {}
+        if btc and btc.get('price', 0) > 0:
             return True
-        if market:
-            btc = market.get('btc', {})
-            eth = market.get('eth', {})
-            if btc and btc.get('price', 0) > 0:
-                return True
-            if eth and eth.get('price', 0) > 0:
-                return True
+        if eth and eth.get('price', 0) > 0:
+            return True
         return False
 
     def _error_response(self, message: str) -> dict:
