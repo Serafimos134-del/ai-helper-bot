@@ -54,10 +54,16 @@ def init_db():
             ai_score INTEGER,
             closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS trader_memory (
+            category TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (category, key)
+        );
         CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
     """)
-    # Миграции: добавляем недостающие столбцы
     for table, cols in {
         'open_trades': [
             ('orderId', 'TEXT'),
@@ -84,7 +90,6 @@ def init_db():
             ('setup_type', 'TEXT'),
             ('mistakes', 'TEXT'),
             ('ai_score', 'INTEGER'),
-            # Новые поля для Consensus Engine
             ('market_review', 'TEXT'),
             ('risk_review', 'TEXT'),
             ('psychology_review', 'TEXT'),
@@ -96,7 +101,6 @@ def init_db():
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
             except sqlite3.OperationalError:
                 pass
-    # Уникальный индекс на orderId (теперь колонка точно существует)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
     conn.commit()
     conn.close()
@@ -311,3 +315,30 @@ class Database:
         row = conn.execute("SELECT MAX(id) FROM closed_trades").fetchone()
         conn.close()
         return row[0] if row else None
+
+    # ─── Memory Engine ───
+
+    @staticmethod
+    def memory_set(category: str, key: str, value: str):
+        conn = _get_conn()
+        conn.execute("""
+            INSERT INTO trader_memory (category, key, value, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(category, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """, (category, key, value))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def memory_get(category: str, key: str) -> str | None:
+        conn = _get_conn()
+        row = conn.execute("SELECT value FROM trader_memory WHERE category = ? AND key = ?", (category, key)).fetchone()
+        conn.close()
+        return row['value'] if row else None
+
+    @staticmethod
+    def memory_get_all(category: str) -> dict:
+        conn = _get_conn()
+        rows = conn.execute("SELECT key, value FROM trader_memory WHERE category = ?", (category,)).fetchall()
+        conn.close()
+        return {row['key']: row['value'] for row in rows}
