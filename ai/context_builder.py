@@ -2,12 +2,13 @@ import asyncio
 import logging
 from services.database import Database
 from services.bingx_api import get_balance, get_open_positions, get_ticker, get_top_tickers
+from services.api_cache import api_cache
 
 logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    """Собирает структурированный контекст для AI-агентов."""
+    """Собирает структурированный контекст для AI-агентов (с кэшированием API-запросов)."""
 
     def __init__(self):
         self.db = Database()
@@ -26,48 +27,41 @@ class ContextBuilder:
         }
 
     def _build_market_context(self) -> dict:
-        """Рыночный контекст: BTC, ETH, топ-5, тренд."""
+        """Рыночный контекст: BTC, ETH, топ-5, тренд. С кэшированием API-вызовов."""
         context = {"btc": None, "eth": None, "top_movers": [], "trend": "NEUTRAL"}
 
-        try:
-            btc = get_ticker("BTC-USDT")
-            if btc.get("success"):
-                t = btc["ticker"]
-                context["btc"] = {
-                    "price": float(t.get("lastPrice", 0)),
-                    "change_24h": float(t.get("priceChangePercent", 0)),
-                    "high": float(t.get("highPrice", 0)),
-                    "low": float(t.get("lowPrice", 0)),
-                    "volume": float(t.get("quoteVolume", 0)),
-                }
-        except Exception as e:
-            logger.error(f"Ошибка получения BTC: {e}")
+        # Кэшированные вызовы (синхронная обёртка над asyncio)
+        btc = _sync_cache_get(get_ticker, "BTC-USDT")
+        eth = _sync_cache_get(get_ticker, "ETH-USDT")
+        top = _sync_cache_get(get_top_tickers, 5)
 
-        try:
-            eth = get_ticker("ETH-USDT")
-            if eth.get("success"):
-                t = eth["ticker"]
-                context["eth"] = {
-                    "price": float(t.get("lastPrice", 0)),
-                    "change_24h": float(t.get("priceChangePercent", 0)),
-                    "high": float(t.get("highPrice", 0)),
-                    "low": float(t.get("lowPrice", 0)),
-                    "volume": float(t.get("quoteVolume", 0)),
-                }
-        except Exception as e:
-            logger.error(f"Ошибка получения ETH: {e}")
+        if btc and btc.get("success"):
+            t = btc["ticker"]
+            context["btc"] = {
+                "price": float(t.get("lastPrice", 0)),
+                "change_24h": float(t.get("priceChangePercent", 0)),
+                "high": float(t.get("highPrice", 0)),
+                "low": float(t.get("lowPrice", 0)),
+                "volume": float(t.get("quoteVolume", 0)),
+            }
 
-        try:
-            top = get_top_tickers(5)
-            if top.get("success"):
-                for t in top["tickers"]:
-                    context["top_movers"].append({
-                        "symbol": t.get("symbol", ""),
-                        "change": float(t.get("priceChangePercent", 0)),
-                        "volume": float(t.get("quoteVolume", 0)),
-                    })
-        except Exception as e:
-            logger.error(f"Ошибка получения топ-5: {e}")
+        if eth and eth.get("success"):
+            t = eth["ticker"]
+            context["eth"] = {
+                "price": float(t.get("lastPrice", 0)),
+                "change_24h": float(t.get("priceChangePercent", 0)),
+                "high": float(t.get("highPrice", 0)),
+                "low": float(t.get("lowPrice", 0)),
+                "volume": float(t.get("quoteVolume", 0)),
+            }
+
+        if top and top.get("success"):
+            for t in top["tickers"]:
+                context["top_movers"].append({
+                    "symbol": t.get("symbol", ""),
+                    "change": float(t.get("priceChangePercent", 0)),
+                    "volume": float(t.get("quoteVolume", 0)),
+                })
 
         if context["btc"] and context["btc"]["change_24h"] > 1:
             context["trend"] = "BULLISH"
@@ -78,7 +72,7 @@ class ContextBuilder:
         return context
 
     def _build_portfolio_context(self) -> dict:
-        """Контекст портфеля: баланс, открытые позиции, exposure."""
+        """Контекст портфеля: баланс, открытые позиции, exposure. С кэшированием."""
         context = {
             "balance": None,
             "available": 0,
@@ -88,31 +82,26 @@ class ContextBuilder:
             "position_count": 0,
         }
 
-        try:
-            balance = get_balance()
-            if balance.get("success"):
-                context["balance"] = balance["equity"]
-                context["available"] = balance["available"]
-                context["used_margin"] = balance["used_margin"]
-                context["unrealized_pnl"] = balance["unrealized_pnl"]
-        except Exception as e:
-            logger.error(f"Ошибка получения баланса: {e}")
+        balance = _sync_cache_get(get_balance)
+        positions = _sync_cache_get(get_open_positions)
 
-        try:
-            positions = get_open_positions()
-            if positions.get("success"):
-                for p in positions.get("trades", []):
-                    context["open_positions"].append({
-                        "symbol": p.get("symbol", ""),
-                        "side": p.get("side", ""),
-                        "entry_price": float(p.get("entryPrice", 0)),
-                        "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
-                        "leverage": p.get("leverage", 1),
-                        "size": abs(float(p.get("positionAmt", p.get("size", 0)))),
-                    })
-                context["position_count"] = len(context["open_positions"])
-        except Exception as e:
-            logger.error(f"Ошибка получения позиций: {e}")
+        if balance and balance.get("success"):
+            context["balance"] = balance["equity"]
+            context["available"] = balance["available"]
+            context["used_margin"] = balance["used_margin"]
+            context["unrealized_pnl"] = balance["unrealized_pnl"]
+
+        if positions and positions.get("success"):
+            for p in positions.get("trades", []):
+                context["open_positions"].append({
+                    "symbol": p.get("symbol", ""),
+                    "side": p.get("side", ""),
+                    "entry_price": float(p.get("entryPrice", 0)),
+                    "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
+                    "leverage": p.get("leverage", 1),
+                    "size": abs(float(p.get("positionAmt", p.get("size", 0)))),
+                })
+            context["position_count"] = len(context["open_positions"])
 
         return context
 
@@ -145,7 +134,6 @@ class ContextBuilder:
                     "close_time": str(t.get("close_time", "")),
                 })
 
-            # Считаем текущие серии
             pnls = [float(t.get("realized_pnl", 0)) for t in trades[:30]]
             for pnl in pnls:
                 if pnl < 0:
@@ -165,7 +153,7 @@ class ContextBuilder:
     # ────────────── Методы для Consensus Engine ──────────────
 
     async def build_for_open_position(self, position: dict) -> dict:
-        """Контекст для анализа открытой позиции (параллельный сбор)."""
+        """Контекст для анализа открытой позиции."""
         loop = asyncio.get_running_loop()
         market_task = loop.run_in_executor(None, self._build_market_context)
         portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
@@ -175,8 +163,8 @@ class ContextBuilder:
         symbol = position.get("symbol", "")
         if symbol:
             try:
-                ticker_res = await loop.run_in_executor(None, get_ticker, symbol)
-                if ticker_res.get("success"):
+                ticker_res = _sync_cache_get(get_ticker, symbol)
+                if ticker_res and ticker_res.get("success"):
                     t = ticker_res["ticker"]
                     ticker_info = {
                         "price": float(t.get("lastPrice", 0)),
@@ -212,7 +200,7 @@ class ContextBuilder:
         }
 
     async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
-        """Контекст для оценки нового сетапа (параллельный сбор)."""
+        """Контекст для оценки нового сетапа."""
         loop = asyncio.get_running_loop()
         market_task = loop.run_in_executor(None, self._build_market_context)
         portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
@@ -223,8 +211,8 @@ class ContextBuilder:
         if not symbol.endswith("-USDT"):
             symbol = f"{ticker}-USDT"
         try:
-            ticker_res = await loop.run_in_executor(None, get_ticker, symbol)
-            if ticker_res.get("success"):
+            ticker_res = _sync_cache_get(get_ticker, symbol)
+            if ticker_res and ticker_res.get("success"):
                 t = ticker_res["ticker"]
                 ticker_info = {
                     "price": float(t.get("lastPrice", 0)),
@@ -258,7 +246,7 @@ class ContextBuilder:
         }
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
-        """Контекст для post-trade анализа (параллельный сбор, market_snapshot → market)."""
+        """Контекст для post-trade анализа."""
         loop = asyncio.get_running_loop()
         history_task = loop.run_in_executor(None, self._build_history_context)
         market_task = loop.run_in_executor(None, self._build_market_context)
@@ -281,7 +269,7 @@ class ContextBuilder:
                 "ai_score": trade.get("ai_score"),
             },
             "score": score_result,
-            "market": market,                    # ← было market_snapshot, исправлено
+            "market": market,
             "history": history,
             "trader_profile": {
                 "style": "trend/breakout",
@@ -289,3 +277,20 @@ class ContextBuilder:
                 "risk_priority": "position size > leverage",
             },
         }
+
+
+def _sync_cache_get(func, *args):
+    """
+    Синхронная обёртка для api_cache.get_or_fetch.
+    Поскольку _build_* методы синхронны, но api_cache требует await,
+    запускаем асинхронный вызов в отдельном event loop (один раз, безопасно для потоков).
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Если мы внутри уже запущенного event loop, нельзя вызвать run_until_complete.
+            # Тогда просто делаем прямой вызов без кэша (fallback).
+            return func(*args)
+        return loop.run_until_complete(api_cache.get_or_fetch(func, *args))
+    except RuntimeError:
+        return func(*args)
