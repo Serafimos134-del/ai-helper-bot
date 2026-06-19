@@ -32,6 +32,50 @@ def _calculate_exit_price(trade: dict) -> float:
         return entry - (pnl / qty)
 
 
+async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict):
+    """
+    Фоновый анализ закрытой сделки: Consensus Engine + Trade Scorer.
+    Выполняется асинхронно, не блокирует основной sync loop.
+    """
+    try:
+        ai_provider = AITradingAnalyzer().provider
+        engine = ConsensusEngine(ai_provider)
+        analysis = await engine.analyze_closed_trade(closed_trade)
+        score = trade_scorer.score(closed_trade)
+        db.update_trade_metrics(trade_id,
+                                ai_score=score['total_score'],
+                                market_review=analysis['market_review'],
+                                risk_review=analysis['risk_review'],
+                                psychology_review=analysis['psychology_review'],
+                                judge_verdict=analysis['judge_verdict'])
+        logger.info(f"Сделка #{trade_id} проанализирована консилиумом: {analysis['judge_verdict']}")
+
+        # Отправляем результаты AI-анализа отдельным сообщением
+        try:
+            symbol = stored.get('symbol', '?')
+            side = stored.get('side', '?')
+            text = (
+                f"🧠 *AI-разбор сделки #{trade_id}*\n\n"
+                f"📈 Рынок: {analysis.get('market_review', '—')}\n\n"
+                f"⚠️ Риск: {analysis.get('risk_review', '—')}\n\n"
+                f"🧘 Психология: {analysis.get('psychology_review', '—')}\n\n"
+                f"⚖️ Вердикт: {analysis.get('judge_verdict', '—')}"
+            )
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception as notify_e:
+            logger.error(f"Ошибка отправки AI-разбора для сделки #{trade_id}: {notify_e}")
+
+    except Exception as e:
+        logger.error(f"Ошибка фонового анализа сделки #{trade_id}: {e}")
+        # fallback — старый скоринг
+        try:
+            score = trade_scorer.score(closed_trade)
+            db.update_trade_metrics(trade_id, ai_score=score['total_score'])
+            logger.info(f"Сделка #{trade_id} оценена (fallback): {score['total_score']}/10")
+        except Exception as fallback_e:
+            logger.error(f"Ошибка даже fallback-оценки для сделки #{trade_id}: {fallback_e}")
+
+
 async def sync_trades(bot, chat_id: str) -> dict:
     global _missing_cycles
     results = {'new_open': [], 'new_closed': []}
@@ -108,36 +152,19 @@ async def sync_trades(bot, chat_id: str) -> dict:
         if oid not in stored_by_id:
             _missing_cycles.pop(oid, None)
 
-    ai_provider = AITradingAnalyzer().provider
-    engine = ConsensusEngine(ai_provider)
-
     for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored)
         db.add_closed_trade(closed_trade)
         db.delete_open_trade_by_order_id(oid)
         last_id = db.get_last_closed_id()
 
-        try:
-            analysis = await engine.analyze_closed_trade(closed_trade)
-            score = trade_scorer.score(closed_trade)
-            db.update_trade_metrics(last_id,
-                                    ai_score=score['total_score'],
-                                    market_review=analysis['market_review'],
-                                    risk_review=analysis['risk_review'],
-                                    psychology_review=analysis['psychology_review'],
-                                    judge_verdict=analysis['judge_verdict'])
-            logger.info(f"Сделка #{last_id} проанализирована консилиумом: {analysis['judge_verdict']}")
-        except Exception as e:
-            logger.error(f"Ошибка консилиума для сделки #{last_id}: {e}")
-            try:
-                score = trade_scorer.score(closed_trade)
-                db.update_trade_metrics(last_id, ai_score=score['total_score'])
-                logger.info(f"Сделка #{last_id} оценена (fallback): {score['total_score']}/10")
-            except Exception as fallback_e:
-                logger.error(f"Ошибка даже fallback-оценки для сделки #{last_id}: {fallback_e}")
-
         results['new_closed'].append(stored)
+
+        # Уведомление о закрытии — СРАЗУ
         await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
+
+        # AI-анализ — в фоне, не блокирует sync
+        asyncio.create_task(_analyze_and_notify(bot, chat_id, last_id, closed_trade, stored))
 
     return results
 
@@ -158,7 +185,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
             pass
 
     exit_price = _calculate_exit_price(stored_open)
-    exit_price_source = "estimated"  # вычислено из PnL, не от биржи
+    exit_price_source = "estimated"
 
     return {
         'symbol': stored_open['symbol'],
