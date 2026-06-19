@@ -17,6 +17,7 @@ from services.bingx_api import get_balance, get_open_positions, get_closed_order
 from services.database import Database, init_db
 from services.trading_stats import format_stats_message
 from services.comment_manager import save_comment
+from services.auto_sync import sync_trades
 from services.ai_trading import AITradingAnalyzer
 from core.keyboards import cancel_keyboard
 from core.router import setup_router
@@ -534,22 +535,24 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if balance.get('success'):
             status.append("📡 BingX API: 🟢")
         else:
-            status.append(f"📡 BingX API: 🔴 ({balance.get('error', 'ошибка')})")
+            status.append(f"📡 BingX API: 🔴 ({balance.get('error', 'неизвестно')})")
     except Exception as e:
         status.append(f"📡 BingX API: 🔴 ({e})")
 
-    # 3. Groq AI
-    try:
-        # Быстрый тестовый запрос
-        test = ai_analyzer.analyze_raw("ping")
-        if test:
-            status.append("🧠 Groq AI: 🟢")
-        else:
-            status.append("🧠 Groq AI: 🔴 (пустой ответ)")
-    except Exception as e:
-        status.append(f"🧠 Groq AI: 🔴 ({e})")
+    # 3. AI-провайдер (реальная проверка)
+    if ai_analyzer.provider:
+        try:
+            test = ai_analyzer.provider.generate("ping")
+            if test and "unavailable" not in test:
+                status.append("🧠 AI-провайдер: 🟢")
+            else:
+                status.append("🧠 AI-провайдер: 🔴 (не отвечает)")
+        except Exception as e:
+            status.append(f"🧠 AI-провайдер: 🔴 ({e})")
+    else:
+        status.append("🧠 AI-провайдер: 🔴 (нет ключа)")
 
-    # 4. Proxy
+    # 4. Прокси
     if os.getenv('HTTP_PROXY') or os.getenv('HTTPS_PROXY'):
         status.append("🌐 Прокси: 🟢 (настроен)")
     else:
