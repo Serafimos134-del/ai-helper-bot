@@ -21,14 +21,15 @@ class PsychologyAgent:
         else:
             ctx = context
         history = ctx.get("history", {})
-        prompt = self._build_psychology_prompt(history)
+        prompt = self._build_psychology_prompt(ctx)
         try:
             return await loop.run_in_executor(None, self.provider.generate, prompt)
         except Exception as e:
             logger.error(f"PsychologyAgent error: {e}")
             return f"Психологический анализ недоступен: {e}"
 
-    def _build_psychology_prompt(self, history: dict) -> str:
+    def _build_psychology_prompt(self, ctx: dict) -> str:
+        history = ctx.get("history", {})
         stats = history.get("stats", {})
         recent_trades = history.get("recent_trades", [])
         losing_streak = history.get("losing_streak", 0)
@@ -43,14 +44,29 @@ class PsychologyAgent:
                 f"комм.: {t.get('comment', '—')}\n"
             )
 
-        return (
+        # Извлекаем информацию о текущей ситуации
+        idea = ctx.get("idea", {})
+        position = ctx.get("position", {})
+        ticker = idea.get("ticker") or position.get("symbol", "")
+        direction = idea.get("direction") or position.get("side", "")
+
+        situation = ""
+        if ticker:
+            situation = f"Трейдер рассматривает вход в {direction} по {ticker}.\n"
+        elif position:
+            situation = f"Трейдер удерживает позицию {direction} по {ticker}.\n"
+
+        prompt = (
             "Ты — спортивный психолог, работающий с профессиональными трейдерами. "
-            "Проанализируй историю сделок и дай КРАТКУЮ, ЖЁСТКУЮ оценку психологического состояния.\n\n"
+            "Проанализируй историю сделок и дай КРАТКУЮ, ЖЁСТКУЮ оценку психологического состояния "
+            "на основе предоставленных данных.\n\n"
             "ПРАВИЛА:\n"
             "1. СОСТОЯНИЕ: одно слово — CALM / NERVOUS / EMOTIONAL / REVENGE / TILT.\n"
             "2. ПАТТЕРН: одно предложение — главная психологическая ошибка (если есть).\n"
-            "3. СОВЕТ: одно конкретное действие для исправления.\n"
-            "4. Без воды, без философии, без markdown. Только факты.\n\n"
+            "3. СОВЕТ: одно конкретное действие для исправления (если нужно) или подтверждение правильного настроя.\n"
+            "4. Если история пуста (0 сделок), честно напиши: «Нет данных для анализа», но не выдумывай.\n"
+            "5. Без воды, без философии, без markdown. Только факты.\n\n"
+            f"{situation}"
             f"Сделок всего: {stats.get('total_trades', 0)}\n"
             f"Win Rate: {stats.get('win_rate', 0):.1f}%\n"
             f"Серия убытков: {losing_streak}\n"
@@ -60,3 +76,4 @@ class PsychologyAgent:
             f"Последние 10 сделок:\n{trades_summary}\n"
             "Твой вердикт:"
         )
+        return prompt
