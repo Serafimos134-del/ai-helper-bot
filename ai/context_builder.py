@@ -236,7 +236,7 @@ class ContextBuilder:
             ticker_info = self._build_ticker_info(symbol)
 
         market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
-        memory_context = await self._get_memory_context()
+        memory_context = self._get_memory_context_sync()
 
         return {
             "position": {
@@ -273,7 +273,7 @@ class ContextBuilder:
 
         ticker_info = self._build_ticker_info(symbol)
         market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
-        memory_context = await self._get_memory_context()
+        memory_context = self._get_memory_context_sync()
 
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
@@ -296,7 +296,7 @@ class ContextBuilder:
         history_task = loop.run_in_executor(None, self._build_history_context)
         market_task = loop.run_in_executor(None, self._build_market_context)
         history, market = await asyncio.gather(history_task, market_task)
-        memory_context = await self._get_memory_context()
+        memory_context = self._get_memory_context_sync()
 
         return {
             "trade": {
@@ -366,11 +366,61 @@ class ContextBuilder:
 
         return info if info else None
 
-    async def _get_memory_context(self) -> str:
-        """Возвращает строку профиля трейдера из Memory Engine (ленивый импорт)."""
+    def _get_memory_context_sync(self) -> str:
+        """
+        Возвращает строку профиля трейдера из БД (без циклических импортов).
+        Использует прямые запросы к Database (memory_get/memory_get_all).
+        """
         try:
-            from ai.memory_engine import MemoryEngine
-            return MemoryEngine().get_context_for_prompt()
+            db = Database()
+            total = int(db.memory_get('global', 'total_trades') or 0)
+            if total < 2:
+                return ""
+
+            wins = int(db.memory_get('global', 'winning_trades') or 0)
+            losses = int(db.memory_get('global', 'losing_trades') or 0)
+            avg_min = float(db.memory_get('holding', 'avg_minutes') or 0)
+
+            best_ticker = self._get_best_ticker(db)
+            best_direction = self._get_best_direction(db)
+
+            lines = ["ПРОФИЛЬ ТРЕЙДЕРА (на основе истории):"]
+            lines.append(f"- Всего сделок: {total} (побед: {wins}, поражений: {losses})")
+            if best_ticker:
+                lines.append(f"- Лучший тикер: {best_ticker}")
+            if best_direction:
+                lines.append(f"- Лучшее направление: {best_direction}")
+            if avg_min > 0:
+                lines.append(f"- Среднее удержание: {avg_min:.0f} мин")
+            return "\n".join(lines) + "\n\n"
         except Exception as e:
             logger.error(f"Ошибка получения memory_context: {e}")
             return ""
+
+    def _get_best_ticker(self, db) -> str:
+        tickers = db.memory_get_all('ticker')
+        best_wr = -1
+        best = None
+        for key, value in tickers.items():
+            if key.endswith('_total'):
+                ticker = key.replace('_total', '')
+                wins = int(tickers.get(f'{ticker}_wins', 0))
+                total = int(value)
+                if total >= 2:
+                    wr = wins / total * 100
+                    if wr > best_wr:
+                        best_wr = wr
+                        best = f"{ticker} (WR: {wr:.0f}%, {total} сделок)"
+        return best
+
+    def _get_best_direction(self, db) -> str:
+        directions = db.memory_get_all('direction')
+        for key, value in directions.items():
+            if key.endswith('_total'):
+                direction = key.replace('_total', '')
+                wins = int(directions.get(f'{direction}_wins', 0))
+                total = int(value)
+                if total >= 2:
+                    wr = wins / total * 100
+                    return f"{direction} (WR: {wr:.0f}%, {total} сделок)"
+        return None
