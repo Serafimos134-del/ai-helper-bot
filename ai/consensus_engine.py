@@ -54,14 +54,12 @@ class ConsensusEngine:
         raw_risk = results[1] if not isinstance(results[1], Exception) else '{"summary": "Ошибка RiskAgent"}'
         psych = results[2] if not isinstance(results[2], Exception) else f"Ошибка PsychologyAgent: {results[2]}"
 
-        # Извлекаем summary из JSON ответа RiskAgent
         try:
             risk_data = json.loads(raw_risk)
             risk = risk_data.get('summary', raw_risk)
         except Exception:
             risk = raw_risk
 
-        # Оценка качества данных и согласованности агентов
         data_quality = self._calculate_data_quality(context)
         disagreement = self._calculate_disagreement(market, risk, psych)
         confidence = self._calculate_confidence(data_quality, disagreement)
@@ -79,64 +77,44 @@ class ConsensusEngine:
         }
 
     def _calculate_data_quality(self, context: dict) -> float:
-        """
-        Оценивает качество входных данных от 0 до 1.
-        """
         score = 0.0
-        # Есть ли рыночные данные по инструменту?
         ticker = context.get('ticker')
-        if ticker and ticker.get('price', 0) > 0:
+        if ticker and (ticker.get('price', 0) or 0) > 0:
             score += 0.4
-        # Есть ли BTC данные?
-        market = context.get('market', {})
-        btc = market.get('btc', {}) if market else {}
-        if btc and btc.get('price', 0) > 0:
+        market = context.get('market', {}) or {}
+        btc = (market.get('btc') or {}) if market else {}
+        if btc and (btc.get('price', 0) or 0) > 0:
             score += 0.3
-        # Есть ли история сделок?
-        history = context.get('history', {})
-        if history and history.get('stats', {}).get('total_trades', 0) > 0:
+        history = context.get('history', {}) or {}
+        if history and (history.get('stats') or {}).get('total_trades', 0) > 0:
             score += 0.2
-        # Есть ли данные портфеля?
-        portfolio = context.get('portfolio', {})
-        if portfolio and portfolio.get('balance', 0) > 0:
+        portfolio = context.get('portfolio', {}) or {}
+        if portfolio and (portfolio.get('balance') or 0) > 0:
             score += 0.1
         return min(1.0, score)
 
     def _calculate_disagreement(self, market: str, risk: str, psych: str) -> float:
-        """
-        Оценивает степень разногласий между агентами (0 = согласие, 1 = полное несогласие).
-        Упрощённо: по наличию ключевых слов-противоречий.
-        """
         disagreement_score = 0.0
         market_lower = market.lower()
         risk_lower = risk.lower()
         psych_lower = psych.lower()
 
-        # Market vs Risk: BUY vs HIGH risk = разногласие
         if ('buy' in market_lower or 'bullish' in market_lower) and ('high' in risk_lower or 'extreme' in risk_lower):
             disagreement_score += 0.4
-        # Market vs Psych: BUY vs EMOTIONAL/REVENGE = разногласие
         if ('buy' in market_lower) and ('revenge' in psych_lower or 'tilt' in psych_lower or 'emotional' in psych_lower):
             disagreement_score += 0.3
-        # Risk vs Psych: SAFE vs REVENGE = разногласие
         if ('safe' in risk_lower) and ('revenge' in psych_lower or 'tilt' in psych_lower):
             disagreement_score += 0.2
-        # Если агенты явно противоречат (WAIT vs ENTER)
         if ('wait' in market_lower or 'wait' in risk_lower) and ('входить' in psych_lower.lower() or 'buy' in psych_lower):
             disagreement_score += 0.3
 
         return min(1.0, disagreement_score)
 
     def _calculate_confidence(self, data_quality: float, disagreement: float) -> float:
-        """
-        Итоговая уверенность на основе качества данных и согласованности агентов.
-        """
-        # Чем выше качество данных и ниже разногласия, тем выше уверенность
         confidence = data_quality * (1.0 - disagreement * 0.5)
         return max(0.0, min(1.0, confidence))
 
     def _is_market_data_valid(self, context: dict) -> bool:
-        """Проверяем, что есть рыночные данные, соответствующие запросу."""
         if context.get('idea') or context.get('ticker'):
             ticker = context.get('ticker')
             if ticker and ticker.get('price', 0) > 0:
