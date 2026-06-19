@@ -20,6 +20,9 @@ class RiskRuleEngine:
     DRAWDOWN_CAUTION = 5.0          # %
     DRAWDOWN_DEFENSIVE = 10.0
     DRAWDOWN_CRITICAL = 15.0
+    # Пороги ликвидации
+    LIQUIDATION_WARN = 5.0          # % расстояния до ликвидации
+    LIQUIDATION_CRITICAL = 2.0
 
     # Классификация волатильности активов (упрощённо)
     LOW_VOLATILITY = {"BTC-USDT", "ETH-USDT"}
@@ -33,6 +36,20 @@ class RiskRuleEngine:
         if symbol in RiskRuleEngine.MEDIUM_VOLATILITY:
             return "MEDIUM"
         return "HIGH"
+
+    @staticmethod
+    def _estimate_liquidation_price(entry: float, leverage: float, side: str) -> float:
+        """
+        Приблизительная цена ликвидации для cross-margin (упрощённо).
+        Формула: liq = entry * (1 - 1/leverage) для LONG, entry * (1 + 1/leverage) для SHORT.
+        Это консервативная оценка без учёта маржи и funding.
+        """
+        if leverage <= 0:
+            leverage = 1
+        if side == "LONG":
+            return entry * (1.0 - 1.0 / leverage)
+        else:
+            return entry * (1.0 + 1.0 / leverage)
 
     @staticmethod
     def assess(portfolio: Dict, history: Dict) -> Dict:
@@ -74,10 +91,8 @@ class RiskRuleEngine:
             qty = abs(float(p.get("size", p.get("quantity", 0))))
             stop_loss = p.get("stop_loss")
             if stop_loss and entry > 0:
-                # Риск = расстояние до стоп-лосса × количество
                 risk = abs(entry - float(stop_loss)) * qty
             elif entry > 0:
-                # Без стоп-лосса оцениваем как 2% от цены входа (оценка волатильности)
                 risk = 0.02 * entry * qty
             else:
                 risk = 0.0
@@ -124,7 +139,32 @@ class RiskRuleEngine:
         else:
             drawdown_mode = "NORMAL"
 
-        # 9. Применяем правила и собираем warnings
+        # 9. Liquidation risk — НОВОЕ
+        min_liq_distance = 100.0
+        liquidation_warnings = []
+        for p in open_positions:
+            entry = float(p.get("entry_price", 0))
+            leverage = float(p.get("leverage", 1))
+            side = p.get("side", "LONG")
+            if entry > 0 and leverage > 1:
+                liq_price = RiskRuleEngine._estimate_liquidation_price(entry, leverage, side)
+                # Текущая цена берётся из позиции (если есть) или равна entry (нет данных)
+                current_price = float(p.get("current_price", entry))
+                if current_price > 0:
+                    if side == "LONG":
+                        distance_pct = ((current_price - liq_price) / current_price) * 100
+                    else:
+                        distance_pct = ((liq_price - current_price) / current_price) * 100
+                    distance_pct = max(0.0, distance_pct)
+                    if distance_pct < min_liq_distance:
+                        min_liq_distance = distance_pct
+                    symbol = p.get("symbol", "")
+                    if distance_pct < RiskRuleEngine.LIQUIDATION_CRITICAL:
+                        liquidation_warnings.append(f"⚠️ {symbol}: ликвидация в {distance_pct:.1f}% (критически близко)")
+                    elif distance_pct < RiskRuleEngine.LIQUIDATION_WARN:
+                        liquidation_warnings.append(f"⚠️ {symbol}: ликвидация в {distance_pct:.1f}% (близко)")
+
+        # 10. Применяем правила и собираем warnings
         warnings = []
         risk_level = "SAFE"
         risk_score = 1
@@ -136,7 +176,7 @@ class RiskRuleEngine:
                 risk_level = new_level
             risk_score = max(risk_score, new_score)
 
-        # Risk per trade (реальный, с учётом стоп-лосса)
+        # Risk per trade
         if risk_per_trade_pct >= RiskRuleEngine.RISK_PER_TRADE_HIGH:
             warnings.append(f"Риск на все позиции: {risk_per_trade_pct:.1f}% депозита (критический)")
             escalate("HIGH", 8)
@@ -156,7 +196,7 @@ class RiskRuleEngine:
             warnings.append(f"Плечо {max_leverage}x (высокое)")
             escalate("HIGH", 7)
 
-        # Exposure (notional)
+        # Exposure
         if exposure_pct >= RiskRuleEngine.EXPOSURE_HIGH:
             warnings.append(f"Экспозиция {exposure_pct:.1f}% депозита (критическая)")
             escalate("EXTREME", 9)
@@ -194,6 +234,14 @@ class RiskRuleEngine:
             warnings.append(f"Обнаружена высокая корреляция позиций ({long_count} LONG / {short_count} SHORT)")
             escalate("HIGH", 7)
 
+        # Liquidation warnings — НОВОЕ
+        for liq_warn in liquidation_warnings:
+            warnings.append(liq_warn)
+            if min_liq_distance < RiskRuleEngine.LIQUIDATION_CRITICAL:
+                escalate("EXTREME", 10)
+            elif min_liq_distance < RiskRuleEngine.LIQUIDATION_WARN:
+                escalate("HIGH", 8)
+
         # Drawdown mode усиливает риск
         if drawdown_mode == "CRITICAL":
             warnings.append("Критическая просадка депозита")
@@ -229,6 +277,8 @@ class RiskRuleEngine:
             "correlation_risk": correlation_risk,
             "drawdown_mode": drawdown_mode,
             "drawdown_pct": round(drawdown_pct, 1),
+            "min_liquidation_distance_pct": round(min_liq_distance, 1),
+            "liquidation_warnings": liquidation_warnings,
             "warnings": warnings,
             "recommendation": recommendation,
         }
