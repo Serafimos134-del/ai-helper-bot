@@ -81,7 +81,8 @@ class ConsensusEngine:
                 return False
 
         # Для общего анализа без конкретного инструмента проверяем BTC/ETH
-        market = context.get('market', {})
+        # Добавлен fallback на market_snapshot (на случай старых вызовов)
+        market = context.get('market') or context.get('market_snapshot', {})
         btc = market.get('btc', {}) if market else {}
         eth = market.get('eth', {}) if market else {}
         if btc and btc.get('price', 0) > 0:
