@@ -12,8 +12,8 @@ class RiskRuleEngine:
     RISK_PER_TRADE_HIGH = 3.0
     LEVERAGE_WARN = 20
     LEVERAGE_HIGH = 30
-    EXPOSURE_WARN = 50.0
-    EXPOSURE_HIGH = 75.0
+    EXPOSURE_WARN = 100.0           # % от депозита (notional, не маржа)
+    EXPOSURE_HIGH = 150.0
     LOSING_STREAK_WARN = 3
     DAILY_PNL_HIGH = -5.0           # %
     RR_BAD = 1.5
@@ -56,8 +56,15 @@ class RiskRuleEngine:
         if balance <= 0:
             return {"risk_level": "UNKNOWN", "risk_score": 0, "warnings": ["Нет данных о балансе"]}
 
-        # 1. Exposure
-        exposure_pct = (used_margin / balance) * 100
+        # 1. Notional exposure (реальная экспозиция для фьючерсов)
+        position_notional = sum(
+            float(p.get("entry_price", 0)) * abs(float(p.get("size", p.get("quantity", 0))))
+            for p in open_positions
+        )
+        exposure_pct = (position_notional / balance) * 100 if balance > 0 else 0
+
+        # Margin usage (отдельно для информации)
+        margin_usage_pct = (used_margin / balance) * 100 if balance > 0 else 0
 
         # 2. Реальный риск на позиции (с учётом стоп-лосса)
         total_risk = 0.0
@@ -129,7 +136,7 @@ class RiskRuleEngine:
                 risk_level = new_level
             risk_score = max(risk_score, new_score)
 
-        # Risk per trade (теперь реальный, с учётом стоп-лосса)
+        # Risk per trade (реальный, с учётом стоп-лосса)
         if risk_per_trade_pct >= RiskRuleEngine.RISK_PER_TRADE_HIGH:
             warnings.append(f"Риск на все позиции: {risk_per_trade_pct:.1f}% депозита (критический)")
             escalate("HIGH", 8)
@@ -149,12 +156,12 @@ class RiskRuleEngine:
             warnings.append(f"Плечо {max_leverage}x (высокое)")
             escalate("HIGH", 7)
 
-        # Exposure
+        # Exposure (notional)
         if exposure_pct >= RiskRuleEngine.EXPOSURE_HIGH:
-            warnings.append(f"Загрузка депозита {exposure_pct:.1f}% (критическая)")
+            warnings.append(f"Экспозиция {exposure_pct:.1f}% депозита (критическая)")
             escalate("EXTREME", 9)
         elif exposure_pct >= RiskRuleEngine.EXPOSURE_WARN:
-            warnings.append(f"Загрузка депозита {exposure_pct:.1f}% (высокая)")
+            warnings.append(f"Экспозиция {exposure_pct:.1f}% депозита (высокая)")
             escalate("HIGH", 6)
 
         # Losing streak
@@ -212,6 +219,7 @@ class RiskRuleEngine:
             "risk_level": risk_level,
             "risk_score": risk_score,
             "exposure_pct": round(exposure_pct, 1),
+            "margin_usage_pct": round(margin_usage_pct, 1),
             "max_leverage": max_leverage,
             "risk_per_trade_pct": round(risk_per_trade_pct, 1),
             "max_individual_risk_pct": round(max_individual_risk_pct, 1),
