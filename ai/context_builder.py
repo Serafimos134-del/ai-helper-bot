@@ -13,11 +13,12 @@ class ContextBuilder:
         self.db = Database()
 
     async def build_full_context(self) -> dict:
-        """Асинхронно собирает полный контекст: рынок + портфель + история."""
+        """Асинхронно собирает полный контекст: рынок + портфель + история (параллельно)."""
         loop = asyncio.get_running_loop()
-        market = await loop.run_in_executor(None, self._build_market_context)
-        portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
-        history = await loop.run_in_executor(None, self._build_history_context)
+        market_task = loop.run_in_executor(None, self._build_market_context)
+        portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
+        history_task = loop.run_in_executor(None, self._build_history_context)
+        market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
         return {
             "market": market,
             "portfolio": portfolio,
@@ -161,19 +162,15 @@ class ContextBuilder:
 
         return context
 
-    # ────────────── Новые методы для Consensus Engine ──────────────
+    # ────────────── Методы для Consensus Engine ──────────────
 
     async def build_for_open_position(self, position: dict) -> dict:
-        """
-        Контекст для анализа открытой позиции.
-        Использует данные позиции, рынка, портфеля и историю.
-        """
+        """Контекст для анализа открытой позиции (параллельный сбор)."""
         loop = asyncio.get_running_loop()
-        market = await loop.run_in_executor(None, self._build_market_context)
-        portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
-        history = await loop.run_in_executor(None, self._build_history_context)
+        market_task = loop.run_in_executor(None, self._build_market_context)
+        portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
+        history_task = loop.run_in_executor(None, self._build_history_context)
 
-        # Дополнительно можно получить данные по инструменту позиции
         ticker_info = None
         symbol = position.get("symbol", "")
         if symbol:
@@ -190,6 +187,8 @@ class ContextBuilder:
             except Exception as e:
                 logger.error(f"Ошибка получения тикера {symbol}: {e}")
 
+        market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+
         return {
             "position": {
                 "symbol": symbol,
@@ -204,7 +203,7 @@ class ContextBuilder:
             "ticker": ticker_info,
             "market": market,
             "portfolio": portfolio,
-            "history": history,          # <-- добавили историю
+            "history": history,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -213,17 +212,14 @@ class ContextBuilder:
         }
 
     async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
-        """
-        Контекст для оценки нового сетапа.
-        Содержит информацию о рынке, портфеле, конкретном инструменте и историю.
-        """
+        """Контекст для оценки нового сетапа (параллельный сбор)."""
         loop = asyncio.get_running_loop()
-        market = await loop.run_in_executor(None, self._build_market_context)
-        portfolio = await loop.run_in_executor(None, self._build_portfolio_context)
-        history = await loop.run_in_executor(None, self._build_history_context)
+        market_task = loop.run_in_executor(None, self._build_market_context)
+        portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
+        history_task = loop.run_in_executor(None, self._build_history_context)
 
         ticker_info = None
-        symbol = ticker  # предполагаем, что ticker уже в формате BTC-USDT и т.п.
+        symbol = ticker
         if not symbol.endswith("-USDT"):
             symbol = f"{ticker}-USDT"
         try:
@@ -239,6 +235,8 @@ class ContextBuilder:
         except Exception as e:
             logger.error(f"Ошибка получения тикера {symbol}: {e}")
 
+        market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
         return {
@@ -251,7 +249,7 @@ class ContextBuilder:
             "ticker": ticker_info,
             "market": market,
             "portfolio": portfolio,
-            "history": history,          # <-- добавили историю
+            "history": history,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -260,13 +258,11 @@ class ContextBuilder:
         }
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
-        """
-        Контекст для post-trade анализа.
-        Включает данные сделки, её оценку и историю.
-        """
+        """Контекст для post-trade анализа (параллельный сбор, market_snapshot → market)."""
         loop = asyncio.get_running_loop()
-        history = await loop.run_in_executor(None, self._build_history_context)
-        market = await loop.run_in_executor(None, self._build_market_context)
+        history_task = loop.run_in_executor(None, self._build_history_context)
+        market_task = loop.run_in_executor(None, self._build_market_context)
+        history, market = await asyncio.gather(history_task, market_task)
 
         return {
             "trade": {
@@ -285,9 +281,8 @@ class ContextBuilder:
                 "ai_score": trade.get("ai_score"),
             },
             "score": score_result,
-            "market_snapshot": market,
-            "history_context": history,   # уже было, оставим
-            "history": history,           # дублируем для единообразия
+            "market": market,                    # ← было market_snapshot, исправлено
+            "history": history,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
