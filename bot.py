@@ -47,7 +47,7 @@ BTN_HELP = "ℹ️ Help"
 BTN_BALANCE = "💰 Баланс"
 BTN_LAST_TRADES = "📋 Последние сделки"
 BTN_STATS = "📊 Статистика"
-BTN_AI_ANALYSIS = "🧠 AI-анализ"                # общий AI-анализ (оставлен в trading-меню)
+BTN_AI_ANALYSIS = "🧠 AI-анализ"
 
 BTN_BACK = "🔙 Назад"
 BTN_CANCEL = "❌ Отмена"
@@ -398,18 +398,26 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
-    # Обработка состояний комментариев (без изменений)
+    # Обработка кнопки Отмена для всех состояний
+    if text == BTN_CANCEL:
+        if state == 'consilium_setup_input':
+            context.user_data['state'] = None
+            await update.message.reply_text("Отменено.", reply_markup=ai_menu_keyboard())
+            return
+        if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
+            context.user_data['state'] = None
+            context.user_data.pop('comment_order_id', None)
+            context.user_data.pop('entry_order_id', None)
+            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
+            return
+
+    # Обработка состояний комментариев
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
         if text in NAV_BUTTONS or text.startswith("🏠 *"):
             await update.message.reply_text("⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.", reply_markup=cancel_keyboard())
             return
 
     if state == 'entering_comment_inline':
-        if text == BTN_CANCEL:
-            context.user_data['state'] = None
-            context.user_data.pop('comment_order_id', None)
-            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
-            return
         order_id = context.user_data.get('comment_order_id')
         if order_id:
             success = save_comment(order_id, text)
@@ -422,11 +430,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == 'entering_exit_reason':
-        if text == BTN_CANCEL:
-            context.user_data['state'] = None
-            context.user_data.pop('comment_order_id', None)
-            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
-            return
         trade_id = context.user_data.get('comment_order_id')
         if trade_id:
             db.update_trade_metrics(trade_id, exit_comment=text)
@@ -436,10 +439,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == 'entering_entry_reason':
-        if text == BTN_CANCEL:
-            context.user_data['state'] = None
-            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
-            return
         order_id = context.user_data.get('entry_order_id')
         if order_id:
             db.update_open_trade_by_order_id(order_id, entry_comment=text)
