@@ -101,7 +101,16 @@ class ContextBuilder:
         return context
 
     def _build_history_context(self) -> dict:
-        context = {"stats": None, "recent_trades": [], "losing_streak": 0, "winning_streak": 0}
+        context = {
+            "stats": None, "recent_trades": [],
+            "losing_streak": 0, "winning_streak": 0,
+            # Новые метрики Psychology v2
+            "revenge_score": 0,
+            "fomo_score": 0,
+            "overtrading_score": 0,
+            "premature_exit_score": 0,
+            "tilt_probability": 0,
+        }
 
         try:
             stats = self.db.get_stats()
@@ -134,10 +143,102 @@ class ContextBuilder:
                     context["winning_streak"] += 1
                 else:
                     break
+
+            # === Расчёт метрик поведения (Psychology v2) ===
+            context.update(self._calculate_behavior_metrics(trades, context["losing_streak"]))
+
         except Exception as e:
             logger.error(f"Ошибка получения истории: {e}")
 
         return context
+
+    def _calculate_behavior_metrics(self, trades: list, losing_streak: int) -> dict:
+        """Рассчитывает revenge_score, fomo_score, overtrading_score, premature_exit_score, tilt_probability."""
+        result = {
+            "revenge_score": 0,
+            "fomo_score": 0,
+            "overtrading_score": 0,
+            "premature_exit_score": 0,
+            "tilt_probability": 0,
+        }
+
+        if not trades:
+            return result
+
+        recent = trades[:10]  # последние 10 сделок
+
+        # 1. Revenge Score: серия убытков + рост плеча или размера
+        if losing_streak >= 2:
+            result["revenge_score"] += min(losing_streak * 2, 6)
+
+            leverages = [float(t.get("leverage", 1)) for t in recent]
+            sizes = [abs(float(t.get("pnl", 0))) for t in recent]
+
+            if len(leverages) >= 2:
+                if leverages[0] > leverages[-1]:
+                    result["revenge_score"] += 2
+            if len(sizes) >= 2:
+                if sizes[0] > sizes[-1]:
+                    result["revenge_score"] += 2
+
+        # 2. FOMO Score: много сделок за короткий период
+        if len(recent) >= 3:
+            try:
+                times = [t.get("close_time", "") for t in recent if t.get("close_time")]
+                if len(times) >= 3:
+                    from datetime import datetime
+                    parsed = []
+                    for ts in times:
+                        try:
+                            parsed.append(datetime.fromisoformat(ts.replace("Z", "+00:00")))
+                        except:
+                            pass
+                    if len(parsed) >= 3:
+                        time_range_hours = (parsed[0] - parsed[-1]).total_seconds() / 3600
+                        if time_range_hours > 0:
+                            trades_per_hour = len(parsed) / time_range_hours
+                            if trades_per_hour > 2:
+                                result["fomo_score"] += 4
+                            elif trades_per_hour > 1:
+                                result["fomo_score"] += 2
+            except:
+                pass
+
+        # 3. Overtrading Score: >5 сделок за день
+        if len(recent) >= 5:
+            result["overtrading_score"] = min(len(recent), 10)
+
+        # 4. Premature Exit Score: короткое удержание прибыльных сделок
+        profitable = [t for t in recent if float(t.get("pnl", 0)) > 0]
+        if profitable:
+            premature_count = 0
+            for t in profitable:
+                pnl = float(t.get("pnl", 0))
+                entry = float(t.get("entry", 0))
+                exit_price = float(t.get("exit", 0))
+                if entry > 0 and exit_price > 0:
+                    profit_pct = abs(exit_price - entry) / entry * 100
+                    if profit_pct < 2 and pnl > 0:
+                        premature_count += 1
+            result["premature_exit_score"] = min(premature_count * 2, 8)
+
+        # 5. Tilt Probability: комбинация всех метрик
+        tilt = 0
+        if result["revenge_score"] >= 6:
+            tilt += 40
+        elif result["revenge_score"] >= 4:
+            tilt += 25
+        if result["fomo_score"] >= 4:
+            tilt += 30
+        elif result["fomo_score"] >= 2:
+            tilt += 15
+        if result["overtrading_score"] >= 7:
+            tilt += 20
+        if result["premature_exit_score"] >= 6:
+            tilt += 10
+        result["tilt_probability"] = min(tilt, 100)
+
+        return result
 
     async def build_for_open_position(self, position: dict) -> dict:
         loop = asyncio.get_running_loop()
@@ -235,7 +336,6 @@ class ContextBuilder:
         }
 
     def _build_ticker_info(self, symbol: str) -> dict:
-        """Расширенная информация по инструменту: цена, funding rate, OI, ATR, regime."""
         info = {}
         try:
             ticker_res = get_ticker(symbol)
