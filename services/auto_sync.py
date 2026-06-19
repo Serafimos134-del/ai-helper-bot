@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 db = Database()
 trade_scorer = TradeScorer()
 
+# Защита от ложных закрытий: позиция должна отсутствовать 2 цикла подряд
+# Ключ: orderId, значение: количество циклов, в которых позиция отсутствовала в API
+_missing_cycles: dict = {}
+_MISSING_THRESHOLD = 2   # закрываем только после 2 пропусков (30+ сек)
+
+
 def _calculate_exit_price(trade: dict) -> float:
     """Вычисляет реальную цену выхода на основе PnL и размера позиции."""
     entry = float(trade.get('entry_price', 0))
@@ -26,7 +32,9 @@ def _calculate_exit_price(trade: dict) -> float:
     else:
         return entry - (pnl / qty)
 
+
 async def sync_trades(bot, chat_id: str) -> dict:
+    global _missing_cycles
     results = {'new_open': [], 'new_closed': []}
 
     db.cleanup_orphan_open_trades()
@@ -37,6 +45,8 @@ async def sync_trades(bot, chat_id: str) -> dict:
         return results
 
     api_trades = open_result.get('trades', [])
+    api_ids = {str(t.get('orderId')) for t in api_trades if t.get('orderId')}
+
     stored_open = db.get_open_trades()
     stored_by_id = {}
     for t in stored_open:
@@ -44,10 +54,14 @@ async def sync_trades(bot, chat_id: str) -> dict:
         if oid:
             stored_by_id[oid] = t
 
+    # Обработка позиций, которые есть в API
     for trade in api_trades:
         oid = str(trade.get('orderId'))
         raw_side = trade.get('side', '')
         side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+
+        # Позиция вернулась — сбрасываем счётчик пропусков
+        _missing_cycles.pop(oid, None)
 
         if oid in stored_by_id:
             db.update_open_trade_by_order_id(
@@ -76,12 +90,35 @@ async def sync_trades(bot, chat_id: str) -> dict:
             results['new_open'].append(trade)
             await _notify_new_trade(bot, chat_id, trade)
 
+    # Обработка позиций, которых нет в API (с защитой от ложных закрытий)
+    truly_closed = {}   # oid → stored, которые реально закрыты
+    for oid, stored in stored_by_id.items():
+        if oid in api_ids:
+            continue   # такого быть не должно, но перестраховка
+
+        # Позиция отсутствует в API — увеличиваем счётчик пропусков
+        cycles = _missing_cycles.get(oid, 0) + 1
+        _missing_cycles[oid] = cycles
+
+        if cycles >= _MISSING_THRESHOLD:
+            # Закрыта — удаляем из словаря пропусков и готовим к переносу
+            _missing_cycles.pop(oid, None)
+            truly_closed[oid] = stored
+            stored_by_id.pop(oid)
+        else:
+            logger.info(f"Позиция {oid} ({stored.get('symbol')}) отсутствует {cycles}/{_MISSING_THRESHOLD} циклов — ждём подтверждения")
+            # Не удаляем из stored_by_id, чтобы не терять позицию
+
+    # Убираем из _missing_cycles позиции, которые уже удалены из БД (чистка на всякий случай)
+    for oid in list(_missing_cycles.keys()):
+        if oid not in stored_by_id:
+            _missing_cycles.pop(oid, None)
+
     # Получаем провайдер AI один раз
     ai_provider = AITradingAnalyzer().provider
-    # Создаём ConsensusEngine один раз для всех закрытых сделок
     engine = ConsensusEngine(ai_provider)
 
-    for oid, stored in stored_by_id.items():
+    for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored)
         db.add_closed_trade(closed_trade)
         db.delete_open_trade_by_order_id(oid)
@@ -90,7 +127,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
         # --- Анализ через Consensus Engine ---
         try:
             analysis = await engine.analyze_closed_trade(closed_trade)
-            # trade_score берём отдельно из TradeScorer
             score = trade_scorer.score(closed_trade)
             db.update_trade_metrics(last_id,
                                     ai_score=score['total_score'],
@@ -101,7 +137,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
             logger.info(f"Сделка #{last_id} проанализирована консилиумом: {analysis['judge_verdict']}")
         except Exception as e:
             logger.error(f"Ошибка консилиума для сделки #{last_id}: {e}")
-            # fallback — старый скоринг
             try:
                 score = trade_scorer.score(closed_trade)
                 db.update_trade_metrics(last_id, ai_score=score['total_score'])
@@ -130,7 +165,6 @@ def _build_closed_trade(stored_open: dict) -> dict:
         except Exception:
             pass
 
-    # Вычисляем реальную цену выхода через PnL
     exit_price = _calculate_exit_price(stored_open)
 
     return {
