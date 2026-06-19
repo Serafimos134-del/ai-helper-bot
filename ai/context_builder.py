@@ -6,37 +6,30 @@ from services.bingx_api import (
     get_funding_rate, get_open_interest, get_kline,
     _calculate_atr, _detect_market_regime
 )
-from services.api_cache import api_cache
 
 logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    """Собирает структурированный контекст для AI-агентов (с кэшированием API-запросов)."""
+    """Собирает структурированный контекст для AI-агентов."""
 
     def __init__(self):
         self.db = Database()
 
     async def build_full_context(self) -> dict:
-        """Асинхронно собирает полный контекст: рынок + портфель + история (параллельно)."""
         loop = asyncio.get_running_loop()
         market_task = loop.run_in_executor(None, self._build_market_context)
         portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
         history_task = loop.run_in_executor(None, self._build_history_context)
         market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
-        return {
-            "market": market,
-            "portfolio": portfolio,
-            "history": history,
-        }
+        return {"market": market, "portfolio": portfolio, "history": history}
 
     def _build_market_context(self) -> dict:
-        """Рыночный контекст: BTC, ETH, топ-5, тренд, режим рынка. С кэшированием."""
         context = {"btc": None, "eth": None, "top_movers": [], "trend": "NEUTRAL", "market_regime": "UNKNOWN"}
 
-        btc = _sync_cache_get(get_ticker, "BTC-USDT")
-        eth = _sync_cache_get(get_ticker, "ETH-USDT")
-        top = _sync_cache_get(get_top_tickers, 5)
+        btc = get_ticker("BTC-USDT")
+        eth = get_ticker("ETH-USDT")
+        top = get_top_tickers(5)
 
         if btc and btc.get("success"):
             t = btc["ticker"]
@@ -71,8 +64,7 @@ class ContextBuilder:
         elif context["btc"] and context["btc"]["change_24h"] < -1:
             context["trend"] = "BEARISH"
 
-        # Определяем рыночный режим по BTC
-        klines = _sync_cache_get(get_kline, "BTC-USDT", "1h", 24)
+        klines = get_kline("BTC-USDT", "1h", 24)
         if klines and klines.get("success"):
             context["market_regime"] = _detect_market_regime(klines["klines"])
 
@@ -80,18 +72,13 @@ class ContextBuilder:
         return context
 
     def _build_portfolio_context(self) -> dict:
-        """Контекст портфеля: баланс, открытые позиции, exposure. С кэшированием."""
         context = {
-            "balance": None,
-            "available": 0,
-            "used_margin": 0,
-            "unrealized_pnl": 0,
-            "open_positions": [],
-            "position_count": 0,
+            "balance": None, "available": 0, "used_margin": 0,
+            "unrealized_pnl": 0, "open_positions": [], "position_count": 0,
         }
 
-        balance = _sync_cache_get(get_balance)
-        positions = _sync_cache_get(get_open_positions)
+        balance = get_balance()
+        positions = get_open_positions()
 
         if balance and balance.get("success"):
             context["balance"] = balance["equity"]
@@ -114,13 +101,7 @@ class ContextBuilder:
         return context
 
     def _build_history_context(self) -> dict:
-        """Контекст истории: статистика, последние сделки, серии."""
-        context = {
-            "stats": None,
-            "recent_trades": [],
-            "losing_streak": 0,
-            "winning_streak": 0,
-        }
+        context = {"stats": None, "recent_trades": [], "losing_streak": 0, "winning_streak": 0}
 
         try:
             stats = self.db.get_stats()
@@ -158,10 +139,7 @@ class ContextBuilder:
 
         return context
 
-    # ────────────── Методы для Consensus Engine ──────────────
-
     async def build_for_open_position(self, position: dict) -> dict:
-        """Контекст для анализа открытой позиции (расширенный: funding, OI, ATR, regime)."""
         loop = asyncio.get_running_loop()
         market_task = loop.run_in_executor(None, self._build_market_context)
         portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
@@ -197,7 +175,6 @@ class ContextBuilder:
         }
 
     async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
-        """Контекст для оценки нового сетапа (расширенный: funding, OI, ATR, regime)."""
         loop = asyncio.get_running_loop()
         market_task = loop.run_in_executor(None, self._build_market_context)
         portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
@@ -213,12 +190,7 @@ class ContextBuilder:
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
         return {
-            "idea": {
-                "ticker": ticker,
-                "symbol": symbol,
-                "direction": direction,
-                "notes": extra_notes,
-            },
+            "idea": {"ticker": ticker, "symbol": symbol, "direction": direction, "notes": extra_notes},
             "ticker": ticker_info,
             "market": market,
             "portfolio": portfolio,
@@ -231,7 +203,6 @@ class ContextBuilder:
         }
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
-        """Контекст для post-trade анализа."""
         loop = asyncio.get_running_loop()
         history_task = loop.run_in_executor(None, self._build_history_context)
         market_task = loop.run_in_executor(None, self._build_market_context)
@@ -264,13 +235,10 @@ class ContextBuilder:
         }
 
     def _build_ticker_info(self, symbol: str) -> dict:
-        """
-        Расширенная информация по инструменту:
-        цена, изменение, high/low, funding rate, open interest, ATR, market regime.
-        """
+        """Расширенная информация по инструменту: цена, funding rate, OI, ATR, regime."""
         info = {}
         try:
-            ticker_res = _sync_cache_get(get_ticker, symbol)
+            ticker_res = get_ticker(symbol)
             if ticker_res and ticker_res.get("success"):
                 t = ticker_res["ticker"]
                 info.update({
@@ -284,7 +252,7 @@ class ContextBuilder:
             logger.error(f"Ошибка получения тикера {symbol}: {e}")
 
         try:
-            funding = _sync_cache_get(get_funding_rate, symbol)
+            funding = get_funding_rate(symbol)
             if funding and funding.get("success"):
                 info["funding_rate"] = funding["funding_rate"]
                 info["mark_price"] = funding.get("mark_price", 0)
@@ -292,14 +260,14 @@ class ContextBuilder:
             logger.error(f"Ошибка получения funding rate {symbol}: {e}")
 
         try:
-            oi = _sync_cache_get(get_open_interest, symbol)
+            oi = get_open_interest(symbol)
             if oi and oi.get("success"):
                 info["open_interest"] = oi["open_interest"]
         except Exception as e:
             logger.error(f"Ошибка получения OI {symbol}: {e}")
 
         try:
-            klines = _sync_cache_get(get_kline, symbol, "1h", 24)
+            klines = get_kline(symbol, "1h", 24)
             if klines and klines.get("success"):
                 info["atr"] = round(_calculate_atr(klines["klines"], 14), 4)
                 info["market_regime"] = _detect_market_regime(klines["klines"])
@@ -307,18 +275,3 @@ class ContextBuilder:
             logger.error(f"Ошибка расчёта ATR/regime {symbol}: {e}")
 
         return info if info else None
-
-
-def _sync_cache_get(func, *args):
-    """
-    Синхронная обёртка для api_cache.get_or_fetch.
-    Поскольку _build_* методы синхронны, но api_cache требует await,
-    запускаем асинхронный вызов в отдельном event loop.
-    """
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return func(*args)
-        return loop.run_until_complete(api_cache.get_or_fetch(func, *args))
-    except RuntimeError:
-        return func(*args)
