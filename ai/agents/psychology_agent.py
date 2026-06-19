@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from ai.providers.base_provider import BaseProvider
 from ai.context_builder import ContextBuilder
@@ -12,12 +13,20 @@ class PsychologyAgent:
         self.provider = provider
         self.context_builder = ContextBuilder()
 
-    def analyze(self) -> str:
-        """Анализирует историю сделок и возвращает оценку психологического состояния."""
-        ctx = self.context_builder.build_full_context()
+    async def analyze(self, context: dict = None) -> str:
+        """Асинхронно анализирует историю сделок и возвращает оценку психологического состояния."""
+        loop = asyncio.get_running_loop()
+        if context is None:
+            ctx = self.context_builder.build_full_context()
+        else:
+            ctx = context
         history = ctx.get("history", {})
         prompt = self._build_psychology_prompt(history)
-        return self.provider.generate(prompt)
+        try:
+            return await loop.run_in_executor(None, self.provider.generate, prompt)
+        except Exception as e:
+            logger.error(f"PsychologyAgent error: {e}")
+            return f"Психологический анализ недоступен: {e}"
 
     def _build_psychology_prompt(self, history: dict) -> str:
         stats = history.get("stats", {})
