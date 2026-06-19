@@ -218,7 +218,6 @@ def get_ticker(symbol: str) -> dict:
     data = _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
-        # API возвращает либо список, либо одиночный объект
         ticker_data = data.get('data', {})
         if isinstance(ticker_data, list):
             if not ticker_data:
@@ -231,3 +230,91 @@ def get_ticker(symbol: str) -> dict:
         return {'success': True, 'ticker': ticker_obj}
     else:
         return {'success': False, 'error': data.get('error', 'Unknown error'), 'ticker': {}}
+
+
+def get_funding_rate(symbol: str) -> dict:
+    """Получить текущую ставку фандинга для символа (публичный эндпоинт)."""
+    url = f"{BASE_URL}/openApi/swap/v2/quote/premiumIndex"
+    params = {'symbol': symbol}
+    data = _public_request_with_retry(url, params)
+
+    if isinstance(data, dict) and data.get('code') == 0:
+        result = data.get('data', {})
+        if isinstance(result, list) and result:
+            result = result[0]
+        return {
+            'success': True,
+            'funding_rate': float(result.get('lastFundingRate', 0)),
+            'mark_price': float(result.get('markPrice', 0)),
+            'index_price': float(result.get('indexPrice', 0)),
+        }
+    else:
+        return {'success': False, 'error': data.get('error', 'Unknown error')}
+
+
+def get_open_interest(symbol: str) -> dict:
+    """Получить открытый интерес для символа (публичный эндпоинт)."""
+    url = f"{BASE_URL}/openApi/swap/v2/quote/openInterest"
+    params = {'symbol': symbol}
+    data = _public_request_with_retry(url, params)
+
+    if isinstance(data, dict) and data.get('code') == 0:
+        result = data.get('data', {})
+        return {
+            'success': True,
+            'open_interest': float(result.get('openInterest', 0)),
+        }
+    else:
+        return {'success': False, 'error': data.get('error', 'Unknown error')}
+
+
+def _calculate_atr(klines: list, period: int = 14) -> float:
+    """
+    Рассчитывает Average True Range из свечей.
+    klines — список свечей, где каждая свеча [open_time, open, high, low, close, volume].
+    Возвращает ATR в абсолютных единицах (цена).
+    """
+    if len(klines) < period + 1:
+        return 0.0
+
+    true_ranges = []
+    for i in range(1, len(klines)):
+        _, _, high, low, close_prev = klines[i-1]
+        _, _, high_cur, low_cur, close_cur = klines[i]
+        # Преобразуем в float, если нужно
+        high_prev = float(high)
+        low_prev = float(low)
+        close_prev = float(close_prev)
+        high_cur = float(high_cur)
+        low_cur = float(low_cur)
+        close_cur = float(close_cur)
+
+        tr = max(high_cur - low_cur, abs(high_cur - close_prev), abs(low_cur - close_prev))
+        true_ranges.append(tr)
+
+    if not true_ranges:
+        return 0.0
+
+    atr = sum(true_ranges[-period:]) / period
+    return atr
+
+
+def _detect_market_regime(klines: list) -> str:
+    """
+    Определяет рыночный режим: TRENDING_UP, TRENDING_DOWN, или RANGING.
+    Использует SMA20 и положение цены относительно неё.
+    """
+    if len(klines) < 20:
+        return "UNKNOWN"
+
+    closes = [float(k[4]) for k in klines[-20:]]
+    sma20 = sum(closes) / 20
+    current_price = closes[-1]
+
+    # Простой трендовый фильтр: цена выше SMA + последние 3 свечи в одном направлении
+    if current_price > sma20 * 1.02 and closes[-1] > closes[-3]:
+        return "TRENDING_UP"
+    elif current_price < sma20 * 0.98 and closes[-1] < closes[-3]:
+        return "TRENDING_DOWN"
+    else:
+        return "RANGING"
