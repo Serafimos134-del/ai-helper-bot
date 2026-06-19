@@ -271,23 +271,21 @@ def get_open_interest(symbol: str) -> dict:
 def _calculate_atr(klines: list, period: int = 14) -> float:
     """
     Рассчитывает Average True Range из свечей.
-    klines — список свечей, где каждая свеча [open_time, open, high, low, close, volume].
-    Возвращает ATR в абсолютных единицах (цена).
+    klines — список словарей с ключами open, high, low, close.
     """
     if len(klines) < period + 1:
         return 0.0
 
     true_ranges = []
     for i in range(1, len(klines)):
-        _, _, high, low, close_prev = klines[i-1]
-        _, _, high_cur, low_cur, close_cur = klines[i]
-        # Преобразуем в float, если нужно
-        high_prev = float(high)
-        low_prev = float(low)
-        close_prev = float(close_prev)
-        high_cur = float(high_cur)
-        low_cur = float(low_cur)
-        close_cur = float(close_cur)
+        prev = klines[i-1]
+        curr = klines[i]
+        high_prev = float(prev.get('high', 0))
+        low_prev = float(prev.get('low', 0))
+        close_prev = float(prev.get('close', 0))
+        high_cur = float(curr.get('high', 0))
+        low_cur = float(curr.get('low', 0))
+        close_cur = float(curr.get('close', 0))
 
         tr = max(high_cur - low_cur, abs(high_cur - close_prev), abs(low_cur - close_prev))
         true_ranges.append(tr)
@@ -302,16 +300,15 @@ def _calculate_atr(klines: list, period: int = 14) -> float:
 def _detect_market_regime(klines: list) -> str:
     """
     Определяет рыночный режим: TRENDING_UP, TRENDING_DOWN, или RANGING.
-    Использует SMA20 и положение цены относительно неё.
+    klines — список словарей с ключом close.
     """
     if len(klines) < 20:
         return "UNKNOWN"
 
-    closes = [float(k[4]) for k in klines[-20:]]
+    closes = [float(k.get('close', 0)) for k in klines[-20:]]
     sma20 = sum(closes) / 20
     current_price = closes[-1]
 
-    # Простой трендовый фильтр: цена выше SMA + последние 3 свечи в одном направлении
     if current_price > sma20 * 1.02 and closes[-1] > closes[-3]:
         return "TRENDING_UP"
     elif current_price < sma20 * 0.98 and closes[-1] < closes[-3]:
