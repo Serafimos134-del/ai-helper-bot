@@ -1,5 +1,51 @@
-@staticmethod
+import logging
+from typing import Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+class RiskRuleEngine:
+    """Рассчитывает риск-метрики без использования LLM."""
+
+    # Пороговые значения
+    RISK_PER_TRADE_WARN = 2.0       # % от депозита
+    RISK_PER_TRADE_HIGH = 3.0
+    LEVERAGE_WARN = 20
+    LEVERAGE_HIGH = 30
+    EXPOSURE_WARN = 50.0
+    EXPOSURE_HIGH = 75.0
+    LOSING_STREAK_WARN = 3
+    DAILY_PNL_HIGH = -5.0           # %
+    RR_BAD = 1.5
+    DRAWDOWN_CAUTION = 5.0          # %
+    DRAWDOWN_DEFENSIVE = 10.0
+    DRAWDOWN_CRITICAL = 15.0
+
+    # Классификация волатильности активов (упрощённо)
+    LOW_VOLATILITY = {"BTC-USDT", "ETH-USDT"}
+    MEDIUM_VOLATILITY = {"SOL-USDT", "BNB-USDT", "XRP-USDT", "ADA-USDT"}
+    # всё остальное — высокая волатильность
+
+    @staticmethod
+    def _get_volatility_class(symbol: str) -> str:
+        if symbol in RiskRuleEngine.LOW_VOLATILITY:
+            return "LOW"
+        if symbol in RiskRuleEngine.MEDIUM_VOLATILITY:
+            return "MEDIUM"
+        return "HIGH"
+
+    @staticmethod
     def assess(portfolio: Dict, history: Dict) -> Dict:
+        """
+        Основной метод оценки риска.
+
+        Args:
+            portfolio: данные портфеля из ContextBuilder
+            history: исторические данные из ContextBuilder
+
+        Returns:
+            Словарь с сигналами риска
+        """
         balance = portfolio.get("balance") or 0
         used_margin = portfolio.get("used_margin") or 0
         unrealized_pnl = portfolio.get("unrealized_pnl") or 0
@@ -60,7 +106,7 @@
         short_count = sum(1 for p in open_positions if p.get("side") == "SHORT")
         correlation_risk = "HIGH" if (long_count >= 2 or short_count >= 2) else "LOW"
 
-        # 8. Drawdown mode
+        # 8. Drawdown mode (приблизительно по текущему PnL)
         drawdown_pct = abs(daily_pnl_pct) if daily_pnl_pct < 0 else 0
         if drawdown_pct > RiskRuleEngine.DRAWDOWN_CRITICAL:
             drawdown_mode = "CRITICAL"
