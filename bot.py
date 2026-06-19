@@ -47,24 +47,31 @@ BTN_HELP = "ℹ️ Help"
 BTN_BALANCE = "💰 Баланс"
 BTN_LAST_TRADES = "📋 Последние сделки"
 BTN_STATS = "📊 Статистика"
-BTN_AI_EVALUATION = "🤖 Оценка сделки"
-BTN_AI_ANALYSIS = "🧠 AI-анализ"
+BTN_AI_EVALUATION = "🤖 Оценка сделки"          # удалена из меню, оставлена для обратной совместимости
+BTN_AI_ANALYSIS = "🧠 AI-анализ"                # общий AI-анализ (оставлен в trading-меню)
 
 BTN_BACK = "🔙 Назад"
 BTN_CANCEL = "❌ Отмена"
 
-# AI-меню
-BTN_AI_OPEN_ANALYSIS = "📈 Анализ открытых сделок"
-BTN_AI_ASK = "💬 Задать вопрос AI"
+# AI-меню (обновлено)
+BTN_CONSILIUM = "🧠 Консилиум"
+CONSILIUM_OPEN = "📂 Открытые сделки"
+CONSILIUM_SETUP = "🎯 Новый сетап"
+
 BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
 BTN_AI_LEARN = "📊 Анализ журнала"
+
+# Удалённые кнопки (больше не используются)
+# BTN_AI_OPEN_ANALYSIS = "📈 Анализ открытых сделок"
+# BTN_AI_ASK = "💬 Задать вопрос AI"
 
 NAV_BUTTONS = {
     BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_EVALUATION, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
-    BTN_AI_OPEN_ANALYSIS, BTN_AI_ASK, BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
+    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
+    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,   # новые
     "🏠 *Главное меню*\nВыбери раздел:"
 }
 
@@ -94,8 +101,7 @@ def trading_menu_keyboard():
 def ai_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            [BTN_AI_OPEN_ANALYSIS],
-            [BTN_AI_ASK],
+            [BTN_CONSILIUM],
             [BTN_AI_MARKET, BTN_AI_TRENDS],
             [BTN_AI_LEARN],
             [BTN_BACK],
@@ -249,74 +255,6 @@ async def show_trends(update: Update):
     except Exception: pass
     await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
 
-async def start_open_position_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    positions = get_open_positions().get('trades', [])
-    if not positions:
-        await update.message.reply_text("✅ Нет открытых позиций для анализа.", reply_markup=ai_menu_keyboard())
-        return
-    positions_map = {}
-    for p in positions:
-        label = f"{p.get('symbol', '?')} {p.get('side', '')}"
-        positions_map[label] = p
-    context.user_data['open_positions_map'] = positions_map
-    context.user_data['state'] = 'choosing_position'
-    await update.message.reply_text("📈 *Выбери позицию для AI-анализа:*", parse_mode='Markdown', reply_markup=open_positions_keyboard(positions))
-
-async def analyze_open_position(update: Update, position: dict):
-    msg = await update.message.reply_text("🤖 Анализирую позицию...")
-    symbol = position.get('symbol', '')
-    side = position.get('side', '')
-    entry_price = float(position.get('entryPrice', 0))
-    unrealized_pnl = float(position.get('unrealizedPnl', 0))
-    size = position.get('size', '')
-    support = None
-    resistance = None
-    current_price = entry_price
-    kline_result = get_kline(symbol, "15m", 50)
-    klines = kline_result.get('klines', [])
-    if kline_result.get('success') and len(klines) >= 10:
-        try:
-            highs = [float(k.get('high', k.get('h', 0))) for k in klines[-10:]]
-            lows = [float(k.get('low', k.get('l', 0))) for k in klines[-10:]]
-            closes = [float(k.get('close', k.get('c', 0))) for k in klines]
-            resistance = max(highs)
-            support = min(lows)
-            current_price = closes[-1]
-        except (ValueError, TypeError, AttributeError):
-            pass
-    change_pct = 0
-    if entry_price:
-        if side == 'LONG':
-            change_pct = (current_price - entry_price) / entry_price * 100
-        else:
-            change_pct = (entry_price - current_price) / entry_price * 100
-    prompt = (
-        "Ты — профессиональный риск-менеджер. Проанализируй открытую позицию строго по пунктам, "
-        "без общих фраз, только конкретные рекомендации.\n\n"
-        "ДАННЫЕ ПОЗИЦИИ:\n"
-        f"- Символ: {symbol}\n"
-        f"- Направление: {side}\n"
-        f"- Цена входа: {entry_price}\n"
-        f"- Текущая цена: {current_price}\n"
-        f"- Изменение от входа: {change_pct:+.2f}%\n"
-        f"- Нереализованный PNL: {unrealized_pnl:+.2f} USDT\n"
-        f"- Объём позиции: {size}\n"
-        + (f"- Ближайшее сопротивление: {resistance}\n" if resistance else "")
-        + (f"- Ближайшая поддержка: {support}\n" if support else "")
-        + "\nОТВЕТ ДАЙ СТРОГО В ФОРМАТЕ:\n"
-        "1. РЕКОМЕНДАЦИЯ: (удерживать / частично закрыть / закрыть полностью)\n"
-        "2. ГДЕ ПОСТАВИТЬ СТОП-ЛОСС: (конкретная цена)\n"
-        "3. ГДЕ ЗАФИКСИРОВАТЬ ПРИБЫЛЬ: (конкретная цена)\n"
-        "4. ОБОСНОВАНИЕ: (2-3 предложения, с указанием уровней)"
-    )
-    try:
-        analysis = ai_analyzer.analyze_raw(prompt)
-    except Exception as e:
-        analysis = f"Ошибка AI: {e}"
-    try: await msg.delete()
-    except Exception: pass
-    await update.message.reply_text(f"📈 Анализ позиции {symbol} {side}\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
-
 # ── Журнал сделок ──
 async def show_journal(update: Update):
     msg = await update.message.reply_text("📓 Загружаю журнал...")
@@ -405,18 +343,6 @@ async def show_journal_analysis(update: Update):
     answer = ai_analyzer.analyze_raw(prompt)
     await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}", parse_mode='Markdown')
 
-# ── Выбор сделки для AI-оценки ──
-async def show_trades_for_evaluation(update: Update):
-    trades = db.get_closed_trades(limit=15)
-    if not trades:
-        await update.message.reply_text("Нет закрытых сделок для оценки.")
-        return
-    keyboard = []
-    for t in reversed(trades):
-        label = f"{t['symbol']} {t['side']} PNL: {t['realized_pnl']:.2f}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"eval_{t['id']}")])
-    await update.message.reply_text("🤖 *Выберите сделку для AI-оценки:*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
 async def show_help(update: Update):
     text = (
         "ℹ️ *Помощь*\n\n"
@@ -424,8 +350,7 @@ async def show_help(update: Update):
         "  • 💰 Баланс — текущий баланс BingX\n"
         "  • 📋 Последние сделки — открытые и закрытые позиции\n"
         "  • 📊 Статистика — Win Rate, PNL и др.\n"
-        "  • 🤖 Оценка сделки — AI-оценка выбранной сделки\n"
-        "  • 🧠 AI-анализ — анализ торговли\n\n"
+        "  • 🧠 Консилиум — AI-анализ позиций и новых сетапов\n\n"
         "🔄 Синхронизация каждые 15 секунд.\n\n"
         "📌 *Команды:*\n"
         "/start — главное меню\n"
@@ -477,10 +402,13 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text.strip()
     state = context.user_data.get('state')
+
+    # Обработка состояний комментариев (без изменений)
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
         if text in NAV_BUTTONS or text.startswith("🏠 *"):
             await update.message.reply_text("⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.", reply_markup=cancel_keyboard())
             return
+
     if state == 'entering_comment_inline':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -497,6 +425,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         context.user_data.pop('comment_order_id', None)
         return
+
     if state == 'entering_exit_reason':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -510,6 +439,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         context.user_data.pop('comment_order_id', None)
         return
+
     if state == 'entering_entry_reason':
         if text == BTN_CANCEL:
             context.user_data['state'] = None
@@ -521,96 +451,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Причина входа сохранена.", reply_markup=trading_menu_keyboard())
         context.user_data['state'] = None
         return
-    if state == 'asking_ai':
-        if text == BTN_CANCEL:
-            context.user_data['state'] = None
-            await update.message.reply_text("Отменено.", reply_markup=ai_menu_keyboard())
-            return
-        context.user_data['state'] = None
-        msg = await update.message.reply_text("🤖 Думаю...")
-        ticker_match = re.search(r'\b([A-Z0-9]{2,}-USDT)\b', text.upper())
-        symbol = ticker_match.group(1) if ticker_match else None
-        if symbol:
-            ticker_data = get_ticker(symbol)
-            kline_data = get_kline(symbol, "1h", 24)
-            extra_context = ""
-            if ticker_data.get('success'):
-                t = ticker_data['ticker']
-                extra_context += (
-                    f"Текущая цена {symbol}: {t.get('lastPrice', 'N/A')} USDT, "
-                    f"изменение за 24ч: {t.get('priceChangePercent', 'N/A')}%, "
-                    f"макс: {t.get('highPrice', 'N/A')}, мин: {t.get('lowPrice', 'N/A')}, "
-                    f"объём: {t.get('quoteVolume', 'N/A')}.\n"
-                )
-            else:
-                extra_context += f"Не удалось получить данные по {symbol}.\n"
-            if kline_data.get('success') and kline_data.get('klines'):
-                klines = kline_data['klines']
-                closes = [float(k[4]) for k in klines]
-                if closes[0] != 0:
-                    change_24h = ((closes[-1] - closes[0]) / closes[0]) * 100
-                    high_24h = max(float(k[2]) for k in klines)
-                    low_24h = min(float(k[3]) for k in klines)
-                    extra_context += (
-                        f"За последние 24 часа: изменение {change_24h:+.2f}%, "
-                        f"максимум {high_24h}, минимум {low_24h}."
-                    )
-            else:
-                extra_context += "Не удалось получить свечные данные."
-            prompt = (
-                f"Ты — профессиональный трейдер-ментор. Проанализируй монету {symbol} "
-                f"на основе предоставленных данных и вопроса пользователя.\n\n"
-                f"{extra_context}\n\n"
-                f"Вопрос: {text}\n\n"
-                f"Дай конкретный, структурированный ответ: тренд, ключевые уровни, рекомендация (входить/не входить), "
-                f"стоп-лосс и тейк-профит (если применимо). Будь краток."
-            )
-        else:
-            market_context = ""
-            try:
-                tickers_result = get_top_tickers(5)
-                if tickers_result.get('success') and tickers_result.get('tickers'):
-                    lines = []
-                    for t in tickers_result['tickers']:
-                        s = t.get('symbol', '')
-                        price = t.get('lastPrice', t.get('close', ''))
-                        change = float(t.get('priceChangePercent', 0))
-                        lines.append(f"{s}: цена {price}, изм за 24ч {change:+.2f}%")
-                    market_context = "Актуальные данные рынка (топ-5 по объёму):\n" + "\n".join(lines) + "\n\n"
-            except Exception:
-                market_context = ""
-            prompt = (
-                market_context
-                + f"ВОПРОС ТРЕЙДЕРА: {text}\n\n"
-                + "Если вопрос касается цены или текущей рыночной ситуации — используй ТОЛЬКО данные выше. "
-                + "Если нужной монеты нет в данных или вопрос не про рынок — отвечай по своим знаниям, "
-                + "но никогда не придумывай конкретные цифры цен, которых не видел. "
-                + "В таком случае честно скажи, что не можешь дать точную цифру, и предложи проверить на бирже."
-            )
-        try:
-            answer = ai_analyzer.analyze_raw(prompt)
-        except Exception as e:
-            answer = f"Ошибка вызова AI: {e}"
-        try: await msg.delete()
-        except Exception: pass
-        await update.message.reply_text(f"💬 Ответ AI:\n\n{answer[:3500]}", reply_markup=ai_menu_keyboard())
+
+    # Новые состояния Консилиума
+    if state == 'consilium_choose_position':
+        await consilium_analyze_position(update, context)
         return
-    if state == 'choosing_position':
-        if text == BTN_BACK:
-            context.user_data['state'] = None
-            context.user_data.pop('open_positions_map', None)
-            await update.message.reply_text("🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
-            return
-        positions_map = context.user_data.get('open_positions_map', {})
-        position = positions_map.get(text)
-        if not position:
-            await update.message.reply_text("Выбери позицию из списка кнопок 👇", reply_markup=open_positions_keyboard(list(positions_map.values())))
-            return
-        context.user_data['state'] = None
-        context.user_data.pop('open_positions_map', None)
-        await analyze_open_position(update, position)
+    if state == 'consilium_setup_input':
+        await consilium_process_setup(update, context)
         return
-    # Навигация по меню
+
+    # Навигация по меню (удалены старые кнопки AI-меню)
     if text == BTN_TRADING:
         await update.message.reply_text("📈 *Trading*\nВыбери действие:", parse_mode='Markdown', reply_markup=trading_menu_keyboard())
     elif text == BTN_AI:
@@ -628,14 +478,18 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_STATS:
         await show_stats(update)
     elif text == BTN_AI_EVALUATION:
-        await show_trades_for_evaluation(update)
+        # оставлено для совместимости, но фактически перенаправляем на Консилиум?
+        # Пока оставим заглушку, т.к. кнопка еще в trading-меню, но лучше убрать.
+        # Удалим вызов, чтобы не путать.
+        await update.message.reply_text("Эта функция объединена с Консилиумом. Используйте 🧠 Консилиум.", reply_markup=ai_menu_keyboard())
     elif text == BTN_AI_ANALYSIS:
         await show_ai_analysis(update)
-    elif text == BTN_AI_OPEN_ANALYSIS:
-        await start_open_position_analysis(update, context)
-    elif text == BTN_AI_ASK:
-        context.user_data['state'] = 'asking_ai'
-        await update.message.reply_text("💬 *Задай вопрос AI-тренеру:*\n\nНапример: «Стоит ли сейчас открывать лонг по ETH?» или «Как улучшить дисциплину?»", parse_mode='Markdown', reply_markup=cancel_keyboard())
+    elif text == BTN_CONSILIUM:
+        await consilium_menu(update)
+    elif text == CONSILIUM_OPEN:
+        await consilium_open_positions(update, context)
+    elif text == CONSILIUM_SETUP:
+        await consilium_new_setup(update, context)
     elif text == BTN_AI_MARKET:
         await show_market_overview(update)
     elif text == BTN_AI_TRENDS:
@@ -674,6 +528,95 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_open = len(results.get('new_open', []))
     new_closed = len(results.get('new_closed', []))
     await msg.edit_text(f"✅ Синхронизация завершена!\n\n🆕 Новых позиций: {new_open}\n🔒 Закрыто позиций: {new_closed}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# НОВЫЕ ФУНКЦИИ КОНСИЛИУМА
+# ══════════════════════════════════════════════════════════════════════════════
+
+from ai.consensus_engine import ConsensusEngine
+consensus = ConsensusEngine()
+
+async def consilium_menu(update: Update):
+    keyboard = ReplyKeyboardMarkup([
+        [CONSILIUM_OPEN],
+        [CONSILIUM_SETUP],
+        [BTN_BACK]
+    ], resize_keyboard=True)
+    await update.message.reply_text("🧠 *Консилиум*\nВыбери режим:", parse_mode='Markdown', reply_markup=keyboard)
+
+async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    res = get_open_positions()
+    if not res.get('success') or not res.get('trades'):
+        await update.message.reply_text("Нет открытых позиций или ошибка API.", reply_markup=consilium_keyboard())
+        return
+    trades = res['trades']
+    context.user_data['consilium_positions'] = trades
+    keyboard = []
+    for t in trades:
+        sym = t['symbol']
+        side = 'LONG' if t.get('side') == 'BUY' else 'SHORT'
+        keyboard.append([f"{sym} {side}"])
+    keyboard.append([BTN_BACK])
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Выбери позицию для анализа:", reply_markup=markup)
+    context.user_data['state'] = 'consilium_choose_position'
+
+async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    trades = context.user_data.get('consilium_positions', [])
+    chosen = None
+    for t in trades:
+        if f"{t['symbol']} LONG" == text or f"{t['symbol']} SHORT" == text:
+            chosen = t
+            break
+    if not chosen:
+        await update.message.reply_text("Выбери позицию из списка.", reply_markup=consilium_keyboard())
+        return
+    context.user_data['state'] = None
+    msg = await update.message.reply_text("🔄 Анализирую позицию...")
+    result = await consensus.analyze_open_position(chosen)
+    response = (
+        f"🧠 *Консилиум — {chosen['symbol']} {chosen['side']}*\n\n"
+        f"📈 *Рынок:*\n{result['market_review']}\n\n"
+        f"⚠️ *Риск:*\n{result['risk_review']}\n\n"
+        f"🧘 *Психология:*\n{result['psychology_review']}\n\n"
+        f"⚖️ *Вердикт:* {result['judge_verdict']}"
+    )
+    await msg.edit_text(response, parse_mode='Markdown')
+    await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
+
+async def consilium_new_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎯 Опишите сетап в свободной форме.\nПримеры:\n• SOL long\n• BTC short\n• Думаю открыть ETH long",
+        reply_markup=cancel_keyboard()
+    )
+    context.user_data['state'] = 'consilium_setup_input'
+
+async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    from utils.parsers import parse_trade_idea
+    ticker, direction = parse_trade_idea(text)
+    if not ticker or not direction:
+        await update.message.reply_text(
+            "Не удалось определить тикер и направление. Укажите явно, например: BTC long",
+            reply_markup=cancel_keyboard()
+        )
+        return
+    context.user_data['state'] = None
+    msg = await update.message.reply_text("🔄 Анализирую сетап...")
+    result = await consensus.analyze_new_setup(ticker, direction, extra_notes=text)
+    response = (
+        f"🧠 *Консилиум — {ticker} {direction}*\n\n"
+        f"📈 *Рынок:*\n{result['market_review']}\n\n"
+        f"⚠️ *Риск:*\n{result['risk_review']}\n\n"
+        f"🧘 *Психология:*\n{result['psychology_review']}\n\n"
+        f"⚖️ *Вердикт:* {result['judge_verdict']}"
+    )
+    await msg.edit_text(response, parse_mode='Markdown')
+    await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
+
+def consilium_keyboard():
+    return ReplyKeyboardMarkup([[CONSILIUM_OPEN], [CONSILIUM_SETUP], [BTN_BACK]], resize_keyboard=True)
 
 # ─── Запуск ───────────────────────────────────────────────────────────────────
 
