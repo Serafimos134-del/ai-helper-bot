@@ -10,11 +10,11 @@ from ai.trade_scorer import TradeScorer
 logger = logging.getLogger(__name__)
 
 class ConsensusEngine:
-    def __init__(self):
-        self.market = MarketAgent()
-        self.risk = RiskAgent()
-        self.psych = PsychologyAgent()
-        self.judge = JudgeAgent()
+    def __init__(self, provider):
+        self.market = MarketAgent(provider)
+        self.risk = RiskAgent(provider)
+        self.psych = PsychologyAgent(provider)
+        self.judge = JudgeAgent(provider)
         self.context_builder = ContextBuilder()
         self.scorer = TradeScorer()
 
