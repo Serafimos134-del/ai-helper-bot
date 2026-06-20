@@ -10,7 +10,9 @@ from ai.trade_scorer import TradeScorer
 
 logger = logging.getLogger(__name__)
 
-AGENT_TIMEOUT = 30  # секунд на каждого агента
+AGENT_TIMEOUT = 30
+AGENT_DELAY = 3.0  # задержка между запросами к Groq (секунды)
+
 
 class ConsensusEngine:
     def __init__(self, provider):
@@ -26,14 +28,14 @@ class ConsensusEngine:
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны. Попробуйте позже.")
         logger.info(f"CONSENSUS ENGINE: analyzing position {position.get('symbol')}")
-        return await self._run_agents(context, 'open')
+        return await self._run_agents_sequential(context, 'open')
 
     async def analyze_new_setup(self, ticker: str, direction: str, extra_notes: str = '') -> dict:
         context = await self.context_builder.build_for_new_setup(ticker, direction, extra_notes)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны. Попробуйте позже.")
         logger.info(f"CONSENSUS ENGINE: analyzing setup {ticker} {direction}")
-        return await self._run_agents(context, 'setup')
+        return await self._run_agents_sequential(context, 'setup')
 
     async def analyze_closed_trade(self, trade: dict) -> dict:
         score_result = self.scorer.score(trade)
@@ -41,32 +43,49 @@ class ConsensusEngine:
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны. Попробуйте позже.")
         logger.info(f"CONSENSUS ENGINE: analyzing closed trade {trade.get('symbol')}")
-        return await self._run_agents(context, 'post_trade')
+        return await self._run_agents_sequential(context, 'post_trade')
 
-    async def _run_agents(self, context: dict, mode: str) -> dict:
-        results = await asyncio.gather(
-            asyncio.wait_for(self.market.analyze(context), timeout=AGENT_TIMEOUT),
-            asyncio.wait_for(self.risk.analyze(context), timeout=AGENT_TIMEOUT),
-            asyncio.wait_for(self.psych.analyze(context), timeout=AGENT_TIMEOUT),
-            return_exceptions=True
-        )
-        market = results[0] if not isinstance(results[0], Exception) else f"Ошибка MarketAgent: {results[0]}"
-        raw_risk = results[1] if not isinstance(results[1], Exception) else '{"summary": "Ошибка RiskAgent"}'
-        psych = results[2] if not isinstance(results[2], Exception) else f"Ошибка PsychologyAgent: {results[2]}"
+    async def _run_agents_sequential(self, context: dict, mode: str) -> dict:
+        """
+        Последовательный вызов агентов с задержкой.
+        Исключает 429 от Groq, гарантирует стабильность.
+        """
+        # 1. MarketAgent
+        try:
+            market = await asyncio.wait_for(self.market.analyze(context), timeout=AGENT_TIMEOUT)
+        except Exception as e:
+            market = f"Ошибка MarketAgent: {e}"
+        await asyncio.sleep(AGENT_DELAY)
 
+        # 2. RiskAgent
+        try:
+            raw_risk = await asyncio.wait_for(self.risk.analyze(context), timeout=AGENT_TIMEOUT)
+        except Exception as e:
+            raw_risk = f'{{"summary": "Ошибка RiskAgent: {e}"}}'
+        await asyncio.sleep(AGENT_DELAY)
+
+        # 3. PsychologyAgent
+        try:
+            psych = await asyncio.wait_for(self.psych.analyze(context), timeout=AGENT_TIMEOUT)
+        except Exception as e:
+            psych = f"Ошибка PsychologyAgent: {e}"
+        await asyncio.sleep(AGENT_DELAY)
+
+        # 4. JudgeAgent
         try:
             risk_data = json.loads(raw_risk)
             risk = risk_data.get('summary', raw_risk)
         except Exception:
             risk = raw_risk
 
+        try:
+            verdict = await asyncio.wait_for(self.judge.synthesize(market, risk, psych, mode=mode), timeout=AGENT_TIMEOUT)
+        except Exception as e:
+            verdict = f"Ошибка JudgeAgent: {e}"
+
         data_quality = self._calculate_data_quality(context)
         disagreement = self._calculate_disagreement(market, risk, psych)
         confidence = self._calculate_confidence(data_quality, disagreement)
-
-        verdict = await asyncio.wait_for(self.judge.synthesize(market, risk, psych, mode=mode), timeout=AGENT_TIMEOUT)
-
-        # Извлекаем memory_context из контекста
         memory = context.get('memory', '')
 
         return {
