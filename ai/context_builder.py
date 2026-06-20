@@ -88,13 +88,25 @@ class ContextBuilder:
 
         if positions and positions.get("success"):
             for p in positions.get("trades", []):
+                entry_price = float(p.get("entryPrice", 0))
+                size = abs(float(p.get("positionAmt", p.get("size", 0))))
+                unrealized_pnl = float(p.get("unrealizedPnl", 0))
+                # Оценочная текущая цена на основе PnL
+                if size > 0:
+                    current_price = entry_price + (unrealized_pnl / size)
+                else:
+                    current_price = entry_price
+
                 context["open_positions"].append({
                     "symbol": p.get("symbol", ""),
                     "side": p.get("side", ""),
-                    "entry_price": float(p.get("entryPrice", 0)),
-                    "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
+                    "entry_price": entry_price,
+                    "unrealized_pnl": unrealized_pnl,
                     "leverage": p.get("leverage", 1),
-                    "size": abs(float(p.get("positionAmt", p.get("size", 0)))),
+                    "size": size,
+                    "current_price": current_price,
+                    "stop_loss": p.get("stopLoss"),
+                    "take_profit": p.get("takeProfit"),
                 })
             context["position_count"] = len(context["open_positions"])
 
