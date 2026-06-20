@@ -16,7 +16,6 @@ ai_analyzer = AITradingAnalyzer()
 
 
 def setup_router(app: Application) -> None:
-    """Регистрирует обработчик callback-запросов."""
     app.add_handler(CallbackQueryHandler(handle_callback))
 
 
@@ -26,7 +25,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("comment_"):
-        trade_id = int(data.split("_")[1])
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            return
+        trade_id = int(parts[1])
         context.user_data['comment_order_id'] = trade_id
         context.user_data['state'] = 'entering_comment_inline'
         await query.edit_message_text(
@@ -35,7 +37,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=cancel_keyboard()
         )
     elif data.startswith("detail_"):
-        trade_id = int(data.split("_")[1])
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            return
+        trade_id = int(parts[1])
         trade = db.find_trade_by_id(trade_id)
         if trade:
             holding = trade.get('holding_minutes')
@@ -62,13 +67,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("❌ Сделка не найдена.")
     elif data.startswith("eval_"):
-        trade_id = int(data.split("_")[1])
-        await generate_ai_review(query, trade_id)
-    elif data.startswith("entry_reason_"):
-        # 🔧 Защита от неполного callback_data
         parts = data.split("_", 2)
         if len(parts) < 3:
-            logger.warning(f"Invalid entry_reason callback_data: {data}")
+            return
+        trade_id = int(parts[1])
+        await generate_ai_review(query, trade_id)
+    elif data.startswith("entry_reason_"):
+        parts = data.split("_", 2)
+        if len(parts) < 3:
             await query.edit_message_text("❌ Ошибка: неверный ID позиции.")
             return
         order_id = parts[2]
@@ -81,7 +87,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "skip_entry_reason":
         await query.edit_message_text("Причина входа пропущена.")
     elif data.startswith("exit_reason_"):
-        trade_id = int(data.split("_")[2])
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            return
+        trade_id = int(parts[2])
         context.user_data['comment_order_id'] = trade_id
         context.user_data['state'] = 'entering_exit_reason'
         await query.edit_message_text(
@@ -89,12 +98,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=cancel_keyboard()
         )
     elif data.startswith("ai_review_"):
-        trade_id = int(data.split("_")[2])
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            return
+        trade_id = int(parts[2])
         await generate_ai_review(query, trade_id)
     elif data == "skip_comment":
         await query.edit_message_text("Запись сохранена без комментария.")
     elif data.startswith("setup_"):
-        trade_id = int(data.split("_")[1])
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            return
+        trade_id = int(parts[1])
         context.user_data['setup_trade_id'] = trade_id
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Liquidity Sweep", callback_data=f"set_setup_{trade_id}_LiquiditySweep")],
@@ -110,6 +125,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📊 *Выберите сетап сделки:*", parse_mode='Markdown', reply_markup=keyboard)
     elif data.startswith("set_setup_"):
         parts = data.split("_")
+        if len(parts) < 4:
+            return
         trade_id = int(parts[2])
         setup = parts[3]
         db.update_trade_metrics(trade_id, setup_type=setup)
