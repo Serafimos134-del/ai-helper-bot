@@ -17,19 +17,19 @@ class ContextBuilder:
         self.db = Database()
 
     async def build_full_context(self) -> dict:
-        loop = asyncio.get_running_loop()
-        market_task = loop.run_in_executor(None, self._build_market_context)
-        portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
-        history_task = loop.run_in_executor(None, self._build_history_context)
-        market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+        market, portfolio, history = await asyncio.gather(
+            self._build_market_context(),
+            self._build_portfolio_context(),
+            asyncio.to_thread(self._build_history_context)
+        )
         return {"market": market, "portfolio": portfolio, "history": history}
 
-    def _build_market_context(self) -> dict:
+    async def _build_market_context(self) -> dict:
         context = {"btc": None, "eth": None, "top_movers": [], "trend": "NEUTRAL", "market_regime": "UNKNOWN"}
 
-        btc = get_ticker("BTC-USDT")
-        eth = get_ticker("ETH-USDT")
-        top = get_top_tickers(5)
+        btc = await get_ticker("BTC-USDT")
+        eth = await get_ticker("ETH-USDT")
+        top = await get_top_tickers(5)
 
         if btc and btc.get("success"):
             t = btc["ticker"]
@@ -64,21 +64,21 @@ class ContextBuilder:
         elif context["btc"] and context["btc"]["change_24h"] < -1:
             context["trend"] = "BEARISH"
 
-        klines = get_kline("BTC-USDT", "1h", 24)
+        klines = await get_kline("BTC-USDT", "1h", 24)
         if klines and klines.get("success"):
             context["market_regime"] = _detect_market_regime(klines["klines"])
 
         logger.info(f"CONTEXT BUILDER (market): btc={context.get('btc')}, eth={context.get('eth')}")
         return context
 
-    def _build_portfolio_context(self) -> dict:
+    async def _build_portfolio_context(self) -> dict:
         context = {
             "balance": None, "available": 0, "used_margin": 0,
             "unrealized_pnl": 0, "open_positions": [], "position_count": 0,
         }
 
-        balance = get_balance()
-        positions = get_open_positions()
+        balance = await get_balance()
+        positions = await get_open_positions()
 
         if balance and balance.get("success"):
             context["balance"] = balance["equity"]
@@ -225,17 +225,16 @@ class ContextBuilder:
         return result
 
     async def build_for_open_position(self, position: dict) -> dict:
-        loop = asyncio.get_running_loop()
-        market_task = loop.run_in_executor(None, self._build_market_context)
-        portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
-        history_task = loop.run_in_executor(None, self._build_history_context)
-
         ticker_info = None
         symbol = position.get("symbol", "")
         if symbol:
-            ticker_info = self._build_ticker_info(symbol)
+            ticker_info = await self._build_ticker_info(symbol)
 
-        market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+        market, portfolio, history = await asyncio.gather(
+            self._build_market_context(),
+            self._build_portfolio_context(),
+            asyncio.to_thread(self._build_history_context)
+        )
         memory_context = self._get_memory_context_sync()
 
         return {
@@ -262,17 +261,16 @@ class ContextBuilder:
         }
 
     async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
-        loop = asyncio.get_running_loop()
-        market_task = loop.run_in_executor(None, self._build_market_context)
-        portfolio_task = loop.run_in_executor(None, self._build_portfolio_context)
-        history_task = loop.run_in_executor(None, self._build_history_context)
-
         symbol = ticker
         if not symbol.endswith("-USDT"):
             symbol = f"{ticker}-USDT"
 
-        ticker_info = self._build_ticker_info(symbol)
-        market, portfolio, history = await asyncio.gather(market_task, portfolio_task, history_task)
+        ticker_info = await self._build_ticker_info(symbol)
+        market, portfolio, history = await asyncio.gather(
+            self._build_market_context(),
+            self._build_portfolio_context(),
+            asyncio.to_thread(self._build_history_context)
+        )
         memory_context = self._get_memory_context_sync()
 
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
@@ -292,10 +290,10 @@ class ContextBuilder:
         }
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
-        loop = asyncio.get_running_loop()
-        history_task = loop.run_in_executor(None, self._build_history_context)
-        market_task = loop.run_in_executor(None, self._build_market_context)
-        history, market = await asyncio.gather(history_task, market_task)
+        history, market = await asyncio.gather(
+            asyncio.to_thread(self._build_history_context),
+            self._build_market_context()
+        )
         memory_context = self._get_memory_context_sync()
 
         return {
@@ -325,10 +323,10 @@ class ContextBuilder:
             },
         }
 
-    def _build_ticker_info(self, symbol: str) -> dict:
+    async def _build_ticker_info(self, symbol: str) -> dict:
         info = {}
         try:
-            ticker_res = get_ticker(symbol)
+            ticker_res = await get_ticker(symbol)
             if ticker_res and ticker_res.get("success"):
                 t = ticker_res["ticker"]
                 info.update({
@@ -342,7 +340,7 @@ class ContextBuilder:
             logger.error(f"Ошибка получения тикера {symbol}: {e}")
 
         try:
-            funding = get_funding_rate(symbol)
+            funding = await get_funding_rate(symbol)
             if funding and funding.get("success"):
                 info["funding_rate"] = funding["funding_rate"]
                 info["mark_price"] = funding.get("mark_price", 0)
@@ -350,14 +348,14 @@ class ContextBuilder:
             logger.error(f"Ошибка получения funding rate {symbol}: {e}")
 
         try:
-            oi = get_open_interest(symbol)
+            oi = await get_open_interest(symbol)
             if oi and oi.get("success"):
                 info["open_interest"] = oi["open_interest"]
         except Exception as e:
             logger.error(f"Ошибка получения OI {symbol}: {e}")
 
         try:
-            klines = get_kline(symbol, "1h", 24)
+            klines = await get_kline(symbol, "1h", 24)
             if klines and klines.get("success"):
                 info["atr"] = round(_calculate_atr(klines["klines"], 14), 4)
                 info["market_regime"] = _detect_market_regime(klines["klines"])
@@ -367,10 +365,6 @@ class ContextBuilder:
         return info if info else None
 
     def _get_memory_context_sync(self) -> str:
-        """
-        Возвращает строку профиля трейдера из БД (без циклических импортов).
-        Использует прямые запросы к Database (memory_get/memory_get_all).
-        """
         try:
             db = Database()
             total = int(db.memory_get('global', 'total_trades') or 0)
