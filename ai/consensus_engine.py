@@ -11,7 +11,7 @@ from ai.trade_scorer import TradeScorer
 logger = logging.getLogger(__name__)
 
 AGENT_TIMEOUT = 30
-AGENT_DELAY = 3.0  # задержка между запросами к Groq (секунды)
+AGENT_DELAY = 3.0
 
 
 class ConsensusEngine:
@@ -46,10 +46,6 @@ class ConsensusEngine:
         return await self._run_agents_sequential(context, 'post_trade')
 
     async def _run_agents_sequential(self, context: dict, mode: str) -> dict:
-        """
-        Последовательный вызов агентов с задержкой.
-        Исключает 429 от Groq, гарантирует стабильность.
-        """
         # 1. MarketAgent
         try:
             market = await asyncio.wait_for(self.market.analyze(context), timeout=AGENT_TIMEOUT)
@@ -61,7 +57,7 @@ class ConsensusEngine:
         try:
             raw_risk = await asyncio.wait_for(self.risk.analyze(context), timeout=AGENT_TIMEOUT)
         except Exception as e:
-            raw_risk = f'{{"summary": "Ошибка RiskAgent: {e}"}}'
+            raw_risk = f'{{"risk_score": 50, "summary": "Ошибка RiskAgent: {e}"}}'
         await asyncio.sleep(AGENT_DELAY)
 
         # 3. PsychologyAgent
@@ -71,26 +67,31 @@ class ConsensusEngine:
             psych = f"Ошибка PsychologyAgent: {e}"
         await asyncio.sleep(AGENT_DELAY)
 
-        # 4. JudgeAgent
+        # 4. JudgeAgent — передаём полные JSON от всех агентов
         try:
-            risk_data = json.loads(raw_risk)
-            risk = risk_data.get('summary', raw_risk)
-        except Exception:
-            risk = raw_risk
-
-        try:
-            verdict = await asyncio.wait_for(self.judge.synthesize(market, risk, psych, mode=mode), timeout=AGENT_TIMEOUT)
+            verdict = await asyncio.wait_for(
+                self.judge.synthesize(market, raw_risk, psych, mode=mode),
+                timeout=AGENT_TIMEOUT
+            )
         except Exception as e:
             verdict = f"Ошибка JudgeAgent: {e}"
 
+        # Извлекаем summary для отображения
+        risk_summary = raw_risk
+        try:
+            if raw_risk.startswith('{'):
+                risk_summary = json.loads(raw_risk).get('summary', raw_risk)
+        except Exception:
+            pass
+
         data_quality = self._calculate_data_quality(context)
-        disagreement = self._calculate_disagreement(market, risk, psych)
+        disagreement = self._calculate_disagreement(market, raw_risk, psych)
         confidence = self._calculate_confidence(data_quality, disagreement)
         memory = context.get('memory', '')
 
         return {
             'market_review': str(market),
-            'risk_review': str(risk),
+            'risk_review': str(risk_summary),
             'psychology_review': str(psych),
             'judge_verdict': verdict,
             'confidence': round(confidence, 2),
