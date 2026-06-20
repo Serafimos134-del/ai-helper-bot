@@ -24,9 +24,10 @@ class JudgeAgent:
     def __init__(self, provider: BaseProvider = None):
         self.provider = provider
 
-    async def synthesize(self, market_json: str, risk_json: str, psychology_json: str, mode: str = None) -> str:
+    async def synthesize(self, market_json: str, risk_json: str, psychology_json: str,
+                         mode: str = None, trade_score: int = None) -> str:
         """
-        Принимает JSON‑выводы трёх агентов и возвращает финальный вердикт.
+        Принимает JSON‑выводы трёх агентов + опциональный trade_score и возвращает финальный вердикт.
         """
         try:
             market = json.loads(market_json) if isinstance(market_json, str) else market_json
@@ -45,13 +46,17 @@ class JudgeAgent:
         risk_score = self._extract_score(risk, "risk_score")
         psychology_score = self._extract_score(psychology, "psychology_score")
 
-        trade_score = self._extract_score(market, "market_score", default=50) * 0.5
+        # Trade score: передан извне (TradeScorer) или fallback
+        if trade_score is not None:
+            final_trade_score = int(trade_score)
+        else:
+            final_trade_score = self._extract_score(market, "market_score", default=50) * 0.5
 
         final_score = (
             market_score * self.WEIGHTS["market"] +
             risk_score * self.WEIGHTS["risk"] +
             psychology_score * self.WEIGHTS["psychology"] +
-            trade_score * self.WEIGHTS["trade"]
+            final_trade_score * self.WEIGHTS["trade"]
         )
         final_score = int(max(0, min(100, final_score)))
 
@@ -89,7 +94,7 @@ class JudgeAgent:
                 "market": market_score,
                 "risk": risk_score,
                 "psychology": psychology_score,
-                "trade": trade_score,
+                "trade": final_trade_score,
             }
         }
 
