@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 from ai.providers.base_provider import BaseProvider
 from ai.context_builder import ContextBuilder
 
@@ -21,10 +22,27 @@ class MarketAgent:
         prompt = self._build_market_prompt(context)
         logger.info(f"MARKET AGENT PROMPT:\n{prompt}")
         try:
-            return await loop.run_in_executor(None, self.provider.generate, prompt)
+            response = await loop.run_in_executor(None, self.provider.generate, prompt)
+            # Извлекаем JSON из ответа LLM
+            try:
+                start = response.find('{')
+                end = response.rfind('}') + 1
+                if start >= 0 and end > start:
+                    parsed = json.loads(response[start:end])
+                    # Убеждаемся что есть market_score
+                    if 'market_score' not in parsed:
+                        parsed['market_score'] = 50
+                    if 'analysis' not in parsed:
+                        parsed['analysis'] = response
+                    return json.dumps(parsed, ensure_ascii=False)
+            except Exception:
+                pass
+            # Fallback
+            fallback = {"market_score": 50, "analysis": response}
+            return json.dumps(fallback, ensure_ascii=False)
         except Exception as e:
             logger.error(f"MarketAgent error: {e}")
-            return f"Рыночный анализ недоступен: {e}"
+            return json.dumps({"market_score": 0, "analysis": f"Рыночный анализ недоступен: {e}"}, ensure_ascii=False)
 
     def _build_market_prompt(self, ctx: dict) -> str:
         # Общий рыночный контекст
@@ -97,6 +115,13 @@ class MarketAgent:
             f"ETH: цена ${eth_price:.2f}, изм 24ч: {eth_change:+.2f}%, "
             f"макс: ${eth_high:.2f}, мин: ${eth_low:.2f}\n"
             f"Топ-5 по объёму: {top}\n\n"
-            "Твой анализ:"
+            "Верни ответ строго в формате JSON:\n"
+            '{"market_score": <число 0-100>, "analysis": "<твой текстовый анализ>"}\n\n'
+            "market_score — твоя оценка уверенности в направлении:\n"
+            "85-100: сильный BUY-сигнал\n"
+            "70-84: умеренный BUY\n"
+            "55-69: нейтрально / WAIT\n"
+            "40-54: слабый SELL\n"
+            "менее 40: сильный SELL\n"
         )
         return prompt
