@@ -9,15 +9,14 @@ logger = logging.getLogger(__name__)
 
 
 class RiskAgent:
-    """Агент, интерпретирующий сигналы риска от Rule Engine."""
+    """Агент, интерпретирующий сигналы риска от Rule Engine (полностью rule-based)."""
 
-    def __init__(self, provider: BaseProvider):
-        self.provider = provider
+    def __init__(self, provider: BaseProvider = None):
+        self.provider = provider  # больше не используется, оставлен для обратной совместимости
         self.context_builder = ContextBuilder()
 
     async def analyze(self, context: dict = None) -> str:
-        """Асинхронно возвращает JSON с сигналами риска + текстовое summary."""
-        loop = asyncio.get_running_loop()
+        """Асинхронно возвращает JSON с сигналами риска + rule-based summary."""
         if context is None:
             ctx = await self.context_builder.build_full_context()
         else:
@@ -28,14 +27,8 @@ class RiskAgent:
         # Получаем сигналы от Rule Engine
         signals = RiskRuleEngine.assess(portfolio, history)
 
-        # Генерируем human-readable summary через LLM с улучшенным промптом
-        try:
-            summary_prompt = self._build_summary_prompt(signals)
-            summary = await loop.run_in_executor(None, self.provider.generate, summary_prompt)
-            summary = summary.strip()
-        except Exception as e:
-            logger.error(f"Ошибка генерации summary: {e}")
-            summary = "Риск-анализ завершён. Смотри детали."
+        # Генерируем summary из шаблона (без LLM)
+        summary = self._build_template_summary(signals)
 
         result = {
             "risk_score": (10 - signals.get('risk_score', 5)) * 10,
@@ -44,27 +37,34 @@ class RiskAgent:
         }
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-    def _build_summary_prompt(self, signals: dict) -> str:
-        """Улучшенный промпт в стиле ponytail: строгий, конкретный, без воды."""
+    @staticmethod
+    def _build_template_summary(signals: dict) -> str:
+        """Генерирует summary на основе сигналов без LLM."""
         risk_level = signals.get('risk_level', 'UNKNOWN')
         risk_score = signals.get('risk_score', 0)
         warnings = signals.get('warnings', [])
         recommendation = signals.get('recommendation', '')
 
-        warnings_text = '\n'.join(f'- {w}' for w in warnings) if warnings else 'нет'
+        level_text = {
+            'SAFE': 'низкий',
+            'MODERATE': 'умеренный',
+            'HIGH': 'высокий',
+            'EXTREME': 'критический',
+        }
+        level_str = level_text.get(risk_level, risk_level)
+
+        main_warning = warnings[0] if warnings else 'критических проблем нет'
+
+        rec_text = {
+            'ALLOW': 'Можно продолжать текущую стратегию.',
+            'REDUCE': 'Рекомендуется снизить размер позиций.',
+            'CAUTION': 'Требуется осторожность при открытии новых позиций.',
+            'STOP': 'Рекомендуется прекратить торговлю до стабилизации.',
+        }
+        rec_str = rec_text.get(recommendation, recommendation)
 
         return (
-            "Ты — строгий риск-менеджер хедж-фонда. Твоя задача — дать краткий, "
-            "максимально конкретный вывод о риск-профиле портфеля на русском языке.\n\n"
-            "ПРАВИЛА:\n"
-            "1. Одна фраза — общая оценка (SAFE/MODERATE/HIGH/EXTREME) и что она значит.\n"
-            "2. Одна фраза — главная проблема (самый критичный warning). Если проблем нет, скажи, что всё в порядке.\n"
-            "3. Одна фраза — конкретное действие (что делать прямо сейчас).\n"
-            "4. Без воды, без markdown, без эмодзи, без общих фраз вроде «будьте осторожны».\n"
-            "Используй цифры из сигналов ниже.\n\n"
-            f"Уровень риска: {risk_level}\n"
-            f"Счёт: {risk_score}/10\n"
-            f"Рекомендация: {recommendation}\n"
-            f"Предупреждения:\n{warnings_text}\n\n"
-            "Вывод:"
+            f"Уровень риска: {risk_level} ({risk_score}/10) — {level_str}. "
+            f"Главная проблема: {main_warning}. "
+            f"Рекомендация: {rec_str}"
         )
