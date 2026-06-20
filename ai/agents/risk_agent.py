@@ -19,7 +19,7 @@ class RiskAgent:
         """Асинхронно возвращает JSON с сигналами риска + текстовое summary."""
         loop = asyncio.get_running_loop()
         if context is None:
-            ctx = await self.context_builder.build_full_context()   # ← исправлено: добавлен await
+            ctx = await self.context_builder.build_full_context()
         else:
             ctx = context
         portfolio = ctx.get("portfolio", {})
@@ -38,6 +38,7 @@ class RiskAgent:
             summary = "Риск-анализ завершён. Смотри детали."
 
         result = {
+            "risk_score": signals.get('risk_score', 0) * 10,
             "signals": signals,
             "summary": summary
         }
