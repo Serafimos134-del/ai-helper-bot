@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 from ai.providers.base_provider import BaseProvider
@@ -78,7 +79,7 @@ class JudgeAgent:
 
         if self.provider:
             try:
-                enhanced = self._enhance_with_llm(final_score, verdict, confidence, market_score, risk_score, psychology_score)
+                enhanced = await self._enhance_with_llm(final_score, verdict, confidence, market_score, risk_score, psychology_score)
                 if enhanced:
                     summary = enhanced
             except Exception as e:
@@ -133,8 +134,8 @@ class JudgeAgent:
             base += f" Уверенность низкая ({confidence}%) из‑за расхождения мнений."
         return base
 
-    def _enhance_with_llm(self, score: int, verdict: str, confidence: int,
-                          market_score: int, risk_score: int, psychology_score: int) -> str:
+    async def _enhance_with_llm(self, score: int, verdict: str, confidence: int,
+                                market_score: int, risk_score: int, psychology_score: int) -> str:
         if not self.provider:
             return ""
         prompt = (
@@ -147,6 +148,8 @@ class JudgeAgent:
             "Вердикт:"
         )
         try:
-            return self.provider.generate(prompt).strip()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, self.provider.generate, prompt)
+            return result.strip()
         except Exception:
             return ""
