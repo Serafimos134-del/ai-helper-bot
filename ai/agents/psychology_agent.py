@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 from ai.providers.base_provider import BaseProvider
@@ -28,7 +29,7 @@ class PsychologyAgent:
         # 2. Если есть провайдер, можем улучшить summary через LLM (опционально)
         if self.provider and signals.get("flags"):
             try:
-                enhanced = self._enhance_summary(signals)
+                enhanced = await self._enhance_summary(signals)
                 if enhanced:
                     signals["summary"] = enhanced
             except Exception as e:
@@ -36,8 +37,8 @@ class PsychologyAgent:
 
         return json.dumps(signals, ensure_ascii=False, indent=2)
 
-    def _enhance_summary(self, signals: dict) -> str:
-        """Опциональное улучшение summary через LLM."""
+    async def _enhance_summary(self, signals: dict) -> str:
+        """Опциональное улучшение summary через LLM (асинхронно)."""
         if not self.provider:
             return ""
         prompt = (
@@ -49,6 +50,8 @@ class PsychologyAgent:
             "Совет:"
         )
         try:
-            return self.provider.generate(prompt).strip()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, self.provider.generate, prompt)
+            return result.strip()
         except Exception:
             return ""
