@@ -1,93 +1,51 @@
-import asyncio
 import logging
+import json
 from ai.providers.base_provider import BaseProvider
 from ai.context_builder import ContextBuilder
+from ai.psychology_engine import PsychologyEngine
 
 logger = logging.getLogger(__name__)
 
 
 class PsychologyAgent:
-    """Агент, анализирующий психологические паттерны трейдера (v2 с метриками поведения)."""
+    """Агент, анализирующий психологические паттерны трейдера (rule‑based)."""
 
-    def __init__(self, provider: BaseProvider):
-        self.provider = provider
+    def __init__(self, provider: BaseProvider = None):
+        self.provider = provider  # опционален, для LLM‑summary
         self.context_builder = ContextBuilder()
 
-    async def analyze(self, context: dict = None) -> str:
-        loop = asyncio.get_running_loop()
-        if context is None:
-            ctx = await self.context_builder.build_full_context()
-        else:
-            ctx = context
-        prompt = self._build_psychology_prompt(ctx)
-        try:
-            return await loop.run_in_executor(None, self.provider.generate, prompt)
-        except Exception as e:
-            logger.error(f"PsychologyAgent error: {e}")
-            return f"Психологический анализ недоступен: {e}"
-
-    def _build_psychology_prompt(self, ctx: dict) -> str:
+    def analyze(self) -> str:
+        """Возвращает JSON с психологическим профилем."""
+        ctx = self.context_builder.build_full_context()
         history = ctx.get("history", {})
-        stats = history.get("stats", {})
-        recent_trades = history.get("recent_trades", [])
-        losing_streak = history.get("losing_streak", 0)
-        winning_streak = history.get("winning_streak", 0)
 
-        # Новые метрики поведения (Psychology v2)
-        revenge_score = history.get("revenge_score", 0)
-        fomo_score = history.get("fomo_score", 0)
-        overtrading_score = history.get("overtrading_score", 0)
-        premature_exit_score = history.get("premature_exit_score", 0)
-        tilt_probability = history.get("tilt_probability", 0)
+        # 1. Получаем сигналы от PsychologyEngine
+        signals = PsychologyEngine.assess(history)
 
-        trades_summary = ""
-        for t in recent_trades[:10]:
-            trades_summary += (
-                f"{t.get('symbol')} {t.get('side')}: "
-                f"PNL ${t.get('pnl', 0):+.2f}, "
-                f"плечо {t.get('leverage', 1)}x, "
-                f"комм.: {t.get('comment', '—')}\n"
-            )
+        # 2. Если есть провайдер, можем улучшить summary через LLM (опционально)
+        if self.provider and signals.get("flags"):
+            try:
+                enhanced = self._enhance_summary(signals)
+                if enhanced:
+                    signals["summary"] = enhanced
+            except Exception as e:
+                logger.error(f"Ошибка LLM‑summary: {e}")
 
-        idea = ctx.get("idea", {})
-        position = ctx.get("position", {})
-        ticker = idea.get("ticker") or position.get("symbol", "")
-        direction = idea.get("direction") or position.get("side", "")
+        return json.dumps(signals, ensure_ascii=False, indent=2)
 
-        situation = ""
-        if ticker:
-            situation = f"Трейдер рассматривает вход в {direction} по {ticker}.\n"
-        elif position:
-            situation = f"Трейдер удерживает позицию {direction} по {ticker}.\n"
-
-        # Формируем блок с метриками поведения
-        behavior_block = (
-            f"Метрики поведения (0-10, где 0=норма, 10=экстремально):\n"
-            f"- Revenge Trading: {revenge_score}/10\n"
-            f"- FOMO: {fomo_score}/10\n"
-            f"- Overtrading: {overtrading_score}/10\n"
-            f"- Premature Exits: {premature_exit_score}/10\n"
-            f"- Tilt Probability: {tilt_probability}%\n\n"
-        )
-
+    def _enhance_summary(self, signals: dict) -> str:
+        """Опциональное улучшение summary через LLM."""
+        if not self.provider:
+            return ""
         prompt = (
-            "Ты — спортивный психолог, работающий с профессиональными трейдерами. "
-            "Проанализируй историю сделок и метрики поведения, дай КРАТКУЮ, ЖЁСТКУЮ оценку психологического состояния.\n\n"
-            "ПРАВИЛА:\n"
-            "1. СОСТОЯНИЕ: одно слово — CALM / NERVOUS / EMOTIONAL / REVENGE / TILT.\n"
-            "2. ПАТТЕРН: одно предложение — главная психологическая ошибка (если есть). Используй метрики выше.\n"
-            "3. СОВЕТ: одно конкретное действие для исправления (если нужно) или подтверждение правильного настроя.\n"
-            "4. Если история пуста (0 сделок), честно напиши: «Нет данных для анализа», но не выдумывай.\n"
-            "5. Без воды, без философии, без markdown. Только факты.\n\n"
-            f"{situation}"
-            f"Сделок всего: {stats.get('total_trades', 0)}\n"
-            f"Win Rate: {stats.get('win_rate', 0):.1f}%\n"
-            f"Серия убытков: {losing_streak}\n"
-            f"Серия прибылей: {winning_streak}\n"
-            f"Средняя прибыль: ${stats.get('avg_profit', 0):.2f}\n"
-            f"Средний убыток: ${stats.get('avg_loss', 0):.2f}\n\n"
-            f"{behavior_block}"
-            f"Последние 10 сделок:\n{trades_summary}\n"
-            "Твой вердикт:"
+            f"Ты — спортивный психолог. На основе флагов и метрик дай краткий совет (1-2 предложения) "
+            f"на русском языке, без воды.\n"
+            f"Психологический счёт: {signals.get('psychology_score')}/100\n"
+            f"Флаги: {', '.join(signals.get('flags', []))}\n"
+            f"Метрики: {signals.get('metrics', {})}\n\n"
+            "Совет:"
         )
-        return prompt
+        try:
+            return self.provider.generate(prompt).strip()
+        except Exception:
+            return ""
