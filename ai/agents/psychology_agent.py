@@ -14,9 +14,12 @@ class PsychologyAgent:
         self.provider = provider  # опционален, для LLM‑summary
         self.context_builder = ContextBuilder()
 
-    def analyze(self) -> str:
+    async def analyze(self, context: dict = None) -> str:
         """Возвращает JSON с психологическим профилем."""
-        ctx = self.context_builder.build_full_context()
+        if context is None:
+            ctx = self.context_builder.build_full_context()
+        else:
+            ctx = context
         history = ctx.get("history", {})
 
         # 1. Получаем сигналы от PsychologyEngine
