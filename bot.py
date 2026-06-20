@@ -124,7 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_balance(update: Update):
     msg = await update.message.reply_text("⏳ Получаю баланс...")
-    result = get_balance()
+    result = await get_balance()
     if result.get('success'):
         text = (
             f"💰 *Баланс аккаунта*\n\n"
@@ -180,7 +180,7 @@ async def show_ai_analysis(update: Update):
 
 async def show_market_overview(update: Update):
     msg = await update.message.reply_text("🌐 Собираю данные рынка...")
-    result = get_top_tickers(10)
+    result = await get_top_tickers(10)
     if not result.get('success') or not result.get('tickers'):
         await msg.delete()
         await update.message.reply_text(f"❌ Не удалось получить данные рынка: {result.get('error', 'нет данных')}", reply_markup=ai_menu_keyboard())
@@ -213,7 +213,7 @@ async def show_trends(update: Update):
     symbols = ["BTC-USDT", "ETH-USDT"]
     data_lines = []
     for sym in symbols:
-        result = get_kline(sym, "1h", 24)
+        result = await get_kline(sym, "1h", 24)
         klines = result.get('klines', [])
         if result.get('success') and len(klines) >= 2:
             try:
@@ -367,7 +367,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         status.append("🗄 База данных: 🔴")
     try:
-        balance = get_balance()
+        balance = await get_balance()
         if balance.get('success'):
             status.append("📡 BingX API: 🟢")
         else:
@@ -534,7 +534,7 @@ async def consilium_menu(update: Update):
     await update.message.reply_text("🧠 Консилиум\nВыбери режим:", reply_markup=keyboard)
 
 async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    res = get_open_positions()
+    res = await get_open_positions()
     if not res.get('success') or not res.get('trades'):
         await update.message.reply_text("Нет открытых позиций или ошибка API.", reply_markup=consilium_keyboard())
         return
