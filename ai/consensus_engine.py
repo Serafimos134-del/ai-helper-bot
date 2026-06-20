@@ -50,7 +50,7 @@ class ConsensusEngine:
         try:
             market = await asyncio.wait_for(self.market.analyze(context), timeout=AGENT_TIMEOUT)
         except Exception as e:
-            market = f"Ошибка MarketAgent: {e}"
+            market = f'{{"market_score": 50, "analysis": "Ошибка MarketAgent: {e}"}}'
         await asyncio.sleep(AGENT_DELAY)
 
         # 2. RiskAgent
@@ -64,25 +64,22 @@ class ConsensusEngine:
         try:
             psych = await asyncio.wait_for(self.psych.analyze(context), timeout=AGENT_TIMEOUT)
         except Exception as e:
-            psych = f"Ошибка PsychologyAgent: {e}"
+            psych = f'{{"psychology_score": 50, "summary": "Ошибка PsychologyAgent: {e}"}}'
         await asyncio.sleep(AGENT_DELAY)
 
-        # 4. JudgeAgent — передаём полные JSON от всех агентов
+        # 4. JudgeAgent
         try:
             verdict = await asyncio.wait_for(
                 self.judge.synthesize(market, raw_risk, psych, mode=mode),
                 timeout=AGENT_TIMEOUT
             )
         except Exception as e:
-            verdict = f"Ошибка JudgeAgent: {e}"
+            verdict = f'{{"final_score": 0, "verdict": "AVOID", "summary": "Ошибка JudgeAgent: {e}"}}'
 
-        # Извлекаем summary для отображения
-        risk_summary = raw_risk
-        try:
-            if raw_risk.startswith('{'):
-                risk_summary = json.loads(raw_risk).get('summary', raw_risk)
-        except Exception:
-            pass
+        # Извлекаем читаемые строки из JSON
+        market_text = self._extract_text(market, 'analysis', market)
+        risk_text = self._extract_text(raw_risk, 'summary', raw_risk)
+        psych_text = self._extract_text(psych, 'summary', psych)
 
         data_quality = self._calculate_data_quality(context)
         disagreement = self._calculate_disagreement(market, raw_risk, psych)
@@ -90,15 +87,25 @@ class ConsensusEngine:
         memory = context.get('memory', '')
 
         return {
-            'market_review': str(market),
-            'risk_review': str(risk_summary),
-            'psychology_review': str(psych),
+            'market_review': market_text,
+            'risk_review': risk_text,
+            'psychology_review': psych_text,
             'judge_verdict': verdict,
             'confidence': round(confidence, 2),
             'disagreement': round(disagreement, 2),
             'data_quality': round(data_quality, 2),
             'memory': memory
         }
+
+    @staticmethod
+    def _extract_text(json_str: str, key: str, fallback: str) -> str:
+        """Извлекает читаемый текст из JSON-ответа агента."""
+        try:
+            if json_str.startswith('{'):
+                return json.loads(json_str).get(key, fallback)
+        except Exception:
+            pass
+        return str(fallback)
 
     def _calculate_data_quality(self, context: dict) -> float:
         score = 0.0
