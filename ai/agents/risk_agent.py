@@ -38,7 +38,7 @@ class RiskAgent:
             summary = "Риск-анализ завершён. Смотри детали."
 
         result = {
-            "risk_score": signals.get('risk_score', 0) * 10,
+            "risk_score": (10 - signals.get('risk_score', 5)) * 10,
             "signals": signals,
             "summary": summary
         }
