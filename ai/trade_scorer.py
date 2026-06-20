@@ -7,13 +7,20 @@ logger = logging.getLogger(__name__)
 class TradeScorer:
     """Оценивает закрытую сделку по 10-балльной шкале на основе риск-метрик."""
 
-    # Веса для компонентов оценки
+    # Веса для компонентов оценки (закрытая сделка)
     WEIGHTS = {
         "rr_ratio": 0.30,         # Соотношение риск/прибыль
         "leverage": 0.25,          # Плечо
         "risk_per_trade": 0.20,    # Риск на сделку
         "discipline": 0.15,        # Дисциплина (комментарий, стоп-лосс)
         "psychology": 0.10,        # Психология (серия убытков, длительность)
+    }
+
+    # Веса для оценки открытой позиции
+    OPEN_WEIGHTS = {
+        "leverage": 0.40,
+        "risk_distance": 0.35,
+        "discipline": 0.25,
     }
 
     @staticmethod
@@ -53,10 +60,9 @@ class TradeScorer:
             else:
                 scores["rr_ratio"] = 2
         elif take_profit and stop_loss:
-            # Есть и стоп, и тейк — дисциплина есть, но без точного R:R
             scores["rr_ratio"] = 5
         else:
-            scores["rr_ratio"] = 3  # Нет стоп-лосса — плохо
+            scores["rr_ratio"] = 3
 
         # 2. Плечо
         leverage = float(trade.get("leverage", 1))
@@ -88,45 +94,103 @@ class TradeScorer:
             else:
                 scores["risk_per_trade"] = 2
         else:
-            scores["risk_per_trade"] = 5  # Нет данных — нейтрально
+            scores["risk_per_trade"] = 5
 
-        # 4. Дисциплина (наличие комментария и стоп-лосса)
+        # 4. Дисциплина
         discipline = 0
         if trade.get("exit_comment"):
-            discipline += 5  # Есть вывод по сделке
+            discipline += 5
         if stop_loss:
-            discipline += 3  # Был установлен стоп-лосс
+            discipline += 3
         if take_profit:
-            discipline += 2  # Был установлен тейк-профит
+            discipline += 2
         scores["discipline"] = min(10, discipline)
 
-        # 5. Психология (серия убытков, длительность удержания)
-        psychology = 5  # Базовый уровень
+        # 5. Психология
+        psychology = 5
         losing_streak = (context or {}).get("losing_streak", 0)
         holding_minutes = trade.get("holding_minutes")
 
         if losing_streak >= 3:
-            psychology -= 2  # Серия убытков — возможен revenge trading
+            psychology -= 2
 
         if holding_minutes is not None:
             if holding_minutes < 1:
-                psychology -= 2  # Слишком быстрая сделка — импульсивность
+                psychology -= 2
             elif holding_minutes > 60:
-                psychology += 2  # Долгое удержание — терпение
+                psychology += 2
 
         pnl = float(trade.get("realized_pnl", 0))
         if pnl < 0 and losing_streak >= 2:
-            psychology -= 2  # Убыток в серии — эмоциональное давление
+            psychology -= 2
 
         if pnl > 0 and losing_streak == 0:
-            psychology += 1  # Прибыль без давления — хороший знак
+            psychology += 1
 
         scores["psychology"] = max(1, min(10, psychology))
 
-        # Итоговая взвешенная оценка
         total = sum(
             scores[key] * TradeScorer.WEIGHTS[key]
             for key in TradeScorer.WEIGHTS
+            if key in scores
+        )
+
+        return {
+            "total_score": round(total, 1),
+            "details": scores,
+            "verdict": TradeScorer._verdict(total),
+        }
+
+    @staticmethod
+    def score_open_position(position: Dict) -> Dict:
+        """
+        Оценивает открытую позицию по риск-метрикам (без PnL).
+        Возвращает total_score от 0 до 10.
+        """
+        scores = {}
+        entry = float(position.get("entry_price", 0))
+        size = float(position.get("size", position.get("quantity", 0)))
+        leverage = float(position.get("leverage", 1))
+        stop_loss = position.get("stop_loss")
+        take_profit = position.get("take_profit")
+
+        # 1. Плечо
+        if leverage <= 5:
+            scores["leverage"] = 10
+        elif leverage <= 10:
+            scores["leverage"] = 8
+        elif leverage <= 20:
+            scores["leverage"] = 5
+        elif leverage <= 30:
+            scores["leverage"] = 3
+        else:
+            scores["leverage"] = 1
+
+        # 2. Риск-расстояние до стоп-лосса
+        if stop_loss and entry > 0:
+            risk_pct = (abs(entry - float(stop_loss)) / entry) * 100
+            if risk_pct <= 1:
+                scores["risk_distance"] = 10
+            elif risk_pct <= 2:
+                scores["risk_distance"] = 8
+            elif risk_pct <= 5:
+                scores["risk_distance"] = 6
+            else:
+                scores["risk_distance"] = 4
+        else:
+            scores["risk_distance"] = 3  # Нет стоп-лосса
+
+        # 3. Дисциплина
+        discipline = 0
+        if stop_loss:
+            discipline += 5
+        if take_profit:
+            discipline += 3
+        scores["discipline"] = min(10, discipline)
+
+        total = sum(
+            scores[key] * TradeScorer.OPEN_WEIGHTS[key]
+            for key in TradeScorer.OPEN_WEIGHTS
             if key in scores
         )
 
