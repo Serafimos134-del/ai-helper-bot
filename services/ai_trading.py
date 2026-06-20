@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from dotenv import load_dotenv
 from ai.providers.groq_provider import GroqProvider
 from services.database import Database
@@ -70,10 +71,14 @@ class AITradingAnalyzer:
             return f"⚠️ Ошибка AI: {e}\n\n{self._fallback_analysis(stats)}"
 
     def analyze_raw(self, prompt: str) -> str:
-        """Отправка произвольного промпта в Groq."""
+        """Отправка произвольного промпта в Groq (неблокирующая обёртка)."""
         if not self.provider:
             return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
         try:
+            loop = asyncio.get_running_loop()
+            return loop.run_in_executor(None, self.provider.generate, prompt)
+        except RuntimeError:
+            # Нет активного event loop – вызываем синхронно (напр. в тестах)
             return self.provider.generate(prompt)
         except Exception as e:
             print(f"❌ Ошибка Groq (analyze_raw): {e}")
