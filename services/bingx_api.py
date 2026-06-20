@@ -1,16 +1,17 @@
 import hashlib
 import hmac
 import time
-import requests
+import asyncio
 import os
 from urllib.parse import urlencode
+import httpx
 
 BINGX_API_KEY = os.getenv('BINGX_API_KEY', '')
 BINGX_SECRET_KEY = os.getenv('BINGX_SECRET_KEY', '')
 BASE_URL = 'https://open-api.bingx.com'
 
 MAX_RETRIES = 2
-RETRY_DELAY = 1  # секунды
+RETRY_DELAY = 1
 
 
 def _get_timestamp() -> str:
@@ -18,7 +19,6 @@ def _get_timestamp() -> str:
 
 
 def _sign(params: dict) -> str:
-    """Создать подпись HMAC-SHA256 для запроса."""
     query_string = urlencode(sorted(params.items()))
     signature = hmac.new(
         BINGX_SECRET_KEY.encode('utf-8'),
@@ -28,19 +28,17 @@ def _sign(params: dict) -> str:
     return signature
 
 
-def _request_with_retry(method: str, path: str, params: dict = None) -> dict:
-    """Выполнить подписанный запрос с повторными попытками."""
+async def _request_with_retry(method: str, path: str, params: dict = None) -> dict:
     for attempt in range(MAX_RETRIES + 1):
-        result = _request(method, path, params)
+        result = await _request(method, path, params)
         if result.get('code') != -1:
             return result
         if attempt < MAX_RETRIES:
-            time.sleep(RETRY_DELAY)
+            await asyncio.sleep(RETRY_DELAY)
     return result
 
 
-def _request(method: str, path: str, params: dict = None) -> dict:
-    """Один подписанный запрос (без retry)."""
+async def _request(method: str, path: str, params: dict = None) -> dict:
     if params is None:
         params = {}
 
@@ -54,40 +52,40 @@ def _request(method: str, path: str, params: dict = None) -> dict:
 
     url = BASE_URL + path
     try:
-        if method == 'GET':
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-        else:
-            response = requests.post(url, json=params, headers=headers, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if method == 'GET':
+                response = await client.get(url, params=params, headers=headers)
+            else:
+                response = await client.post(url, json=params, headers=headers)
 
-        response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, dict):
-            return {'error': 'Unexpected response format', 'code': -1, 'raw': data}
-        return data
-    except requests.exceptions.RequestException as e:
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                return {'error': 'Unexpected response format', 'code': -1, 'raw': data}
+            return data
+    except httpx.HTTPError as e:
         return {'error': str(e), 'code': -1}
     except ValueError as e:
         return {'error': f'Invalid JSON response: {e}', 'code': -1}
 
 
-def _public_request_with_retry(url: str, params: dict = None) -> dict:
-    """Публичный GET-запрос с повторными попытками."""
+async def _public_request_with_retry(url: str, params: dict = None) -> dict:
     for attempt in range(MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, params=params, timeout=10)
-            resp.raise_for_status()
-            return resp.json()
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                return resp.json()
         except Exception as e:
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
+                await asyncio.sleep(RETRY_DELAY)
             else:
                 return {'error': str(e), 'code': -1}
 
 
-def get_balance() -> dict:
-    """Получить баланс аккаунта (Perpetual Futures)."""
+async def get_balance() -> dict:
     path = '/openApi/swap/v2/user/balance'
-    result = _request_with_retry('GET', path)
+    result = await _request_with_retry('GET', path)
 
     if result.get('code') == 0:
         data = result.get('data', {})
@@ -108,10 +106,9 @@ def get_balance() -> dict:
         }
 
 
-def get_open_positions() -> dict:
-    """Получить открытые позиции."""
+async def get_open_positions() -> dict:
     path = '/openApi/swap/v2/user/positions'
-    result = _request_with_retry('GET', path)
+    result = await _request_with_retry('GET', path)
 
     if result.get('code') == 0:
         positions = result.get('data', [])
@@ -139,14 +136,13 @@ def get_open_positions() -> dict:
         }
 
 
-def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
-    """Получить историю закрытых ордеров."""
+async def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
     path = '/openApi/swap/v2/trade/allOrders'
     params = {'limit': limit}
     if symbol:
         params['symbol'] = symbol
 
-    result = _request_with_retry('GET', path, params)
+    result = await _request_with_retry('GET', path, params)
 
     if result.get('code') == 0:
         orders = result.get('data', {}).get('orders', [])
@@ -173,10 +169,9 @@ def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
         }
 
 
-def get_top_tickers(limit: int = 10) -> dict:
-    """Публичные данные по топ парам (без подписи)."""
+async def get_top_tickers(limit: int = 10) -> dict:
     url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
-    data = _public_request_with_retry(url)
+    data = await _public_request_with_retry(url)
 
     if isinstance(data, dict) and data.get('code') == 0:
         tickers = data.get('data', [])
@@ -192,15 +187,14 @@ def get_top_tickers(limit: int = 10) -> dict:
         return {'success': False, 'error': data.get('error', 'Unknown error'), 'tickers': []}
 
 
-def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -> dict:
-    """Публичные свечные данные (без подписи)."""
+async def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -> dict:
     url = f"{BASE_URL}/openApi/swap/v3/quote/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
         'limit': limit
     }
-    data = _public_request_with_retry(url, params)
+    data = await _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
         klines = data.get('data', [])
@@ -211,11 +205,10 @@ def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -
         return {'success': False, 'error': data.get('error', 'Unknown error'), 'klines': []}
 
 
-def get_ticker(symbol: str) -> dict:
-    """Публичные данные по одному символу (без подписи)."""
+async def get_ticker(symbol: str) -> dict:
     url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
     params = {'symbol': symbol}
-    data = _public_request_with_retry(url, params)
+    data = await _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
         ticker_data = data.get('data', {})
@@ -232,11 +225,10 @@ def get_ticker(symbol: str) -> dict:
         return {'success': False, 'error': data.get('error', 'Unknown error'), 'ticker': {}}
 
 
-def get_funding_rate(symbol: str) -> dict:
-    """Получить текущую ставку фандинга для символа (публичный эндпоинт)."""
+async def get_funding_rate(symbol: str) -> dict:
     url = f"{BASE_URL}/openApi/swap/v2/quote/premiumIndex"
     params = {'symbol': symbol}
-    data = _public_request_with_retry(url, params)
+    data = await _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
         result = data.get('data', {})
@@ -252,11 +244,10 @@ def get_funding_rate(symbol: str) -> dict:
         return {'success': False, 'error': data.get('error', 'Unknown error')}
 
 
-def get_open_interest(symbol: str) -> dict:
-    """Получить открытый интерес для символа (публичный эндпоинт)."""
+async def get_open_interest(symbol: str) -> dict:
     url = f"{BASE_URL}/openApi/swap/v2/quote/openInterest"
     params = {'symbol': symbol}
-    data = _public_request_with_retry(url, params)
+    data = await _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
         result = data.get('data', {})
@@ -269,10 +260,6 @@ def get_open_interest(symbol: str) -> dict:
 
 
 def _calculate_atr(klines: list, period: int = 14) -> float:
-    """
-    Рассчитывает Average True Range из свечей.
-    klines — список словарей с ключами open, high, low, close.
-    """
     if len(klines) < period + 1:
         return 0.0
 
@@ -298,10 +285,6 @@ def _calculate_atr(klines: list, period: int = 14) -> float:
 
 
 def _detect_market_regime(klines: list) -> str:
-    """
-    Определяет рыночный режим: TRENDING_UP, TRENDING_DOWN, или RANGING.
-    klines — список словарей с ключом close.
-    """
     if len(klines) < 20:
         return "UNKNOWN"
 
