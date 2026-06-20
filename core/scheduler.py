@@ -46,7 +46,7 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
     if not chat_id:
         return
     try:
-        balance = get_balance()
+        balance = await get_balance()
         open_positions = db.get_open_trades()
 
         text = "📌 *Текущий статус*\n\n"
