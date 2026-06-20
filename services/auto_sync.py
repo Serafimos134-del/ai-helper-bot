@@ -91,7 +91,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
 
     db.cleanup_orphan_open_trades()
 
-    open_result = get_open_positions()
+    open_result = await get_open_positions()
     if not open_result.get('success'):
         logger.warning(f"Ошибка получения открытых позиций: {open_result.get('error')}")
         return results
