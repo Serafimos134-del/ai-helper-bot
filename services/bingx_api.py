@@ -5,6 +5,7 @@ import asyncio
 import os
 from urllib.parse import urlencode
 import httpx
+from services.api_cache import api_cache
 
 BINGX_API_KEY = os.getenv('BINGX_API_KEY', '')
 BINGX_SECRET_KEY = os.getenv('BINGX_SECRET_KEY', '')
@@ -170,6 +171,11 @@ async def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
 
 
 async def get_top_tickers(limit: int = 10) -> dict:
+    cache_key = f"top_tickers:{limit}"
+    cached = await api_cache.get(cache_key)
+    if cached:
+        return cached
+
     url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
     data = await _public_request_with_retry(url)
 
@@ -182,12 +188,20 @@ async def get_top_tickers(limit: int = 10) -> dict:
             key=lambda x: float(x.get('quoteVolume', 0)),
             reverse=True
         )
-        return {'success': True, 'tickers': sorted_tickers[:limit]}
+        result = {'success': True, 'tickers': sorted_tickers[:limit]}
     else:
-        return {'success': False, 'error': data.get('error', 'Unknown error'), 'tickers': []}
+        result = {'success': False, 'error': data.get('error', 'Unknown error'), 'tickers': []}
+
+    await api_cache.set(cache_key, result)
+    return result
 
 
 async def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int = 24) -> dict:
+    cache_key = f"kline:{symbol}:{interval}:{limit}"
+    cached = await api_cache.get(cache_key)
+    if cached:
+        return cached
+
     url = f"{BASE_URL}/openApi/swap/v3/quote/klines"
     params = {
         'symbol': symbol,
@@ -199,13 +213,22 @@ async def get_kline(symbol: str = "BTC-USDT", interval: str = "1h", limit: int =
     if isinstance(data, dict) and data.get('code') == 0:
         klines = data.get('data', [])
         if not isinstance(klines, list):
-            return {'success': False, 'error': 'Unexpected format', 'klines': []}
-        return {'success': True, 'klines': klines}
+            result = {'success': False, 'error': 'Unexpected format', 'klines': []}
+        else:
+            result = {'success': True, 'klines': klines}
     else:
-        return {'success': False, 'error': data.get('error', 'Unknown error'), 'klines': []}
+        result = {'success': False, 'error': data.get('error', 'Unknown error'), 'klines': []}
+
+    await api_cache.set(cache_key, result)
+    return result
 
 
 async def get_ticker(symbol: str) -> dict:
+    cache_key = f"ticker:{symbol}"
+    cached = await api_cache.get(cache_key)
+    if cached:
+        return cached
+
     url = f"{BASE_URL}/openApi/swap/v2/quote/ticker"
     params = {'symbol': symbol}
     data = await _public_request_with_retry(url, params)
@@ -214,49 +237,68 @@ async def get_ticker(symbol: str) -> dict:
         ticker_data = data.get('data', {})
         if isinstance(ticker_data, list):
             if not ticker_data:
-                return {'success': False, 'error': 'Symbol not found', 'ticker': {}}
-            ticker_obj = ticker_data[0]
+                result = {'success': False, 'error': 'Symbol not found', 'ticker': {}}
+            else:
+                result = {'success': True, 'ticker': ticker_data[0]}
         elif isinstance(ticker_data, dict):
-            ticker_obj = ticker_data
+            result = {'success': True, 'ticker': ticker_data}
         else:
-            return {'success': False, 'error': 'Unexpected format', 'ticker': {}}
-        return {'success': True, 'ticker': ticker_obj}
+            result = {'success': False, 'error': 'Unexpected format', 'ticker': {}}
     else:
-        return {'success': False, 'error': data.get('error', 'Unknown error'), 'ticker': {}}
+        result = {'success': False, 'error': data.get('error', 'Unknown error'), 'ticker': {}}
+
+    await api_cache.set(cache_key, result)
+    return result
 
 
 async def get_funding_rate(symbol: str) -> dict:
+    cache_key = f"funding:{symbol}"
+    cached = await api_cache.get(cache_key)
+    if cached:
+        return cached
+
     url = f"{BASE_URL}/openApi/swap/v2/quote/premiumIndex"
     params = {'symbol': symbol}
     data = await _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
-        result = data.get('data', {})
-        if isinstance(result, list) and result:
-            result = result[0]
-        return {
+        result_data = data.get('data', {})
+        if isinstance(result_data, list) and result_data:
+            result_data = result_data[0]
+        result = {
             'success': True,
-            'funding_rate': float(result.get('lastFundingRate', 0)),
-            'mark_price': float(result.get('markPrice', 0)),
-            'index_price': float(result.get('indexPrice', 0)),
+            'funding_rate': float(result_data.get('lastFundingRate', 0)),
+            'mark_price': float(result_data.get('markPrice', 0)),
+            'index_price': float(result_data.get('indexPrice', 0)),
         }
     else:
-        return {'success': False, 'error': data.get('error', 'Unknown error')}
+        result = {'success': False, 'error': data.get('error', 'Unknown error')}
+
+    await api_cache.set(cache_key, result)
+    return result
 
 
 async def get_open_interest(symbol: str) -> dict:
+    cache_key = f"oi:{symbol}"
+    cached = await api_cache.get(cache_key)
+    if cached:
+        return cached
+
     url = f"{BASE_URL}/openApi/swap/v2/quote/openInterest"
     params = {'symbol': symbol}
     data = await _public_request_with_retry(url, params)
 
     if isinstance(data, dict) and data.get('code') == 0:
-        result = data.get('data', {})
-        return {
+        result_data = data.get('data', {})
+        result = {
             'success': True,
-            'open_interest': float(result.get('openInterest', 0)),
+            'open_interest': float(result_data.get('openInterest', 0)),
         }
     else:
-        return {'success': False, 'error': data.get('error', 'Unknown error')}
+        result = {'success': False, 'error': data.get('error', 'Unknown error')}
+
+    await api_cache.set(cache_key, result)
+    return result
 
 
 def _calculate_atr(klines: list, period: int = 14) -> float:
