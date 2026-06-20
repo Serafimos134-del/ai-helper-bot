@@ -67,17 +67,24 @@ class ConsensusEngine:
             psych = f'{{"psychology_score": 50, "summary": "Ошибка PsychologyAgent: {e}"}}'
         await asyncio.sleep(AGENT_DELAY)
 
-        # Вычисляем trade_score через TradeScorer если есть позиция/трейд в контексте
+        # 4. Вычисляем trade_score через TradeScorer
         trade_score = None
-        position = context.get('position') or context.get('trade')
+        position = context.get('position')    # открытая позиция
+        trade = context.get('trade')          # закрытая сделка
         if position:
             try:
-                score_result = self.scorer.score(position)
+                score_result = self.scorer.score_open_position(position)
                 trade_score = score_result.get('total_score', 5) * 10  # 0-10 → 0-100
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"TradeScorer (open position) failed: {e}")
+        elif trade:
+            try:
+                score_result = self.scorer.score(trade)
+                trade_score = score_result.get('total_score', 5) * 10
+            except Exception as e:
+                logger.warning(f"TradeScorer (closed trade) failed: {e}")
 
-        # 4. JudgeAgent
+        # 5. JudgeAgent
         try:
             verdict = await asyncio.wait_for(
                 self.judge.synthesize(market, raw_risk, psych, mode=mode, trade_score=trade_score),
