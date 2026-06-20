@@ -398,7 +398,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
-    # Обработка кнопки Отмена для всех состояний
     if text == BTN_CANCEL:
         if state == 'consilium_setup_input':
             context.user_data['state'] = None
@@ -411,7 +410,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
             return
 
-    # Обработка состояний комментариев
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
         if text in NAV_BUTTONS or text.startswith("🏠 *"):
             await update.message.reply_text("⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.", reply_markup=cancel_keyboard())
@@ -446,7 +444,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = None
         return
 
-    # Новые состояния Консилиума
     if state == 'consilium_choose_position':
         await consilium_analyze_position(update, context)
         return
@@ -454,7 +451,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await consilium_process_setup(update, context)
         return
 
-    # Навигация по меню
     if text == BTN_TRADING:
         await update.message.reply_text("📈 *Trading*\nВыбери действие:", parse_mode='Markdown', reply_markup=trading_menu_keyboard())
     elif text == BTN_AI:
@@ -599,15 +595,41 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
         f"📈 Рынок:\n{result.get('market_review', '—')}\n\n"
         f"⚠️ Риск:\n{result.get('risk_review', '—')}\n\n"
         f"🧘 Психология:\n{result.get('psychology_review', '—')}\n\n"
-        f"⚖️ Вердикт: {result.get('judge_verdict', '—')}"
     )
+
+    # Парсим вердикт JudgeAgent из JSON в читаемый вид
+    verdict_str = result.get('judge_verdict', '{}')
+    try:
+        verdict = json.loads(verdict_str) if isinstance(verdict_str, str) else verdict_str
+        verdict_text = verdict.get('verdict', '—')
+        final_score = verdict.get('final_score', '—')
+        verdict_summary = verdict.get('summary', '')
+        warnings = verdict.get('warnings', [])
+
+        verdict_emoji = {
+            'STRONG_ENTER': '🟢',
+            'ENTER': '🟢',
+            'WAIT': '🟡',
+            'AVOID': '🔴',
+        }
+        emoji = verdict_emoji.get(verdict_text, '⚪')
+
+        response += f"⚖️ Вердикт: {emoji} {verdict_text} ({final_score}/100)\n"
+        if verdict_summary:
+            response += f"_{verdict_summary}_\n"
+        if warnings:
+            response += "\n⚠️ Предупреждения:\n"
+            for w in warnings:
+                response += f"• {w}\n"
+    except Exception:
+        response += f"⚖️ Вердикт: {verdict_str}"
 
     # Метрики уверенности
     confidence = result.get('confidence')
     data_quality = result.get('data_quality')
     disagreement = result.get('disagreement')
     if confidence is not None:
-        response += f"\n\n📊 Уверенность: {confidence:.0%}"
+        response += f"\n📊 Уверенность: {confidence:.0%}"
         if data_quality is not None:
             response += f" | Качество данных: {data_quality:.0%}"
         if disagreement is not None:
