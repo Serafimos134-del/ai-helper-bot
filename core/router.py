@@ -23,11 +23,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    logger.info(f"CALLBACK DATA: {data}")
 
+    # Универсальный парсинг: префикс + id + опциональный суффикс
     if data.startswith("comment_"):
-        parts = data.split("_", 2)
-        if len(parts) < 3:
+        parts = data.split("_", 1)
+        if len(parts) < 2:
             return
         trade_id = int(parts[1])
         context.user_data['comment_order_id'] = trade_id
@@ -38,15 +38,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=cancel_keyboard()
         )
     elif data.startswith("detail_"):
-        parts = data.split("_", 2)
-        if len(parts) < 3:
-            logger.warning(f"Invalid detail_ callback: {data}")
+        parts = data.split("_", 1)
+        if len(parts) < 2:
             return
         trade_id = int(parts[1])
-        logger.info(f"Looking for trade_id={trade_id}")
         trade = db.find_trade_by_id(trade_id)
         if trade:
-            logger.info(f"Found trade: {trade['symbol']}")
             holding = trade.get('holding_minutes')
             duration_str = f"{holding} мин" if holding is not None else "—"
             detail_text = (
@@ -69,11 +66,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             await query.edit_message_text(detail_text, parse_mode='Markdown', reply_markup=detail_keyboard)
         else:
-            logger.warning(f"Trade not found: id={trade_id}")
             await query.edit_message_text("❌ Сделка не найдена.")
     elif data.startswith("eval_"):
-        parts = data.split("_", 2)
-        if len(parts) < 3:
+        parts = data.split("_", 1)
+        if len(parts) < 2:
             return
         trade_id = int(parts[1])
         await generate_ai_review(query, trade_id)
@@ -111,8 +107,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "skip_comment":
         await query.edit_message_text("Запись сохранена без комментария.")
     elif data.startswith("setup_"):
-        parts = data.split("_", 2)
-        if len(parts) < 3:
+        parts = data.split("_", 1)
+        if len(parts) < 2:
             return
         trade_id = int(parts[1])
         context.user_data['setup_trade_id'] = trade_id
@@ -151,6 +147,6 @@ async def generate_ai_review(query, trade_id):
         f"выход: {trade['exit_price']}, плечо: {trade.get('leverage', 1)}, PNL: {trade['realized_pnl']:.2f}.\n"
         f"Причина входа: {trade.get('entry_comment', 'не указана')}."
     )
-    review = ai_analyzer.analyze_raw(prompt)
+    review = await ai_analyzer.analyze_raw(prompt)
     db.update_trade_metrics(trade_id, ai_review=review)
     await query.edit_message_text(f"🤖 *AI-оценка сделки #{trade_id}:*\n\n{review}", parse_mode='Markdown')
