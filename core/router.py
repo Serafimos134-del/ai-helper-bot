@@ -124,7 +124,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.edit_message_text("📊 *Выберите сетап сделки:*", parse_mode='Markdown', reply_markup=keyboard)
     elif data.startswith("set_setup_"):
-        parts = data.split("_")
+        parts = data.split("_", 3)
         if len(parts) < 4:
             return
         trade_id = int(parts[2])
