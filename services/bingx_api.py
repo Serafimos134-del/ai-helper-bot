@@ -119,7 +119,7 @@ async def get_open_positions() -> dict:
         for pos in positions:
             if float(pos.get('positionAmt', 0)) != 0:
                 trades.append({
-                    'orderId': pos.get('positionId', pos.get('symbol')),
+                    'orderId': pos.get('positionId') or f"{pos.get('symbol')}_{pos.get('side')}_{pos.get('avgPrice', 0)}",
                     'symbol': pos.get('symbol', ''),
                     'side': 'LONG' if float(pos.get('positionAmt', 0)) > 0 else 'SHORT',
                     'entryPrice': float(pos.get('avgPrice', 0)),
