@@ -23,6 +23,10 @@ class MarketAgent:
         logger.info(f"MARKET AGENT PROMPT:\n{prompt}")
         try:
             response = await loop.run_in_executor(None, self.provider.generate, prompt)
+            # Проверка на отказ Groq — явный сигнал деградации
+            if response.startswith("AI analysis unavailable"):
+                return json.dumps({"market_score": 0, "analysis": response}, ensure_ascii=False)
+            # Извлекаем JSON из ответа LLM
             try:
                 start = response.find('{')
                 end = response.rfind('}') + 1
