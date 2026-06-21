@@ -23,6 +23,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    logger.info(f"CALLBACK DATA: {data}")
 
     if data.startswith("comment_"):
         parts = data.split("_", 2)
@@ -39,10 +40,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("detail_"):
         parts = data.split("_", 2)
         if len(parts) < 3:
+            logger.warning(f"Invalid detail_ callback: {data}")
             return
         trade_id = int(parts[1])
+        logger.info(f"Looking for trade_id={trade_id}")
         trade = db.find_trade_by_id(trade_id)
         if trade:
+            logger.info(f"Found trade: {trade['symbol']}")
             holding = trade.get('holding_minutes')
             duration_str = f"{holding} мин" if holding is not None else "—"
             detail_text = (
@@ -65,6 +69,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             await query.edit_message_text(detail_text, parse_mode='Markdown', reply_markup=detail_keyboard)
         else:
+            logger.warning(f"Trade not found: id={trade_id}")
             await query.edit_message_text("❌ Сделка не найдена.")
     elif data.startswith("eval_"):
         parts = data.split("_", 2)
