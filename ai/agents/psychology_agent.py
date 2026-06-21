@@ -17,7 +17,7 @@ class PsychologyAgent:
     async def analyze(self, context: dict = None) -> str:
         """Возвращает JSON с психологическим профилем."""
         if context is None:
-            ctx = self.context_builder.build_full_context()
+            ctx = await self.context_builder.build_full_context()
         else:
             ctx = context
         history = ctx.get("history", {})
@@ -34,7 +34,6 @@ class PsychologyAgent:
     def _build_template_summary(signals: dict) -> str:
         """Генерирует summary на основе флагов и метрик без LLM."""
         flags = signals.get("flags", [])
-        metrics = signals.get("metrics", {})
         score = signals.get("psychology_score", 50)
 
         if not flags:
