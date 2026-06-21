@@ -21,7 +21,7 @@ from services.auto_sync import sync_trades
 from services.ai_trading import AITradingAnalyzer
 from core.keyboards import cancel_keyboard
 from core.router import setup_router
-from core.scheduler import setup_scheduler
+from core.scheduler import setup_scheduler, update_pinned_status
 
 load_dotenv()
 
@@ -52,7 +52,7 @@ BTN_AI_ANALYSIS = "🧠 AI-анализ"
 BTN_BACK = "🔙 Назад"
 BTN_CANCEL = "❌ Отмена"
 
-# AI-меню (обновлено)
+# AI-меню
 BTN_CONSILIUM = "🧠 Консилиум"
 CONSILIUM_OPEN = "📂 Открытые сделки"
 CONSILIUM_SETUP = "🎯 Новый сетап"
@@ -74,32 +74,19 @@ NAV_BUTTONS = {
 
 def main_menu_keyboard():
     return ReplyKeyboardMarkup(
-        [
-            [BTN_TRADING],
-            [BTN_AI, BTN_JOURNAL],
-            [BTN_HELP],
-        ],
+        [[BTN_TRADING], [BTN_AI, BTN_JOURNAL], [BTN_HELP]],
         resize_keyboard=True
     )
 
 def trading_menu_keyboard():
     return ReplyKeyboardMarkup(
-        [
-            [BTN_BALANCE, BTN_LAST_TRADES],
-            [BTN_STATS, BTN_AI_ANALYSIS],
-            [BTN_BACK],
-        ],
+        [[BTN_BALANCE, BTN_LAST_TRADES], [BTN_STATS, BTN_AI_ANALYSIS], [BTN_BACK]],
         resize_keyboard=True
     )
 
 def ai_menu_keyboard():
     return ReplyKeyboardMarkup(
-        [
-            [BTN_CONSILIUM],
-            [BTN_AI_MARKET, BTN_AI_TRENDS],
-            [BTN_AI_LEARN],
-            [BTN_BACK],
-        ],
+        [[BTN_CONSILIUM], [BTN_AI_MARKET, BTN_AI_TRENDS], [BTN_AI_LEARN], [BTN_BACK]],
         resize_keyboard=True
     )
 
@@ -108,7 +95,7 @@ def open_positions_keyboard(positions):
     buttons.append([BTN_BACK])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ─── Хендлеры (только для владельца) ─────────────────────────────────────────
+# ─── Хендлеры ────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != CHAT_ID:
@@ -249,7 +236,6 @@ async def show_trends(update: Update):
     except Exception: pass
     await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
 
-# ── Журнал сделок ──
 async def show_journal(update: Update):
     msg = await update.message.reply_text("📓 Загружаю журнал...")
     trades = db.get_closed_trades(limit=500)
@@ -305,7 +291,6 @@ async def show_journal(update: Update):
             text = text[:4000] + "\n... (обрезано)"
         await update.message.reply_text(text, parse_mode='Markdown')
 
-# ── Анализ журнала (AI) ──
 async def show_journal_analysis(update: Update):
     msg = await update.message.reply_text("🤖 Анализирую журнал сделок...")
     trades = db.get_closed_trades(limit=50)
@@ -315,14 +300,10 @@ async def show_journal_analysis(update: Update):
     data_for_ai = []
     for t in trades:
         data_for_ai.append({
-            'symbol': t['symbol'],
-            'side': t['side'],
-            'entry_price': t['entry_price'],
-            'exit_price': t['exit_price'],
-            'pnl': t['realized_pnl'],
-            'leverage': t.get('leverage', 1),
-            'stop_loss': t.get('stop_loss'),
-            'take_profit': t.get('take_profit'),
+            'symbol': t['symbol'], 'side': t['side'],
+            'entry_price': t['entry_price'], 'exit_price': t['exit_price'],
+            'pnl': t['realized_pnl'], 'leverage': t.get('leverage', 1),
+            'stop_loss': t.get('stop_loss'), 'take_profit': t.get('take_profit'),
             'entry_comment': t.get('entry_comment', ''),
             'exit_comment': t.get('exit_comment', t.get('comment', ''))
         })
@@ -350,12 +331,12 @@ async def show_help(update: Update):
         "📌 *Команды:*\n"
         "/start — главное меню\n"
         "/sync — ручная синхронизация\n"
+        "/status — текущий статус (баланс, позиции, правила)\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
         "/health — состояние систем"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
-# ── Health check ──
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != CHAT_ID:
         return
@@ -391,7 +372,6 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status.append("🌐 Прокси: ⚪ (не используется)")
     await msg.edit_text("📊 *Health Check*\n\n" + "\n".join(status), parse_mode='Markdown')
 
-# ── Главный обработчик сообщений ──
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != CHAT_ID:
         return
@@ -484,7 +464,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
 
-# ── Команда /ai_fix ──
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != CHAT_ID:
         return
@@ -504,7 +483,6 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = await ai_analyzer.analyze_raw(prompt)
     await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}")
 
-# ── Ручная синхронизация ──
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != CHAT_ID:
         return
@@ -514,8 +492,15 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_closed = len(results.get('new_closed', []))
     await msg.edit_text(f"✅ Синхронизация завершена!\n\n🆕 Новых позиций: {new_open}\n🔒 Закрыто позиций: {new_closed}")
 
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /status — показать текущий статус по запросу."""
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
+    await update_pinned_status(context, db, CHAT_ID, force=True)
+    await update.message.reply_text("📌 Статус обновлён. Смотри закреплённое сообщение.", reply_markup=main_menu_keyboard())
+
 # ══════════════════════════════════════════════════════════════════════════════
-# НОВЫЕ ФУНКЦИИ КОНСИЛИУМА
+# КОНСИЛИУМ
 # ══════════════════════════════════════════════════════════════════════════════
 
 from ai.consensus_engine import ConsensusEngine
@@ -523,9 +508,7 @@ consensus = ConsensusEngine(ai_analyzer.provider)
 
 async def consilium_menu(update: Update):
     keyboard = ReplyKeyboardMarkup([
-        [CONSILIUM_OPEN],
-        [CONSILIUM_SETUP],
-        [BTN_BACK]
+        [CONSILIUM_OPEN], [CONSILIUM_SETUP], [BTN_BACK]
     ], resize_keyboard=True)
     await update.message.reply_text("🧠 Консилиум\nВыбери режим:", reply_markup=keyboard)
 
@@ -589,15 +572,12 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
 def _build_response(result: dict, ticker: str, direction: str) -> str:
-    """Собирает полный ответ Консилиума с метриками уверенности и профилем трейдера."""
     response = (
         f"🧠 Консилиум — {ticker} {direction}\n\n"
         f"📈 Рынок:\n{result.get('market_review', '—')}\n\n"
         f"⚠️ Риск:\n{result.get('risk_review', '—')}\n\n"
         f"🧘 Психология:\n{result.get('psychology_review', '—')}\n\n"
     )
-
-    # Парсим вердикт JudgeAgent из JSON в читаемый вид
     verdict_str = result.get('judge_verdict', '{}')
     try:
         verdict = json.loads(verdict_str) if isinstance(verdict_str, str) else verdict_str
@@ -605,15 +585,8 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
         final_score = verdict.get('final_score', '—')
         verdict_summary = verdict.get('summary', '')
         warnings = verdict.get('warnings', [])
-
-        verdict_emoji = {
-            'STRONG_ENTER': '🟢',
-            'ENTER': '🟢',
-            'WAIT': '🟡',
-            'AVOID': '🔴',
-        }
+        verdict_emoji = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
         emoji = verdict_emoji.get(verdict_text, '⚪')
-
         response += f"⚖️ Вердикт: {emoji} {verdict_text} ({final_score}/100)\n"
         if verdict_summary:
             response += f"_{verdict_summary}_\n"
@@ -623,8 +596,6 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
                 response += f"• {w}\n"
     except Exception:
         response += f"⚖️ Вердикт: {verdict_str}"
-
-    # Метрики уверенности
     confidence = result.get('confidence')
     data_quality = result.get('data_quality')
     disagreement = result.get('disagreement')
@@ -634,12 +605,9 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
             response += f" | Качество данных: {data_quality:.0%}"
         if disagreement is not None:
             response += f" | Разногласия: {disagreement:.0%}"
-
-    # Профиль трейдера из Memory Engine
     memory = result.get('memory')
     if memory:
         response += f"\n\n{memory}"
-
     return response
 
 def consilium_keyboard():
@@ -654,6 +622,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('sync', sync_command))
+    app.add_handler(CommandHandler('status', status_command))
     app.add_handler(CommandHandler('ai_fix', ai_fix_command))
     app.add_handler(CommandHandler('health', health_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
