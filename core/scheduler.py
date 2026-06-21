@@ -77,8 +77,8 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
                     parse_mode='Markdown'
                 )
                 return
-            except:
-                pass
+            except Exception:
+                logger.debug("Не удалось отредактировать pinned сообщение, создаю новое")
 
         msg = await context.bot.send_message(
             chat_id=chat_id,
