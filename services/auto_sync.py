@@ -15,6 +15,7 @@ trade_scorer = TradeScorer()
 
 # Защита от ложных закрытий: позиция должна отсутствовать 2 цикла подряд
 _missing_cycles: dict = {}
+_missing_cycles_lock = asyncio.Lock()
 _MISSING_THRESHOLD = 2   # закрываем только после 2 пропусков (30+ сек)
 
 
@@ -106,58 +107,59 @@ async def sync_trades(bot, chat_id: str) -> dict:
         if oid:
             stored_by_id[oid] = t
 
-    for trade in api_trades:
-        oid = str(trade.get('orderId'))
-        raw_side = trade.get('side', '')
-        side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+    async with _missing_cycles_lock:
+        for trade in api_trades:
+            oid = str(trade.get('orderId'))
+            raw_side = trade.get('side', '')
+            side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
 
-        _missing_cycles.pop(oid, None)
-
-        if oid in stored_by_id:
-            db.update_open_trade_by_order_id(
-                oid,
-                unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
-                leverage=float(trade.get('leverage', 1)),
-                quantity=abs(float(trade.get('positionAmt', trade.get('size', 0)))),
-                entry_price=float(trade.get('entryPrice', 0)),
-                stop_loss=trade.get('stopLoss'),
-                take_profit=trade.get('takeProfit')
-            )
-            stored_by_id.pop(oid)
-        else:
-            db.add_open_trade({
-                'orderId': trade.get('orderId'),
-                'symbol': trade.get('symbol'),
-                'side': side,
-                'entry_price': float(trade.get('entryPrice', 0)),
-                'quantity': abs(float(trade.get('positionAmt', trade.get('size', 0)))),
-                'leverage': float(trade.get('leverage', 1)),
-                'unrealized_pnl': float(trade.get('unrealizedPnl', 0)),
-                'stop_loss': trade.get('stopLoss'),
-                'take_profit': trade.get('takeProfit'),
-                'entry_comment': ''
-            })
-            results['new_open'].append(trade)
-            await _notify_new_trade(bot, chat_id, trade)
-
-    truly_closed = {}
-    for oid, stored in stored_by_id.items():
-        if oid in api_ids:
-            continue
-
-        cycles = _missing_cycles.get(oid, 0) + 1
-        _missing_cycles[oid] = cycles
-
-        if cycles >= _MISSING_THRESHOLD:
             _missing_cycles.pop(oid, None)
-            truly_closed[oid] = stored
-            stored_by_id.pop(oid)
-        else:
-            logger.info(f"Позиция {oid} ({stored.get('symbol')}) отсутствует {cycles}/{_MISSING_THRESHOLD} циклов — ждём подтверждения")
 
-    for oid in list(_missing_cycles.keys()):
-        if oid not in stored_by_id:
-            _missing_cycles.pop(oid, None)
+            if oid in stored_by_id:
+                db.update_open_trade_by_order_id(
+                    oid,
+                    unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
+                    leverage=float(trade.get('leverage', 1)),
+                    quantity=abs(float(trade.get('positionAmt', trade.get('size', 0)))),
+                    entry_price=float(trade.get('entryPrice', 0)),
+                    stop_loss=trade.get('stopLoss'),
+                    take_profit=trade.get('takeProfit')
+                )
+                stored_by_id.pop(oid)
+            else:
+                db.add_open_trade({
+                    'orderId': trade.get('orderId'),
+                    'symbol': trade.get('symbol'),
+                    'side': side,
+                    'entry_price': float(trade.get('entryPrice', 0)),
+                    'quantity': abs(float(trade.get('positionAmt', trade.get('size', 0)))),
+                    'leverage': float(trade.get('leverage', 1)),
+                    'unrealized_pnl': float(trade.get('unrealizedPnl', 0)),
+                    'stop_loss': trade.get('stopLoss'),
+                    'take_profit': trade.get('takeProfit'),
+                    'entry_comment': ''
+                })
+                results['new_open'].append(trade)
+                await _notify_new_trade(bot, chat_id, trade)
+
+        truly_closed = {}
+        for oid, stored in stored_by_id.items():
+            if oid in api_ids:
+                continue
+
+            cycles = _missing_cycles.get(oid, 0) + 1
+            _missing_cycles[oid] = cycles
+
+            if cycles >= _MISSING_THRESHOLD:
+                _missing_cycles.pop(oid, None)
+                truly_closed[oid] = stored
+                stored_by_id.pop(oid)
+            else:
+                logger.info(f"Позиция {oid} ({stored.get('symbol')}) отсутствует {cycles}/{_MISSING_THRESHOLD} циклов — ждём подтверждения")
+
+        for oid in list(_missing_cycles.keys()):
+            if oid not in stored_by_id:
+                _missing_cycles.pop(oid, None)
 
     for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored)
