@@ -201,7 +201,7 @@ async def show_market_overview(update: Update):
         + "Будь конкретен, используй цифры из данных выше. Без философии и общих фраз."
     )
     try:
-        analysis = ai_analyzer.analyze_raw(prompt)
+        analysis = await ai_analyzer.analyze_raw(prompt)
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
     try: await msg.delete()
@@ -242,7 +242,7 @@ async def show_trends(update: Update):
         + "Кратко, без воды, используй цифры из данных выше."
     )
     try:
-        analysis = ai_analyzer.analyze_raw(prompt)
+        analysis = await ai_analyzer.analyze_raw(prompt)
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
     try: await msg.delete()
@@ -334,7 +334,7 @@ async def show_journal_analysis(update: Update):
         "Дай конкретные рекомендации по улучшению стратегии и дисциплины.\n\n"
         f"Журнал сделок:\n{trades_text}"
     )
-    answer = ai_analyzer.analyze_raw(prompt)
+    answer = await ai_analyzer.analyze_raw(prompt)
     await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}")
 
 async def show_help(update: Update):
@@ -501,7 +501,7 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Определи возможные причины, ошибки в риск-менеджменте или психологии. "
         "Дай конкретные советы, как избежать повторения."
     )
-    answer = ai_analyzer.analyze_raw(prompt)
+    answer = await ai_analyzer.analyze_raw(prompt)
     await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}")
 
 # ── Ручная синхронизация ──
