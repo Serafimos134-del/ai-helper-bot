@@ -89,6 +89,8 @@ class ContextBuilder:
         if positions and positions.get("success"):
             for p in positions.get("trades", []):
                 entry_price = float(p.get("entryPrice", 0))
+                if entry_price <= 0:
+                    continue
                 size = abs(float(p.get("positionAmt", p.get("size", 0))))
                 unrealized_pnl = float(p.get("unrealizedPnl", 0))
                 side = p.get("side", "LONG")
