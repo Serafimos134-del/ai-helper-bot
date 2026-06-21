@@ -45,7 +45,7 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
         engine = ConsensusEngine(ai_provider)
         analysis = await engine.analyze_closed_trade(closed_trade)
         score = trade_scorer.score(closed_trade)
-        db.update_trade_metrics(trade_id,
+        await asyncio.to_thread(db.update_trade_metrics, trade_id,
                                 ai_score=score['total_score'],
                                 market_review=analysis['market_review'],
                                 risk_review=analysis['risk_review'],
@@ -80,7 +80,7 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
         logger.error(f"Ошибка фонового анализа сделки #{trade_id}: {e}")
         try:
             score = trade_scorer.score(closed_trade)
-            db.update_trade_metrics(trade_id, ai_score=score['total_score'])
+            await asyncio.to_thread(db.update_trade_metrics, trade_id, ai_score=score['total_score'])
             logger.info(f"Сделка #{trade_id} оценена (fallback): {score['total_score']}/10")
         except Exception as fallback_e:
             logger.error(f"Ошибка даже fallback-оценки для сделки #{trade_id}: {fallback_e}")
@@ -90,7 +90,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
     global _missing_cycles
     results = {'new_open': [], 'new_closed': []}
 
-    db.cleanup_orphan_open_trades()
+    await asyncio.to_thread(db.cleanup_orphan_open_trades)
 
     open_result = await get_open_positions()
     if not open_result.get('success'):
@@ -100,7 +100,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
     api_trades = open_result.get('trades', [])
     api_ids = {str(t.get('orderId')) for t in api_trades if t.get('orderId')}
 
-    stored_open = db.get_open_trades()
+    stored_open = await asyncio.to_thread(db.get_open_trades)
     stored_by_id = {}
     for t in stored_open:
         oid = str(t.get('orderId')) if t.get('orderId') else None
@@ -116,7 +116,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
             _missing_cycles.pop(oid, None)
 
             if oid in stored_by_id:
-                db.update_open_trade_by_order_id(
+                await asyncio.to_thread(db.update_open_trade_by_order_id,
                     oid,
                     unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
                     leverage=float(trade.get('leverage', 1)),
@@ -127,7 +127,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
                 )
                 stored_by_id.pop(oid)
             else:
-                db.add_open_trade({
+                await asyncio.to_thread(db.add_open_trade, {
                     'orderId': trade.get('orderId'),
                     'symbol': trade.get('symbol'),
                     'side': side,
@@ -163,9 +163,9 @@ async def sync_trades(bot, chat_id: str) -> dict:
 
     for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored)
-        db.add_closed_trade(closed_trade)
-        db.delete_open_trade_by_order_id(oid)
-        last_id = db.get_last_closed_id()
+        await asyncio.to_thread(db.add_closed_trade, closed_trade)
+        await asyncio.to_thread(db.delete_open_trade_by_order_id, oid)
+        last_id = await asyncio.to_thread(db.get_last_closed_id)
 
         results['new_closed'].append(stored)
         await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], last_id)
