@@ -268,6 +268,18 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
              InlineKeyboardButton("📊 Сетап", callback_data=f"setup_{trade_id}")],
             [InlineKeyboardButton("⏭ Пропустить", callback_data="skip_comment")]
         ])
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
+
+        # Retry до 3 раз при rate limit
+        for attempt in range(3):
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown', reply_markup=keyboard)
+                return
+            except Exception as e:
+                err_str = str(e).lower()
+                if 'retry' in err_str or '429' in err_str or 'flood' in err_str:
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                raise
     except Exception as e:
         logger.error(f"Ошибка уведомления о закрытии: {e}")
