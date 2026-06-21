@@ -68,7 +68,7 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
             f"Доступно: ${available:,.2f}\n"
             f"Маржа: ${used_margin:,.2f}\n"
             f"Нереализ. PNL: ${unrealized_pnl:+,.2f}\n\n"
-            f"📐 *Вход:* ${entry_size:,.2f} (10% от equity)\n"
+            f"📐 *Вход:* ${entry_size:,.2f} (10% от депо)\n"
             f"📐 *Добор:* ${add_size:,.2f}–${equity * 0.05:,.2f}\n\n"
         )
     else:
@@ -90,14 +90,14 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
     # Trading rules block (фиксированный)
     text += (
         "\n📋 *Правила:*\n"
-        "• Вход: 10% от equity\n"
+        "• Вход: 10% от депо\n"
         "• Плечо: x5 BTC/ETH, x3 ALT\n"
         "• Маржа: Cross\n"
-        "• Добор: 3–5% от equity, max 2\n"
+        "• Добор: 3–5% от депо, max 2\n"
         "• Опоздал = пропуск\n"
         "• Max 2 сделки одновременно\n"
         "• SL: −2% цены против позиции\n"
-        "• TP: +20% PnL → фикс 50% + SL в BE\n"
+        "• TP: +20% PnL → фикс 50% + SL в Б/У\n"
         "• Daily stop: 2 стопа или −5% депо"
     )
 
