@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from telegram.ext import ContextTypes
@@ -36,7 +37,7 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
             await update_pinned_status(context, db, chat_id, force=True)
         
         if new_closed > 0:
-            last_trades = db.get_closed_trades(limit=3)
+            last_trades = await asyncio.to_thread(db.get_closed_trades, limit=3)
             if len(last_trades) >= 3 and all(t['realized_pnl'] < 0 for t in last_trades):
                 alert = (
                     "⚠️ *Обнаружена серия из 3 убыточных сделок!*\n"
@@ -124,7 +125,7 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
         return
     try:
         balance = await get_balance()
-        open_positions = db.get_open_trades()
+        open_positions = await asyncio.to_thread(db.get_open_trades)
 
         # Проверяем изменилось ли состояние
         state_key = _make_state_key(balance, open_positions)
