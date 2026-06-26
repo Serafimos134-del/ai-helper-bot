@@ -142,7 +142,8 @@ async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT
     keyboard = []
     for t in trades:
         sym = t['symbol']
-        side = 'LONG' if t.get('side') == 'BUY' else 'SHORT'
+        raw_side = str(t.get('side', '')).upper()
+        side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
         keyboard.append([f"{sym} {side}"])
     keyboard.append([BTN_BACK])
     markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -156,7 +157,9 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
     trades = context.user_data.get('consilium_positions', [])
     chosen = None
     for t in trades:
-        if f"{t['symbol']} LONG" == text or f"{t['symbol']} SHORT" == text:
+        raw_side = str(t.get('side', '')).upper()
+        expected_side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+        if f"{t['symbol']} {expected_side}" == text:
             chosen = t
             break
     if not chosen:
@@ -165,7 +168,7 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
     context.user_data['state'] = None
     msg = await update.message.reply_text("🔄 Анализирую позицию...")
     result = await consensus.analyze_open_position(chosen)
-    response = _build_response(result, chosen['symbol'], chosen.get('side', 'BUY'))
+    response = _build_response(result, chosen['symbol'], expected_side)
     await msg.edit_text(response)
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
