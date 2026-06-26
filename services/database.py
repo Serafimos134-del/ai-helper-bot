@@ -36,15 +36,30 @@ def retry_on_locked(max_attempts: int = 3, delay: float = 0.2):
 
 
 class Database:
-    """Thread-safe SQLite manager with WAL mode, atomic close, retries."""
+    """Thread-safe SQLite manager (singleton) with WAL mode, atomic close, retries."""
+
+    _instance = None
+    _lock_init = threading.Lock()
+
+    def __new__(cls, db_path: str = DB_PATH):
+        # Singleton: ensure only one instance and one connection
+        if cls._instance is None:
+            with cls._lock_init:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self, db_path: str = DB_PATH):
+        if self._initialized:
+            return
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=5)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self._setup_pragmas()
         self._migrate()
+        self._initialized = True
 
     def _setup_pragmas(self):
         with self.lock:
@@ -109,7 +124,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
             """)
 
-            # Add missing columns (migration)
+            # Add missing columns (safe migration)
             for table, cols in {
                 'open_trades': [
                     ('orderId', 'TEXT NOT NULL DEFAULT ""'),
@@ -149,9 +164,9 @@ class Database:
                     except sqlite3.OperationalError:
                         pass
 
-            # Cleanup any NULL orderIds from open_trades (shouldn't exist)
+            # Cleanup any NULL orderIds (shouldn't exist with NOT NULL, but just in case)
             self.conn.execute("DELETE FROM open_trades WHERE orderId IS NULL OR orderId = ''")
-            # Ensure unique index on orderId for both tables
+            # Ensure unique indexes
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_orderId ON open_trades(orderId)")
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
             self.conn.commit()
@@ -161,8 +176,7 @@ class Database:
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute SQL with lock and retry. Returns cursor for further use."""
         with self.lock:
-            cursor = self.conn.execute(sql, params)
-            return cursor
+            return self.conn.execute(sql, params)
 
     def _commit(self):
         with self.lock:
@@ -244,7 +258,7 @@ class Database:
             logger.info(f"Trade closed atomically: orderId={order_id}, new closed_id={new_id}")
             return new_id
 
-    # ==================== existing methods (backward compatible, refactored) ====================
+    # ==================== existing methods (backward compatible) ====================
     def get_open_trades(self):
         rows = self._execute("SELECT * FROM open_trades").fetchall()
         return [dict(row) for row in rows]
@@ -456,19 +470,12 @@ class Database:
         return {row['key']: row['value'] for row in rows}
 
 
-# Global instance for backward compatibility with existing imports that use `db = Database()` etc.
-# But we move to container later; for now, keep the old static-style compatibility:
-# The old code expected `Database.method()` as static methods. We'll keep the class with instance methods,
-# but we'll create a singleton instance and possibly expose the methods as static via a wrapper or just update calls.
-# Since auto_sync.py does `db = Database()` and then `db.get_open_trades()`, it already expects an instance.
-# Similarly bot.py might import `Database` and use static methods. We'll need to adjust bot.py to use instance.
-# For now, to avoid breaking everything, we'll make the class instantiable and also provide module-level functions
-# that proxy to a default instance, which mimics old behavior.
+# ─── backward compatible module-level proxies ───
+# Old code uses `Database.static_method()` or imported functions;
+# they'll all work through the singleton instance.
 
-# Instantiate a default database object for module-level access (backward compat)
-_default_db = Database()
+_default_db = Database()   # force instantiation of singleton
 
-# Proxy functions to default instance
 def get_open_trades():
     return _default_db.get_open_trades()
 
@@ -520,11 +527,10 @@ def memory_get(category, key):
 def memory_get_all(category):
     return _default_db.memory_get_all(category)
 
-# New atomic close method as module-level function
+# New atomic close
 def close_trade_atomic(order_id, closed_trade_data):
     return _default_db.close_trade_atomic(order_id, closed_trade_data)
 
-# Init db (should be called once at startup)
+# Legacy init_db — no longer needed, kept for compatibility
 def init_db():
-    # Already initialized in Database constructor
     pass
