@@ -172,10 +172,12 @@ class Database:
                     except sqlite3.OperationalError:
                         pass
 
-            # Update existing rows to have default user_id if they were NULL
-            self.conn.execute("UPDATE open_trades SET user_id = 'default' WHERE user_id IS NULL")
-            self.conn.execute("UPDATE closed_trades SET user_id = 'default' WHERE user_id IS NULL")
-            self.conn.execute("UPDATE trader_memory SET user_id = 'default' WHERE user_id IS NULL")
+            # Update existing rows to have default user_id (safe — may fail if column doesn't exist)
+            for tbl in ['open_trades', 'closed_trades', 'trader_memory']:
+                try:
+                    self.conn.execute(f"UPDATE {tbl} SET user_id = 'default' WHERE user_id IS NULL")
+                except sqlite3.OperationalError:
+                    pass
 
             # Cleanup any NULL orderIds (shouldn't exist with NOT NULL, but just in case)
             self.conn.execute("DELETE FROM open_trades WHERE orderId IS NULL OR orderId = ''")
