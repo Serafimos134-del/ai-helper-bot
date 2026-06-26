@@ -90,4 +90,55 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = context.user_data.get('comment_order_id')
         if trade_id:
             db.update_trade_metrics(trade_id, exit_comment=text)
-            await update.message.reply_text("✅ Вывод сохранён.", reply_markup=trading
+            await update.message.reply_text("✅ Вывод сохранён.", reply_markup=trading_menu_keyboard())
+        context.user_data['state'] = None
+        context.user_data.pop('comment_order_id', None)
+        return
+
+    if state == 'entering_entry_reason':
+        order_id = context.user_data.get('entry_order_id')
+        if order_id:
+            db.update_open_trade_by_order_id(order_id, entry_comment=text)
+            await update.message.reply_text("✅ Причина входа сохранена.", reply_markup=trading_menu_keyboard())
+        context.user_data['state'] = None
+        return
+
+    if state == 'consilium_choose_position':
+        await consilium_analyze_position(update, context)
+        return
+    if state == 'consilium_setup_input':
+        await consilium_process_setup(update, context)
+        return
+
+    if text == BTN_TRADING:
+        await update.message.reply_text("📈 *Trading*\nВыбери действие:", parse_mode='Markdown', reply_markup=trading_menu_keyboard())
+    elif text == BTN_AI:
+        await update.message.reply_text("🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
+    elif text == BTN_JOURNAL:
+        await show_journal(update)
+    elif text == BTN_HELP:
+        await show_help(update)
+    elif text == BTN_BACK:
+        await update.message.reply_text("🏠 *Главное меню*\nВыбери раздел:", parse_mode='Markdown', reply_markup=main_menu_keyboard())
+    elif text == BTN_BALANCE:
+        await show_balance(update)
+    elif text == BTN_LAST_TRADES:
+        await show_last_trades(update)
+    elif text == BTN_STATS:
+        await show_stats(update)
+    elif text == BTN_AI_ANALYSIS:
+        await show_ai_analysis(update)
+    elif text == BTN_CONSILIUM:
+        await consilium_menu(update)
+    elif text == CONSILIUM_OPEN:
+        await consilium_open_positions(update, context)
+    elif text == CONSILIUM_SETUP:
+        await consilium_new_setup(update, context)
+    elif text == BTN_AI_MARKET:
+        await show_market_overview(update)
+    elif text == BTN_AI_TRENDS:
+        await show_trends(update)
+    elif text == BTN_AI_LEARN:
+        await show_journal_analysis(update)
+    else:
+        await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
