@@ -7,13 +7,8 @@ import json
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_consensus
-from core.keyboards import ai_menu_keyboard, cancel_keyboard
+from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
-
-# Button texts (reused from old bot.py)
-BTN_BACK = "🔙 Назад"
-CONSILIUM_OPEN = "📂 Открытые сделки"
-CONSILIUM_SETUP = "🎯 Новый сетап"
 
 
 async def show_market_overview(update: Update):
