@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from services.database import init_db
+from services.database import init_db, Database
 from core.container import get_db
 from core.router import setup_router
 from core.scheduler import setup_scheduler
@@ -29,6 +29,60 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
 
+async def restore_history_command(update: Update, context):
+    """Временная команда для восстановления истории закрытых сделок из BingX API."""
+    if str(update.effective_chat.id) != CHAT_ID:
+        return
+    msg = await update.message.reply_text("⏳ Запрашиваю историю закрытых сделок из BingX...")
+    try:
+        from services.bingx_api import get_closed_orders
+        result = await get_closed_orders()
+        if not result.get('success'):
+            await msg.edit_text(f"❌ Ошибка API: {result.get('error')}")
+            return
+        orders = result.get('orders', [])
+        if not orders:
+            await msg.edit_text("Нет закрытых сделок в истории.")
+            return
+
+        db = Database()
+        restored = 0
+        skipped = 0
+        for order in orders:
+            oid = order.get('orderId')
+            if not oid:
+                continue
+            # Проверяем, существует ли уже такая сделка
+            existing = db._execute("SELECT id FROM closed_trades WHERE orderId = ?", (oid,)).fetchone()
+            if existing:
+                skipped += 1
+                continue
+            side = 'LONG' if str(order.get('side', '')).upper() in ('BUY', 'LONG') else 'SHORT'
+            trade = {
+                'orderId': oid,
+                'symbol': order.get('symbol'),
+                'side': side,
+                'entry_price': float(order.get('entryPrice', 0)),
+                'exit_price': float(order.get('exitPrice', 0)),
+                'quantity': abs(float(order.get('positionAmt', order.get('size', 0)))),
+                'realized_pnl': float(order.get('realizedPnl', 0)),
+                'leverage': float(order.get('leverage', 1)),
+                'open_time': order.get('openTime'),
+                'close_time': order.get('closeTime'),
+                'comment': ''
+            }
+            try:
+                db.add_closed_trade(trade)
+                restored += 1
+            except Exception as e:
+                logger.error(f"Ошибка вставки {oid}: {e}")
+
+        await msg.edit_text(f"✅ Восстановлено: {restored}, пропущено (уже есть): {skipped}")
+    except Exception as e:
+        logger.error(f"Ошибка восстановления истории: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
 def main():
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан! Проверь .env файл.")
@@ -40,6 +94,7 @@ def main():
     app.add_handler(CommandHandler('status', status_command))
     app.add_handler(CommandHandler('ai_fix', ai_fix_command))
     app.add_handler(CommandHandler('health', health_command))
+    app.add_handler(CommandHandler('restore_history', restore_history_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     setup_router(app)
     setup_scheduler(app, db, CHAT_ID)
