@@ -3,11 +3,18 @@ handlers/menu.py
 Main menu handler — routes button presses to appropriate handlers.
 """
 
+import os
 from telegram import Update
 from telegram.ext import ContextTypes
 from core.container import get_db
 from core.keyboards import (
-    main_menu_keyboard, trading_menu_keyboard, ai_menu_keyboard, cancel_keyboard
+    main_menu_keyboard, trading_menu_keyboard, ai_menu_keyboard, cancel_keyboard,
+    BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
+    BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
+    BTN_BACK, BTN_CANCEL,
+    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
+    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
+    NAV_BUTTONS,
 )
 from handlers.trading import show_balance, show_last_trades, show_stats, show_ai_analysis
 from handlers.ai import (
@@ -19,35 +26,7 @@ from handlers.journal import show_journal
 from handlers.system import show_help
 from services.comment_manager import save_comment
 
-import os
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-
-# Button texts
-BTN_TRADING = "📈 Trading"
-BTN_AI = "🤖 AI"
-BTN_JOURNAL = "📓 Журнал"
-BTN_HELP = "ℹ️ Help"
-BTN_BALANCE = "💰 Баланс"
-BTN_LAST_TRADES = "📋 Последние сделки"
-BTN_STATS = "📊 Статистика"
-BTN_AI_ANALYSIS = "🧠 AI-анализ"
-BTN_BACK = "🔙 Назад"
-BTN_CANCEL = "❌ Отмена"
-BTN_CONSILIUM = "🧠 Консилиум"
-CONSILIUM_OPEN = "📂 Открытые сделки"
-CONSILIUM_SETUP = "🎯 Новый сетап"
-BTN_AI_MARKET = "🌐 Обзор рынка"
-BTN_AI_TRENDS = "📊 Тренды"
-BTN_AI_LEARN = "📊 Анализ журнала"
-
-NAV_BUTTONS = {
-    BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
-    BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
-    BTN_BACK, BTN_CANCEL,
-    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
-    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
-    "🏠 *Главное меню*\nВыбери раздел:"
-}
 
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
