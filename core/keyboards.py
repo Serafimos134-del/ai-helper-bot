@@ -1,123 +1,62 @@
 """
-handlers/menu.py
-Main menu handler — routes button presses to appropriate handlers.
+core/keyboards.py
+Centralized keyboard definitions for the bot.
 """
 
-import os
-from telegram import Update
-from telegram.ext import ContextTypes
-from core.container import get_db
-from core.keyboards import (
-    main_menu_keyboard, trading_menu_keyboard, ai_menu_keyboard, cancel_keyboard,
+from telegram import ReplyKeyboardMarkup
+
+# Button texts
+BTN_TRADING = "📈 Trading"
+BTN_AI = "🤖 AI"
+BTN_JOURNAL = "📓 Журнал"
+BTN_HELP = "ℹ️ Help"
+
+BTN_BALANCE = "💰 Баланс"
+BTN_LAST_TRADES = "📋 Последние сделки"
+BTN_STATS = "📊 Статистика"
+BTN_AI_ANALYSIS = "🧠 AI-анализ"
+
+BTN_BACK = "🔙 Назад"
+BTN_CANCEL = "❌ Отмена"
+
+BTN_CONSILIUM = "🧠 Консилиум"
+CONSILIUM_OPEN = "📂 Открытые сделки"
+CONSILIUM_SETUP = "🎯 Новый сетап"
+
+BTN_AI_MARKET = "🌐 Обзор рынка"
+BTN_AI_TRENDS = "📊 Тренды"
+BTN_AI_LEARN = "📊 Анализ журнала"
+
+# Navigation buttons set
+NAV_BUTTONS = {
     BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
-    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
     BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
-    NAV_BUTTONS,
-)
-from handlers.trading import show_balance, show_last_trades, show_stats, show_ai_analysis
-from handlers.ai import (
-    show_market_overview, show_trends, show_journal_analysis,
-    consilium_menu, consilium_open_positions, consilium_analyze_position,
-    consilium_new_setup, consilium_process_setup,
-)
-from handlers.journal import show_journal
-from handlers.system import show_help
-from services.comment_manager import save_comment
-
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+    BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
+}
 
 
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_chat.id) != CHAT_ID:
-        return
-    text = update.message.text.strip()
-    state = context.user_data.get('state')
-    db = get_db()
+def main_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        [[BTN_TRADING], [BTN_AI, BTN_JOURNAL], [BTN_HELP]],
+        resize_keyboard=True
+    )
 
-    if text == BTN_CANCEL:
-        if state == 'consilium_setup_input':
-            context.user_data['state'] = None
-            await update.message.reply_text("Отменено.", reply_markup=ai_menu_keyboard())
-            return
-        if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
-            context.user_data['state'] = None
-            context.user_data.pop('comment_order_id', None)
-            context.user_data.pop('entry_order_id', None)
-            await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
-            return
 
-    if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
-        if text in NAV_BUTTONS or text.startswith("🏠 *"):
-            await update.message.reply_text("⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.", reply_markup=cancel_keyboard())
-            return
+def trading_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        [[BTN_BALANCE, BTN_LAST_TRADES], [BTN_STATS, BTN_AI_ANALYSIS], [BTN_BACK]],
+        resize_keyboard=True
+    )
 
-    if state == 'entering_comment_inline':
-        order_id = context.user_data.get('comment_order_id')
-        if order_id:
-            success = save_comment(order_id, text)
-            if success:
-                await update.message.reply_text(f"✅ Комментарий сохранён для сделки #{order_id}!", reply_markup=trading_menu_keyboard())
-            else:
-                await update.message.reply_text("❌ Сделка не найдена.", reply_markup=trading_menu_keyboard())
-        context.user_data['state'] = None
-        context.user_data.pop('comment_order_id', None)
-        return
 
-    if state == 'entering_exit_reason':
-        trade_id = context.user_data.get('comment_order_id')
-        if trade_id:
-            db.update_trade_metrics(trade_id, exit_comment=text)
-            await update.message.reply_text("✅ Вывод сохранён.", reply_markup=trading_menu_keyboard())
-        context.user_data['state'] = None
-        context.user_data.pop('comment_order_id', None)
-        return
+def ai_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        [[BTN_CONSILIUM], [BTN_AI_MARKET, BTN_AI_TRENDS], [BTN_AI_LEARN], [BTN_BACK]],
+        resize_keyboard=True
+    )
 
-    if state == 'entering_entry_reason':
-        order_id = context.user_data.get('entry_order_id')
-        if order_id:
-            db.update_open_trade_by_order_id(order_id, entry_comment=text)
-            await update.message.reply_text("✅ Причина входа сохранена.", reply_markup=trading_menu_keyboard())
-        context.user_data['state'] = None
-        return
 
-    if state == 'consilium_choose_position':
-        await consilium_analyze_position(update, context)
-        return
-    if state == 'consilium_setup_input':
-        await consilium_process_setup(update, context)
-        return
-
-    if text == BTN_TRADING:
-        await update.message.reply_text("📈 *Trading*\nВыбери действие:", parse_mode='Markdown', reply_markup=trading_menu_keyboard())
-    elif text == BTN_AI:
-        await update.message.reply_text("🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
-    elif text == BTN_JOURNAL:
-        await show_journal(update)
-    elif text == BTN_HELP:
-        await show_help(update)
-    elif text == BTN_BACK:
-        await update.message.reply_text("🏠 *Главное меню*\nВыбери раздел:", parse_mode='Markdown', reply_markup=main_menu_keyboard())
-    elif text == BTN_BALANCE:
-        await show_balance(update)
-    elif text == BTN_LAST_TRADES:
-        await show_last_trades(update)
-    elif text == BTN_STATS:
-        await show_stats(update)
-    elif text == BTN_AI_ANALYSIS:
-        await show_ai_analysis(update)
-    elif text == BTN_CONSILIUM:
-        await consilium_menu(update)
-    elif text == CONSILIUM_OPEN:
-        await consilium_open_positions(update, context)
-    elif text == CONSILIUM_SETUP:
-        await consilium_new_setup(update, context)
-    elif text == BTN_AI_MARKET:
-        await show_market_overview(update)
-    elif text == BTN_AI_TRENDS:
-        await show_trends(update)
-    elif text == BTN_AI_LEARN:
-        await show_journal_analysis(update)
-    else:
-        await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
+def cancel_keyboard():
+    return ReplyKeyboardMarkup([[BTN_CANCEL]], resize_keyboard=True)
