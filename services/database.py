@@ -1,6 +1,7 @@
 """
 services/database.py
 Refactored database layer with atomic transactions, thread safety, retry logic.
+Prepared for multi-user support (user_id column added).
 """
 
 import sqlite3
@@ -36,13 +37,13 @@ def retry_on_locked(max_attempts: int = 3, delay: float = 0.2):
 
 
 class Database:
-    """Thread-safe SQLite manager (singleton) with WAL mode, atomic close, retries."""
+    """Thread-safe SQLite manager (singleton) with WAL mode, atomic close, retries.
+    All tables include user_id for future multi-user support."""
 
     _instance = None
     _lock_init = threading.Lock()
 
     def __new__(cls, db_path: str = DB_PATH):
-        # Singleton: ensure only one instance and one connection
         if cls._instance is None:
             with cls._lock_init:
                 if cls._instance is None:
@@ -68,11 +69,12 @@ class Database:
             self.conn.execute("PRAGMA foreign_keys=ON;")
 
     def _migrate(self):
-        """Create tables/indexes if missing, add new columns safely."""
+        """Create tables/indexes if missing, add new columns safely (including user_id)."""
         with self.lock:
             self.conn.executescript("""
                 CREATE TABLE IF NOT EXISTS open_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT DEFAULT 'default',
                     orderId TEXT UNIQUE NOT NULL,
                     symbol TEXT NOT NULL,
                     side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
@@ -87,6 +89,7 @@ class Database:
                 );
                 CREATE TABLE IF NOT EXISTS closed_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT DEFAULT 'default',
                     symbol TEXT NOT NULL,
                     side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
                     entry_price REAL NOT NULL,
@@ -114,25 +117,30 @@ class Database:
                     closed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS trader_memory (
+                    user_id TEXT DEFAULT 'default',
                     category TEXT NOT NULL,
                     key TEXT NOT NULL,
                     value TEXT NOT NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (category, key)
+                    PRIMARY KEY (user_id, category, key)
                 );
                 CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
                 CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
+                CREATE INDEX IF NOT EXISTS idx_closed_user_id ON closed_trades(user_id);
+                CREATE INDEX IF NOT EXISTS idx_open_user_id ON open_trades(user_id);
             """)
 
-            # Add missing columns (safe migration)
+            # Add missing columns (safe migration — adds user_id if missing)
             for table, cols in {
                 'open_trades': [
+                    ('user_id', "TEXT DEFAULT 'default'"),
                     ('orderId', 'TEXT NOT NULL DEFAULT ""'),
                     ('stop_loss', 'REAL'),
                     ('take_profit', 'REAL'),
                     ('entry_comment', "TEXT DEFAULT ''")
                 ],
                 'closed_trades': [
+                    ('user_id', "TEXT DEFAULT 'default'"),
                     ('orderId', 'TEXT'),
                     ('risk_percent', 'REAL DEFAULT 0'),
                     ('leverage', 'REAL DEFAULT 1'),
@@ -163,6 +171,11 @@ class Database:
                         logger.info(f"Added column {col} to {table}")
                     except sqlite3.OperationalError:
                         pass
+
+            # Update existing rows to have default user_id if they were NULL
+            self.conn.execute("UPDATE open_trades SET user_id = 'default' WHERE user_id IS NULL")
+            self.conn.execute("UPDATE closed_trades SET user_id = 'default' WHERE user_id IS NULL")
+            self.conn.execute("UPDATE trader_memory SET user_id = 'default' WHERE user_id IS NULL")
 
             # Cleanup any NULL orderIds (shouldn't exist with NOT NULL, but just in case)
             self.conn.execute("DELETE FROM open_trades WHERE orderId IS NULL OR orderId = ''")
@@ -217,13 +230,14 @@ class Database:
             # Insert into closed_trades
             insert_sql = """
                 INSERT INTO closed_trades 
-                (orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
+                (user_id, orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
                  risk_percent, leverage, stop_loss, take_profit, risk_reward,
                  open_time, close_time, entry_comment, exit_comment, ai_review,
                  holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (
+                closed_trade_data.get('user_id', 'default'),
                 closed_trade_data.get('orderId', order_id),
                 closed_trade_data['symbol'],
                 closed_trade_data['side'],
@@ -259,8 +273,8 @@ class Database:
             return new_id
 
     # ==================== existing methods (backward compatible) ====================
-    def get_open_trades(self):
-        rows = self._execute("SELECT * FROM open_trades").fetchall()
+    def get_open_trades(self, user_id: str = 'default'):
+        rows = self._execute("SELECT * FROM open_trades WHERE user_id = ?", (user_id,)).fetchall()
         return [dict(row) for row in rows]
 
     def add_open_trade(self, trade: dict):
@@ -268,12 +282,13 @@ class Database:
         if not trade.get('orderId'):
             raise ValueError("orderId is required")
         sql = """
-            INSERT INTO open_trades (orderId, symbol, side, entry_price, quantity, leverage,
+            INSERT INTO open_trades (user_id, orderId, symbol, side, entry_price, quantity, leverage,
                                      unrealized_pnl, stop_loss, take_profit, entry_comment)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self.transaction():
             self._execute(sql, (
+                trade.get('user_id', 'default'),
                 trade['orderId'],
                 trade['symbol'], trade['side'], trade['entry_price'],
                 trade['quantity'], trade.get('leverage', 1),
@@ -331,13 +346,14 @@ class Database:
             raise ValueError("orderId is required for closed trade")
         sql = """
             INSERT INTO closed_trades 
-            (orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
+            (user_id, orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
              risk_percent, leverage, stop_loss, take_profit, risk_reward,
              open_time, close_time, entry_comment, exit_comment, ai_review,
              holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
+            trade.get('user_id', 'default'),
             trade['orderId'],
             trade['symbol'], trade['side'], trade['entry_price'], trade['exit_price'],
             trade['quantity'], trade['realized_pnl'], trade.get('comment', ''),
@@ -354,9 +370,9 @@ class Database:
             self._execute(sql, params)
             logger.info(f"Closed trade added: orderId={trade['orderId']}")
 
-    def get_closed_trades(self, limit: int = 50, symbol: str = None):
-        query = "SELECT * FROM closed_trades WHERE (entry_price != 0 OR realized_pnl != 0)"
-        params = []
+    def get_closed_trades(self, limit: int = 50, symbol: str = None, user_id: str = 'default'):
+        query = "SELECT * FROM closed_trades WHERE (entry_price != 0 OR realized_pnl != 0) AND user_id = ?"
+        params = [user_id]
         if symbol:
             query += " AND symbol = ?"
             params.append(symbol)
@@ -365,7 +381,7 @@ class Database:
         rows = self._execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
-    def get_stats(self):
+    def get_stats(self, user_id: str = 'default'):
         row = self._execute("""
             SELECT
                 COUNT(*) AS total_trades,
@@ -377,8 +393,8 @@ class Database:
                 MAX(realized_pnl) AS best_trade,
                 MIN(realized_pnl) AS worst_trade
             FROM closed_trades
-            WHERE realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)
-        """).fetchone()
+            WHERE user_id = ? AND realized_pnl != 0 AND (entry_price != 0 OR realized_pnl != 0)
+        """, (user_id,)).fetchone()
 
         total = row['total_trades'] or 0
         if total == 0:
@@ -391,16 +407,16 @@ class Database:
             }
 
         best_row = self._execute(
-            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
-            (row['best_trade'],)
+            "SELECT symbol FROM closed_trades WHERE user_id = ? AND realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
+            (user_id, row['best_trade'])
         ).fetchone()
         worst_row = self._execute(
-            "SELECT symbol FROM closed_trades WHERE realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
-            (row['worst_trade'],)
+            "SELECT symbol FROM closed_trades WHERE user_id = ? AND realized_pnl = ? AND (entry_price != 0 OR realized_pnl != 0) ORDER BY close_time DESC LIMIT 1",
+            (user_id, row['worst_trade'])
         ).fetchone()
 
-        unrealized = self._execute("SELECT SUM(unrealized_pnl) FROM open_trades").fetchone()[0] or 0.0
-        open_count = self._execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
+        unrealized = self._execute("SELECT SUM(unrealized_pnl) FROM open_trades WHERE user_id = ?", (user_id,)).fetchone()[0] or 0.0
+        open_count = self._execute("SELECT COUNT(*) FROM open_trades WHERE user_id = ?", (user_id,)).fetchone()[0]
 
         return {
             'total_trades': total,
@@ -451,33 +467,36 @@ class Database:
         row = self._execute("SELECT MAX(id) FROM closed_trades").fetchone()
         return row[0] if row else None
 
-    # ─── Memory Engine ───
-    def memory_set(self, category: str, key: str, value: str):
+    # ─── Memory Engine (user-scoped) ───
+    def memory_set(self, category: str, key: str, value: str, user_id: str = 'default'):
         sql = """
-            INSERT INTO trader_memory (category, key, value, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(category, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            INSERT INTO trader_memory (user_id, category, key, value, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, category, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
         """
         with self.transaction():
-            self._execute(sql, (category, key, value))
+            self._execute(sql, (user_id, category, key, value))
 
-    def memory_get(self, category: str, key: str):
-        row = self._execute("SELECT value FROM trader_memory WHERE category = ? AND key = ?", (category, key)).fetchone()
+    def memory_get(self, category: str, key: str, user_id: str = 'default'):
+        row = self._execute(
+            "SELECT value FROM trader_memory WHERE user_id = ? AND category = ? AND key = ?",
+            (user_id, category, key)
+        ).fetchone()
         return row['value'] if row else None
 
-    def memory_get_all(self, category: str):
-        rows = self._execute("SELECT key, value FROM trader_memory WHERE category = ?", (category,)).fetchall()
+    def memory_get_all(self, category: str, user_id: str = 'default'):
+        rows = self._execute(
+            "SELECT key, value FROM trader_memory WHERE user_id = ? AND category = ?",
+            (user_id, category)
+        ).fetchall()
         return {row['key']: row['value'] for row in rows}
 
 
 # ─── backward compatible module-level proxies ───
-# Old code uses `Database.static_method()` or imported functions;
-# they'll all work through the singleton instance.
+_default_db = Database()
 
-_default_db = Database()   # force instantiation of singleton
-
-def get_open_trades():
-    return _default_db.get_open_trades()
+def get_open_trades(user_id='default'):
+    return _default_db.get_open_trades(user_id)
 
 def add_open_trade(trade):
     _default_db.add_open_trade(trade)
@@ -500,11 +519,11 @@ def cleanup_orphan_open_trades():
 def add_closed_trade(trade):
     _default_db.add_closed_trade(trade)
 
-def get_closed_trades(limit=50, symbol=None):
-    return _default_db.get_closed_trades(limit, symbol)
+def get_closed_trades(limit=50, symbol=None, user_id='default'):
+    return _default_db.get_closed_trades(limit, symbol, user_id)
 
-def get_stats():
-    return _default_db.get_stats()
+def get_stats(user_id='default'):
+    return _default_db.get_stats(user_id)
 
 def add_comment(trade_id, comment):
     _default_db.add_comment(trade_id, comment)
@@ -518,19 +537,17 @@ def update_trade_metrics(trade_id, **kwargs):
 def get_last_closed_id():
     return _default_db.get_last_closed_id()
 
-def memory_set(category, key, value):
-    _default_db.memory_set(category, key, value)
+def memory_set(category, key, value, user_id='default'):
+    _default_db.memory_set(category, key, value, user_id)
 
-def memory_get(category, key):
-    return _default_db.memory_get(category, key)
+def memory_get(category, key, user_id='default'):
+    return _default_db.memory_get(category, key, user_id)
 
-def memory_get_all(category):
-    return _default_db.memory_get_all(category)
+def memory_get_all(category, user_id='default'):
+    return _default_db.memory_get_all(category, user_id)
 
-# New atomic close
 def close_trade_atomic(order_id, closed_trade_data):
     return _default_db.close_trade_atomic(order_id, closed_trade_data)
 
-# Legacy init_db — no longer needed, kept for compatibility
 def init_db():
     pass
