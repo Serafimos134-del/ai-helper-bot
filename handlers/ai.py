@@ -114,7 +114,7 @@ async def show_journal_analysis(update: Update):
         f"Журнал сделок:\n{trades_text}"
     )
     answer = await ai_analyzer.analyze_raw(prompt)
-    await msg.edit_text(f"📊 *Анализ журнала:*\n\n{answer[:3500]}")
+    await msg.edit_text(f"📊 Анализ журнала:\n\n{answer[:3500]}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -218,7 +218,7 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
         emoji = verdict_emoji.get(verdict_text, '⚪')
         response += f"⚖️ Вердикт: {emoji} {verdict_text} ({final_score}/100)\n"
         if verdict_summary:
-            response += f"_{verdict_summary}_\n"
+            response += f"{verdict_summary}\n"
         if warnings:
             response += "\n⚠️ Предупреждения:\n"
             for w in warnings:
