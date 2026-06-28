@@ -1,30 +1,7 @@
-cat > /opt/ai-helper-bot/requirements.txt << 'EOF'
 python-telegram-bot[job-queue]==20.7
 httpx[socks]==0.27.0
 requests[socks]==2.31.0
 python-dotenv==1.0.0
 flask==3.0.0
-psycopg2-binary==2.9.9
-EOF
-
-cat > /opt/ai-helper-bot/.env.example << 'EOF'
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
-
-# BingX API
-BINGX_API_KEY=your_api_key_here
-BINGX_SECRET_KEY=your_secret_key_here
-
-# AI Provider (Groq)
-GROQ_API_KEY=your_groq_key_here
-
-# Proxy (опционально)
-# HTTP_PROXY=socks5://user:pass@host:port
-# HTTPS_PROXY=socks5://user:pass@host:port
-
-# База данных (опционально, по умолчанию SQLite)
-# DATABASE_URL=postgresql://user:pass@localhost:5432/ai_helper_bot
-EOF
-
-cd /opt/ai-helper-bot && git pull && systemctl restart ai-helper-bot && journalctl -u ai-helper-bot -f
+groq>=0.9.0
+aiohttp>=3.9.0
