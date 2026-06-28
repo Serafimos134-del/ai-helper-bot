@@ -25,6 +25,40 @@ _sync_lock = asyncio.Lock()
 # ─── Защита от ложных закрытий ───
 _missing_cycles: dict = {}
 _missing_cycles_lock = asyncio.Lock()
+_MISSING_CYCLES_CATEGORY = 'missing_cycles'
+
+
+def _load_missing_cycles() -> dict:
+    """Загружает счётчики пропусков из БД при старте (переживают рестарт)."""
+    try:
+        raw = db.memory_get_all(_MISSING_CYCLES_CATEGORY)
+        return {k: int(v) for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+def _save_missing_cycle(oid: str, count: int):
+    """Сохраняет счётчик пропуска для позиции в БД."""
+    try:
+        db.memory_set(_MISSING_CYCLES_CATEGORY, oid, str(count))
+    except Exception as e:
+        logger.warning(f"Не удалось сохранить missing_cycle для {oid}: {e}")
+
+
+def _delete_missing_cycle(oid: str):
+    """Удаляет счётчик пропуска из БД."""
+    try:
+        db._execute(
+            "DELETE FROM trader_memory WHERE category = ? AND key = ?",
+            (_MISSING_CYCLES_CATEGORY, oid)
+        )
+        db._commit()
+    except Exception as e:
+        logger.warning(f"Не удалось удалить missing_cycle для {oid}: {e}")
+
+
+# Загружаем счётчики при старте — переживают рестарт бота
+_missing_cycles = _load_missing_cycles()
 _MISSING_THRESHOLD = 2   # закрываем только после 2 пропусков (30+ сек)
 
 
@@ -62,7 +96,6 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
                                 judge_verdict=analysis['judge_verdict'])
         logger.info(f"Сделка #{trade_id} проанализирована консилиумом: {analysis['judge_verdict']}")
 
-        # Обновляем Memory Engine
         try:
             mem = MemoryEngine()
             await mem.update(closed_trade)
@@ -70,7 +103,6 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
         except Exception as mem_e:
             logger.error(f"Ошибка обновления Memory Engine для сделки #{trade_id}: {mem_e}")
 
-        # Отправляем результаты AI-анализа отдельным сообщением
         try:
             symbol = stored.get('symbol', '?')
             side = stored.get('side', '?')
@@ -100,7 +132,6 @@ async def sync_trades(bot, chat_id: str) -> dict:
     Основной цикл синхронизации. Защищён глобальной блокировкой,
     чтобы исключить параллельное выполнение.
     """
-    # Если синхронизация уже идёт — пропускаем этот цикл
     if _sync_lock.locked():
         logger.debug("Синхронизация пропущена (уже выполняется)")
         return {'new_open': [], 'new_closed': []}
@@ -114,7 +145,6 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
     results = {'new_open': [], 'new_closed': []}
     logger.info("=== Синхронизация начата ===")
 
-    # 1. Получаем открытые позиции из API
     try:
         open_result = await get_open_positions()
     except Exception as e:
@@ -127,7 +157,6 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
 
     api_trades = open_result.get('trades', [])
 
-    # Фильтруем позиции без orderId (недействительные)
     valid_api_trades = []
     for t in api_trades:
         oid = t.get('orderId')
@@ -139,7 +168,6 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
 
     api_ids = {str(t.get('orderId')) for t in api_trades}
 
-    # 2. Получаем открытые сделки из локальной БД
     stored_open = await asyncio.to_thread(db.get_open_trades)
     stored_by_id = {}
     for t in stored_open:
@@ -147,18 +175,17 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
         if oid:
             stored_by_id[oid] = t
 
-    # 3. Обрабатываем позиции из API
     async with _missing_cycles_lock:
         for trade in api_trades:
             oid = str(trade.get('orderId'))
             raw_side = trade.get('side', '')
             side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
 
-            # Сбрасываем счётчик пропусков, т.к. позиция присутствует
-            _missing_cycles.pop(oid, None)
+            if oid in _missing_cycles:
+                _missing_cycles.pop(oid, None)
+                _delete_missing_cycle(oid)
 
             if oid in stored_by_id:
-                # Обновляем существующую позицию
                 try:
                     await asyncio.to_thread(db.update_open_trade_by_order_id,
                         oid,
@@ -173,7 +200,6 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
                     logger.error(f"Ошибка обновления позиции {oid}: {e}")
                 stored_by_id.pop(oid)
             else:
-                # Новая позиция
                 try:
                     await asyncio.to_thread(db.add_open_trade, {
                         'orderId': trade.get('orderId'),
@@ -194,7 +220,6 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
                 except Exception as e:
                     logger.error(f"Ошибка добавления новой позиции {oid}: {e}")
 
-        # 4. Определяем закрытые позиции (отсутствуют в API два цикла)
         truly_closed = {}
         for oid, stored in list(stored_by_id.items()):
             if oid in api_ids:
@@ -202,27 +227,26 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
 
             cycles = _missing_cycles.get(oid, 0) + 1
             _missing_cycles[oid] = cycles
+            _save_missing_cycle(oid, cycles)
 
             if cycles >= _MISSING_THRESHOLD:
                 _missing_cycles.pop(oid, None)
+                _delete_missing_cycle(oid)
                 truly_closed[oid] = stored
             else:
                 logger.info(f"Позиция {oid} ({stored.get('symbol')}) отсутствует {cycles}/{_MISSING_THRESHOLD} циклов — ждём подтверждения")
 
-        # Удаляем из счётчика позиции, которых уже нет в stored_by_id (на всякий случай)
         for oid in list(_missing_cycles.keys()):
             if oid not in stored_by_id:
                 _missing_cycles.pop(oid, None)
+                _delete_missing_cycle(oid)
 
-    # 5. Закрываем подтверждённо закрытые позиции
     for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored)
         try:
-            # Атомарно переносим из open в closed
             new_id = await asyncio.to_thread(db.close_trade_atomic, oid, closed_trade)
             results['new_closed'].append(stored)
-            await _notify_closed_trade(bot, chat_id, stored, closed_trade['realized_pnl'], new_id)
-            # Запускаем AI-анализ в фоне
+            await _notify_closed_trade(bot, chat_id, closed_trade, closed_trade['realized_pnl'], new_id)
             asyncio.create_task(_analyze_and_notify(bot, chat_id, new_id, closed_trade, stored))
         except sqlite3.IntegrityError:
             logger.warning(f"Закрытие сделки {oid}: дубликат в closed_trades (возможно уже закрыта)")
@@ -254,7 +278,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
     exit_price = _calculate_exit_price(stored_open)
 
     return {
-        'orderId': stored_open['orderId'],          # обязательно для NOT NULL
+        'orderId': stored_open['orderId'],
         'symbol': stored_open['symbol'],
         'side': stored_open['side'],
         'entry_price': float(stored_open.get('entry_price', 0)),
@@ -317,7 +341,6 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
         side = trade.get('side', '?')
         pnl_emoji = "✅" if pnl >= 0 else "❌"
         exit_price = trade.get('exit_price', 0)
-        # exit_price_source больше нет, так как мы не храним его в БД
         text = (
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
