@@ -8,14 +8,13 @@ logger = logging.getLogger(__name__)
 
 
 class MarketAgent:
-    """Агент, анализирующий рыночную ситуацию (расширенный контекст v2)."""
+    """Агент, анализирующий рыночную ситуацию."""
 
     def __init__(self, provider: BaseProvider):
         self.provider = provider
         self.context_builder = ContextBuilder()
 
     async def analyze(self, context: dict = None) -> str:
-        """Асинхронно анализирует рыночный контекст и возвращает структурированное заключение."""
         loop = asyncio.get_running_loop()
         if context is None:
             context = self.context_builder._build_market_context()
@@ -23,13 +22,13 @@ class MarketAgent:
         logger.info(f"MARKET AGENT PROMPT:\n{prompt}")
         try:
             response = await loop.run_in_executor(None, self.provider.generate, prompt)
-            # Проверка на отказ Groq — явный сигнал деградации
+
             if response.startswith("AI analysis unavailable"):
                 return json.dumps({"market_score": 0, "analysis": response}, ensure_ascii=False)
-            # Извлекаем JSON из ответа LLM
+
             try:
                 start = response.find('{')
-                end = response.rfind('}') + 1
+                end   = response.rfind('}') + 1
                 if start >= 0 and end > start:
                     parsed = json.loads(response[start:end])
                     if 'market_score' not in parsed:
@@ -39,86 +38,90 @@ class MarketAgent:
                     return json.dumps(parsed, ensure_ascii=False)
             except Exception:
                 pass
-            fallback = {"market_score": 50, "analysis": response}
-            return json.dumps(fallback, ensure_ascii=False)
+
+            return json.dumps({"market_score": 50, "analysis": response}, ensure_ascii=False)
+
         except Exception as e:
             logger.error(f"MarketAgent error: {e}")
             return json.dumps({"market_score": 0, "analysis": f"Рыночный анализ недоступен: {e}"}, ensure_ascii=False)
 
     def _build_market_prompt(self, ctx: dict) -> str:
-        market = ctx.get("market", {}) or ctx
-        btc = market.get("btc") or {}
-        eth = market.get("eth") or {}
-        top = market.get("top_movers") or []
-        trend = market.get("trend") or "NEUTRAL"
+        market       = ctx.get("market", {}) or ctx
+        btc          = market.get("btc") or {}
+        eth          = market.get("eth") or {}
+        top          = market.get("top_movers") or []
+        trend        = market.get("trend") or "NEUTRAL"
         market_regime = market.get("market_regime", "UNKNOWN")
+        ticker_info  = ctx.get("ticker") or {}
+        idea         = ctx.get("idea") or {}
 
-        ticker_info = ctx.get("ticker") or {}
-        idea = ctx.get("idea") or {}
-
-        btc_price = btc.get('price', 0) or 0
+        btc_price  = btc.get('price', 0) or 0
         btc_change = btc.get('change_24h', 0) or 0
-        btc_high = btc.get('high', 0) or 0
-        btc_low = btc.get('low', 0) or 0
-
-        eth_price = eth.get('price', 0) or 0
+        btc_high   = btc.get('high', 0) or 0
+        btc_low    = btc.get('low', 0) or 0
+        eth_price  = eth.get('price', 0) or 0
         eth_change = eth.get('change_24h', 0) or 0
-        eth_high = eth.get('high', 0) or 0
-        eth_low = eth.get('low', 0) or 0
-
-        prompt = (
-            "Ты — профессиональный рыночный аналитик. Дай КРАТКИЙ, КОНКРЕТНЫЙ анализ текущей ситуации "
-            "на основе предоставленных данных.\n\n"
-            "ПРАВИЛА (жёсткие):\n"
-            "1. ВЕРДИКТ: одно слово — BULLISH / BEARISH / NEUTRAL.\n"
-        )
 
         if ticker_info:
-            symbol = idea.get("symbol", ticker_info.get("symbol", ""))
+            symbol    = idea.get("symbol", ticker_info.get("symbol", ""))
             direction = idea.get("direction", "")
-            price = ticker_info.get('price', 'N/A')
-            change = ticker_info.get('change_24h', 0)
-            high = ticker_info.get('high', 'N/A')
-            low = ticker_info.get('low', 'N/A')
-            volume = ticker_info.get('volume', 0)
-            funding = ticker_info.get('funding_rate', 'N/A')
-            oi = ticker_info.get('open_interest', 'N/A')
-            atr = ticker_info.get('atr', 'N/A')
-            ticker_regime = ticker_info.get('market_regime', 'UNKNOWN')
+            price     = ticker_info.get('price', 'N/A')
+            change    = ticker_info.get('change_24h', 0)
+            high      = ticker_info.get('high', 'N/A')
+            low       = ticker_info.get('low', 'N/A')
+            volume    = ticker_info.get('volume', 0)
+            funding   = ticker_info.get('funding_rate', 'N/A')
+            oi        = ticker_info.get('open_interest', 'N/A')
+            atr       = ticker_info.get('atr', 'N/A')
+            regime    = ticker_info.get('market_regime', 'UNKNOWN')
 
-            prompt += (
-                f"2. АНАЛИЗ {symbol}:\n"
-                f"   - Цена: {price}, изменение 24ч: {change:+.2f}%\n"
-                f"   - Макс 24ч: {high}, Мин 24ч: {low}\n"
-                f"   - Объём 24ч: {volume:,.0f}\n"
-                f"   - Funding Rate: {funding}\n"
-                f"   - Open Interest: {oi}\n"
-                f"   - ATR (14): {atr} (волатильность)\n"
-                f"   - Режим рынка: {ticker_regime}\n"
-                f"3. СИГНАЛ ДЛЯ {direction if direction else 'сделки'}: BUY / SELL / WAIT с обоснованием в одно предложение.\n"
-            )
+            prompt = f"""Ты — опытный трейдер-аналитик криптофьючерсов. Проанализируй рыночную ситуацию и дай чёткое мнение.
+
+ДАННЫЕ ПО {symbol}:
+- Цена: {price} | Изменение 24ч: {change:+.2f}%
+- Максимум: {high} | Минимум: {low}
+- Объём 24ч: {volume:,.0f} USDT
+- Funding Rate: {funding} (положительный = перегрев лонгов)
+- Open Interest: {oi}
+- ATR(14): {atr} — волатильность
+- Режим рынка: {regime}
+
+ОБЩИЙ КОНТЕКСТ:
+- BTC: ${btc_price:.2f} ({btc_change:+.2f}%) | Режим: {market_regime}
+- ETH: ${eth_price:.2f} ({eth_change:+.2f}%)
+- Общий тренд: {trend}
+
+ЗАДАЧА: Оцени ситуацию для {'направления ' + direction if direction else 'новой позиции'} по {symbol}.
+
+Напиши анализ в 2-3 предложениях на русском языке. Конкретно:
+1. Что сейчас происходит с ценой и объёмом
+2. Есть ли признаки разворота или продолжения
+3. Твой вывод: входить сейчас или нет и почему
+
+Без перечисления цифр из данных выше — только твои выводы и интерпретация.
+
+Верни строго JSON (без markdown, без ```):
+{{"market_score": <число 0-100>, "analysis": "<твой анализ 2-3 предложения>"}}
+
+market_score: 85-100=сильный рост, 70-84=умеренный рост, 55-69=нейтрально, 40-54=умеренное снижение, <40=сильное снижение"""
+
         else:
-            prompt += (
-                "2. КЛЮЧЕВЫЕ УРОВНИ: поддержка и сопротивление для BTC и ETH (конкретные цены).\n"
-                "3. СИГНАЛ: BUY / SELL / WAIT с обоснованием в одно предложение.\n"
-            )
+            prompt = f"""Ты — опытный трейдер-аналитик криптофьючерсов. Дай краткий обзор рынка.
 
-        prompt += (
-            "4. Без воды, без markdown, без общих фраз. Только цифры и факты.\n\n"
-            f"Тренд: {trend}\n"
-            f"Режим рынка BTC: {market_regime}\n"
-            f"BTC: цена ${btc_price:.2f}, изм 24ч: {btc_change:+.2f}%, "
-            f"макс: ${btc_high:.2f}, мин: ${btc_low:.2f}\n"
-            f"ETH: цена ${eth_price:.2f}, изм 24ч: {eth_change:+.2f}%, "
-            f"макс: ${eth_high:.2f}, мин: ${eth_low:.2f}\n"
-            f"Топ-5 по объёму: {top}\n\n"
-            "Верни ответ строго в формате JSON:\n"
-            '{"market_score": <число 0-100>, "analysis": "<твой текстовый анализ>"}\n\n'
-            "market_score — твоя оценка уверенности в направлении:\n"
-            "85-100: сильный BUY-сигнал\n"
-            "70-84: умеренный BUY\n"
-            "55-69: нейтрально / WAIT\n"
-            "40-54: слабый SELL\n"
-            "менее 40: сильный SELL\n"
-        )
+ДАННЫЕ:
+- BTC: ${btc_price:.2f} ({btc_change:+.2f}%) | Макс: ${btc_high:.2f} | Мин: ${btc_low:.2f}
+- ETH: ${eth_price:.2f} ({eth_change:+.2f}%)
+- Режим рынка: {market_regime} | Тренд: {trend}
+- Топ монеты по объёму: {top}
+
+Напиши анализ в 2-3 предложениях на русском:
+1. Общий настрой рынка прямо сейчас
+2. На что обратить внимание трейдеру
+3. Рекомендация: осторожно / активно / лучше подождать
+
+Без перечисления цифр — только твои выводы.
+
+Верни строго JSON (без markdown, без ```):
+{{"market_score": <число 0-100>, "analysis": "<твой анализ 2-3 предложения>"}}"""
+
         return prompt
