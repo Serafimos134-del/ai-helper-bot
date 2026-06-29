@@ -6,6 +6,7 @@ Refactored sync engine with global lock, atomic trade closing, and error resilie
 import asyncio
 import logging
 import sqlite3
+import json
 from datetime import datetime, timezone
 from services.bingx_api import get_open_positions
 from services.database import Database
@@ -29,7 +30,6 @@ _MISSING_CYCLES_CATEGORY = 'missing_cycles'
 
 
 def _load_missing_cycles() -> dict:
-    """Загружает счётчики пропусков из БД при старте (переживают рестарт)."""
     try:
         raw = db.memory_get_all(_MISSING_CYCLES_CATEGORY)
         return {k: int(v) for k, v in raw.items()}
@@ -38,7 +38,6 @@ def _load_missing_cycles() -> dict:
 
 
 def _save_missing_cycle(oid: str, count: int):
-    """Сохраняет счётчик пропуска для позиции в БД."""
     try:
         db.memory_set(_MISSING_CYCLES_CATEGORY, oid, str(count))
     except Exception as e:
@@ -46,7 +45,6 @@ def _save_missing_cycle(oid: str, count: int):
 
 
 def _delete_missing_cycle(oid: str):
-    """Удаляет счётчик пропуска из БД."""
     try:
         db._execute(
             "DELETE FROM trader_memory WHERE category = ? AND key = ?",
@@ -57,13 +55,11 @@ def _delete_missing_cycle(oid: str):
         logger.warning(f"Не удалось удалить missing_cycle для {oid}: {e}")
 
 
-# Загружаем счётчики при старте — переживают рестарт бота
 _missing_cycles = _load_missing_cycles()
 _MISSING_THRESHOLD = 2
 
 
 def _calculate_exit_price(trade: dict) -> float:
-    """Вычисляет реальную цену выхода на основе PnL и размера позиции."""
     entry = float(trade.get('entry_price', 0))
     qty   = float(trade.get('quantity', 0))
     pnl   = float(trade.get('unrealized_pnl', 0))
@@ -73,11 +69,27 @@ def _calculate_exit_price(trade: dict) -> float:
     return entry + (pnl / qty) if side == 'LONG' else entry - (pnl / qty)
 
 
+def _format_verdict(verdict_raw) -> str:
+    """Парсит judge_verdict из JSON и возвращает читаемую строку."""
+    try:
+        verdict = json.loads(verdict_raw) if isinstance(verdict_raw, str) else verdict_raw
+        verdict_text    = verdict.get('verdict', '—')
+        final_score     = verdict.get('final_score', '—')
+        verdict_summary = verdict.get('summary', '')
+        warnings        = verdict.get('warnings', [])
+        emoji_map = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
+        emoji = emoji_map.get(verdict_text, '⚪')
+        result = f"{emoji} {verdict_text} ({final_score}/100)"
+        if verdict_summary:
+            result += f"\n{verdict_summary}"
+        if warnings:
+            result += "\n⚠️ " + " | ".join(warnings)
+        return result
+    except Exception:
+        return str(verdict_raw)
+
+
 async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict):
-    """
-    Фоновый анализ закрытой сделки: Consensus Engine + Trade Scorer.
-    Выполняется асинхронно, не блокирует основной sync loop.
-    """
     from ai.memory_engine import MemoryEngine
 
     try:
@@ -85,28 +97,29 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
         engine = ConsensusEngine(ai_provider)
         analysis = await engine.analyze_closed_trade(closed_trade)
         score = trade_scorer.score(closed_trade)
+
         await asyncio.to_thread(db.update_trade_metrics, trade_id,
                                 ai_score=score['total_score'],
                                 market_review=analysis['market_review'],
                                 risk_review=analysis['risk_review'],
                                 psychology_review=analysis['psychology_review'],
                                 judge_verdict=analysis['judge_verdict'])
-        logger.info(f"Сделка #{trade_id} проанализирована консилиумом: {analysis['judge_verdict']}")
+        logger.info(f"Сделка #{trade_id} проанализирована")
 
         try:
             mem = MemoryEngine()
             await mem.update(closed_trade)
-            logger.info(f"Memory Engine обновлён для сделки #{trade_id}")
         except Exception as mem_e:
-            logger.error(f"Ошибка обновления Memory Engine для сделки #{trade_id}: {mem_e}")
+            logger.error(f"Ошибка Memory Engine для сделки #{trade_id}: {mem_e}")
 
         try:
+            verdict_line = _format_verdict(analysis.get('judge_verdict', '{}'))
             text = (
-                f"🧠 *AI-разбор сделки #{trade_id}*\n\n"
-                f"📈 Рынок: {analysis.get('market_review', '—')}\n\n"
-                f"⚠️ Риск: {analysis.get('risk_review', '—')}\n\n"
-                f"🧘 Психология: {analysis.get('psychology_review', '—')}\n\n"
-                f"⚖️ Вердикт: {analysis.get('judge_verdict', '—')}"
+                f"🧠 AI-разбор сделки #{trade_id}\n\n"
+                f"📈 Рынок:\n{analysis.get('market_review', '—')}\n\n"
+                f"⚠️ Риск:\n{analysis.get('risk_review', '—')}\n\n"
+                f"🧘 Психология:\n{analysis.get('psychology_review', '—')}\n\n"
+                f"⚖️ Вердикт: {verdict_line}"
             )
             await bot.send_message(chat_id=chat_id, text=text)
         except Exception as notify_e:
@@ -118,7 +131,7 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
             score = trade_scorer.score(closed_trade)
             await asyncio.to_thread(db.update_trade_metrics, trade_id, ai_score=score['total_score'])
         except Exception as fallback_e:
-            logger.error(f"Ошибка даже fallback-оценки для сделки #{trade_id}: {fallback_e}")
+            logger.error(f"Ошибка fallback-оценки для сделки #{trade_id}: {fallback_e}")
 
 
 async def sync_trades(bot, chat_id: str) -> dict:
@@ -156,7 +169,7 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
 
     async with _missing_cycles_lock:
         for trade in api_trades:
-            oid = str(trade['orderId'])
+            oid  = str(trade['orderId'])
             side = trade.get('side', '')
 
             if oid in _missing_cycles:
@@ -180,16 +193,16 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
             else:
                 try:
                     await asyncio.to_thread(db.add_open_trade, {
-                        'orderId':       trade['orderId'],
-                        'symbol':        trade.get('symbol'),
-                        'side':          side,
-                        'entry_price':   float(trade.get('entryPrice', 0)),
-                        'quantity':      abs(float(trade.get('positionAmt', trade.get('size', 0)))),
-                        'leverage':      float(trade.get('leverage', 1)),
+                        'orderId':        trade['orderId'],
+                        'symbol':         trade.get('symbol'),
+                        'side':           side,
+                        'entry_price':    float(trade.get('entryPrice', 0)),
+                        'quantity':       abs(float(trade.get('positionAmt', trade.get('size', 0)))),
+                        'leverage':       float(trade.get('leverage', 1)),
                         'unrealized_pnl': float(trade.get('unrealizedPnl', 0)),
-                        'stop_loss':     trade.get('stopLoss'),
-                        'take_profit':   trade.get('takeProfit'),
-                        'entry_comment': ''
+                        'stop_loss':      trade.get('stopLoss'),
+                        'take_profit':    trade.get('takeProfit'),
+                        'entry_comment':  ''
                     })
                     results['new_open'].append(trade)
                     await _notify_new_trade(bot, chat_id, trade)
@@ -236,7 +249,6 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
 
 
 def _build_closed_trade(stored_open: dict) -> dict:
-    """Формирует данные для вставки в closed_trades."""
     now = datetime.now(timezone.utc)
     open_time = stored_open.get('created_at')
     close_time = now.isoformat()
@@ -244,11 +256,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
 
     if open_time:
         try:
-            if isinstance(open_time, str):
-                open_dt = datetime.fromisoformat(open_time)
-            else:
-                open_dt = open_time
-            # ─── FIX: приводим к UTC если naive datetime ───
+            open_dt = datetime.fromisoformat(open_time) if isinstance(open_time, str) else open_time
             if open_dt.tzinfo is None:
                 open_dt = open_dt.replace(tzinfo=timezone.utc)
             holding_minutes = int((now - open_dt).total_seconds() / 60)
@@ -290,17 +298,16 @@ def _build_closed_trade(stored_open: dict) -> dict:
 
 async def _notify_new_trade(bot, chat_id: str, trade: dict):
     try:
-        symbol   = trade.get('symbol', '?')
-        side     = trade.get('side', '')
-        entry    = float(trade.get('entryPrice', 0))
-        size     = abs(float(trade.get('positionAmt', trade.get('size', 0))))
-        leverage = trade.get('leverage', 1)
-        sl       = trade.get('stopLoss')
-        tp       = trade.get('takeProfit')
+        symbol     = trade.get('symbol', '?')
+        side       = trade.get('side', '')
+        entry      = float(trade.get('entryPrice', 0))
+        size       = abs(float(trade.get('positionAmt', trade.get('size', 0))))
+        leverage   = trade.get('leverage', 1)
+        sl         = trade.get('stopLoss')
+        tp         = trade.get('takeProfit')
         side_emoji = "🟢" if side == 'LONG' else "🔴"
-
-        sl_line = f"🛑 Стоп: ${float(sl):.4f}\n" if sl else ""
-        tp_line = f"🎯 Тейк: ${float(tp):.4f}\n" if tp else ""
+        sl_line    = f"🛑 Стоп: ${float(sl):.4f}\n" if sl else ""
+        tp_line    = f"🎯 Тейк: ${float(tp):.4f}\n" if tp else ""
 
         text = (
             f"🔔 *Новая позиция открыта!*\n\n"
@@ -328,19 +335,17 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
         pnl_emoji  = "✅" if pnl >= 0 else "❌"
         exit_price = trade.get('exit_price', 0)
         holding    = trade.get('holding_minutes')
+        sl         = trade.get('stop_loss')
+        tp         = trade.get('take_profit')
 
-        duration_line = ""
-        if holding is not None:
-            if holding < 60:
-                duration_line = f"⏱ Длительность: {holding} мин\n"
-            else:
-                h, m = divmod(holding, 60)
-                duration_line = f"⏱ Длительность: {h}ч {m}мин\n"
-
-        sl  = trade.get('stop_loss')
-        tp  = trade.get('take_profit')
         sl_line = f"🛑 Стоп: ${float(sl):.4f}\n" if sl else ""
         tp_line = f"🎯 Тейк: ${float(tp):.4f}\n" if tp else ""
+
+        if holding is not None:
+            h, m = divmod(holding, 60)
+            duration_line = f"⏱ Длительность: {h}ч {m}мин\n" if h else f"⏱ Длительность: {m} мин\n"
+        else:
+            duration_line = ""
 
         text = (
             f"🔔 *Позиция закрыта!*\n\n"
