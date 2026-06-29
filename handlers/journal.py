@@ -7,6 +7,25 @@ from telegram import Update
 from core.container import get_db
 
 
+def _format_duration(holding_minutes) -> str:
+    if holding_minutes is None:
+        return "—"
+    h, m = divmod(int(holding_minutes), 60)
+    if h:
+        return f"{h}ч {m}мин"
+    return f"{m} мин"
+
+
+def _escape(text: str) -> str:
+    """Экранирует пользовательский текст для безопасной отправки."""
+    if not text or text == '—':
+        return text
+    # Убираем символы которые ломают Telegram Markdown
+    for ch in ['*', '_', '`', '[', ']']:
+        text = text.replace(ch, '')
+    return text
+
+
 async def show_journal(update: Update):
     db = get_db()
     msg = await update.message.reply_text("📓 Загружаю журнал...")
@@ -20,34 +39,32 @@ async def show_journal(update: Update):
     for idx, chunk in enumerate(chunks, 1):
         lines = [f"📓 *Журнал сделок (часть {idx}/{len(chunks)})*\n"]
         for t in reversed(chunk):
-            symbol = t['symbol']
-            side = t['side']
-            entry = f"${t['entry_price']:.4f}"
-            exit_p = f"${t['exit_price']:.4f}"
-            pnl = float(t['realized_pnl'])
-            if pnl > 0: emoji = "✅"
-            elif pnl < 0: emoji = "❌"
-            else: emoji = "➖"
-            volume = t['quantity']
+            symbol   = t['symbol']
+            side     = t['side']
+            entry    = f"${t['entry_price']:.4f}"
+            exit_p   = f"${t['exit_price']:.4f}"
+            pnl      = float(t['realized_pnl'])
+            emoji    = "✅" if pnl > 0 else ("❌" if pnl < 0 else "➖")
+            volume   = t['quantity']
             leverage = t.get('leverage', 1)
-            stop = f"${t['stop_loss']:.4f}" if t.get('stop_loss') else "—"
-            take = f"${t['take_profit']:.4f}" if t.get('take_profit') else "—"
-            open_time = t.get('open_time') or "—"
+            stop     = f"${t['stop_loss']:.4f}"  if t.get('stop_loss')  else "—"
+            take     = f"${t['take_profit']:.4f}" if t.get('take_profit') else "—"
+            open_time  = t.get('open_time')  or "—"
             close_time = t.get('close_time') or t.get('closed_at') or "—"
-            entry_comment = t.get('entry_comment', '—')
-            exit_comment = t.get('exit_comment', t.get('comment', '—'))
-            ai_review = t.get('ai_review', '')
-            holding = t.get('holding_minutes')
-            duration_str = f"{holding} мин" if holding is not None else "—"
-            market_trend = t.get('market_trend', '—')
-            setup = t.get('setup_type', '—')
+            entry_comment = _escape(t.get('entry_comment') or '—')
+            exit_comment  = _escape(t.get('exit_comment') or t.get('comment') or '—')
+            ai_review     = t.get('ai_review', '')
+            duration      = _format_duration(t.get('holding_minutes'))
+            market_trend  = t.get('market_trend') or '—'
+            setup         = t.get('setup_type') or '—'
+
             line = (
                 f"{emoji} *{symbol}* {side}\n"
                 f"   Вход: {entry} | Выход: {exit_p}\n"
                 f"   Объём: {volume} | Плечо: {leverage}x\n"
                 f"   Стоп: {stop} | Тейк: {take}\n"
                 f"   PNL: ${pnl:.2f}\n"
-                f"   Длительность: {duration_str}\n"
+                f"   Длительность: {duration}\n"
                 f"   Тренд рынка: {market_trend}\n"
                 f"   Сетап: {setup}\n"
                 f"   Открыта: {open_time}\n"
@@ -58,7 +75,11 @@ async def show_journal(update: Update):
                 + "\n"
             )
             lines.append(line)
+
         text = "".join(lines)
-        if len(text) > 4000:
-            text = text[:4000] + "\n... (обрезано)"
-        await update.message.reply_text(text, parse_mode='Markdown')
+        # Режем по 4000 и отправляем частями
+        for i in range(0, max(len(text), 1), 4000):
+            await update.message.reply_text(
+                text[i:i+4000],
+                parse_mode='Markdown'
+            )
