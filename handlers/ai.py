@@ -151,7 +151,7 @@ async def show_journal_analysis(update: Update):
         "Пиши без markdown-форматирования — только чистый текст.\n\n"
         f"Журнал сделок:\n{trades_text}"
     )
-    answer = _clean(await ai_analyzer.analyze_raw(prompt))
+    answer = _clean(await ai_analyzer.analyze_raw(prompt, max_tokens=1500))
     try:
         await msg.delete()
     except Exception:
