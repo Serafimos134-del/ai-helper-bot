@@ -166,6 +166,5 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Без вступления, без воды, только факты из данных ниже.\n"
         f"Сделки:\n{trades_text}"
     )
-
     answer = _clean(await ai_analyzer.analyze_raw(prompt))
     await _send_long(msg, f"🧠 AI-разбор убытков:\n\n{answer}")
