@@ -70,15 +70,22 @@ class AITradingAnalyzer:
             print(f"❌ Ошибка Groq: {e}")
             return f"⚠️ Ошибка AI: {e}\n\n{self._fallback_analysis(stats)}"
 
-    async def analyze_raw(self, prompt: str) -> str:
-        """Отправка произвольного промпта в Groq (асинхронно)."""
+    async def analyze_raw(self, prompt: str, max_tokens: int = None) -> str:
+        """Отправка произвольного промпта в Groq (асинхронно).
+        Принимает опциональный max_tokens для увеличения лимита ответа."""
         if not self.provider:
             return "⚠️ AI недоступен. Проверь GROQ_API_KEY."
         try:
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, self.provider.generate, prompt)
+            if max_tokens:
+                return await loop.run_in_executor(None, self.provider.generate, prompt, None, None, max_tokens)
+            else:
+                return await loop.run_in_executor(None, self.provider.generate, prompt)
         except RuntimeError:
-            return self.provider.generate(prompt)
+            if max_tokens:
+                return self.provider.generate(prompt, max_tokens=max_tokens)
+            else:
+                return self.provider.generate(prompt)
         except Exception as e:
             print(f"❌ Ошибка Groq (analyze_raw): {e}")
             return f"⚠️ Ошибка AI: {e}"
