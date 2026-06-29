@@ -20,10 +20,14 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
-async def _send_chunks(obj, text: str, **kwargs):
-    """Разбивает длинный текст на куски по 4000 символов и отправляет."""
-    limit = 4000
+async def _send_chunks(obj, text: str, reply_markup=None):
+    """Разбивает длинный текст на куски по 4096 символов и отправляет.
+    Клавиатуру прикрепляет только к первому сообщению."""
+    limit = 4096
     for i in range(0, len(text), limit):
+        kwargs = {}
+        if i == 0 and reply_markup:
+            kwargs['reply_markup'] = reply_markup
         await obj.reply_text(text[i:i+limit], **kwargs)
 
 
