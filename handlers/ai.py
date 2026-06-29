@@ -4,11 +4,27 @@ AI-related handlers: market overview, trends, journal analysis, consilium.
 """
 
 import json
+import re
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_consensus
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
+
+
+def _clean(text: str) -> str:
+    """Убирает markdown-форматирование LLM чтобы не конфликтовало с Telegram."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # **bold** → bold
+    text = re.sub(r'__(.+?)__',     r'\1', text)   # __bold__ → bold
+    text = re.sub(r'`(.+?)`',       r'\1', text)   # `code` → code
+    return text.strip()
+
+
+async def _send_chunks(obj, text: str, **kwargs):
+    """Разбивает длинный текст на куски по 4000 символов и отправляет."""
+    limit = 4000
+    for i in range(0, len(text), limit):
+        await obj.reply_text(text[i:i+limit], **kwargs)
 
 
 async def show_market_overview(update: Update):
@@ -17,7 +33,10 @@ async def show_market_overview(update: Update):
     result = await get_top_tickers(10)
     if not result.get('success') or not result.get('tickers'):
         await msg.delete()
-        await update.message.reply_text(f"❌ Не удалось получить данные рынка: {result.get('error', 'нет данных')}", reply_markup=ai_menu_keyboard())
+        await update.message.reply_text(
+            f"❌ Не удалось получить данные рынка: {result.get('error', 'нет данных')}",
+            reply_markup=ai_menu_keyboard()
+        )
         return
     summary = []
     for t in result['tickers']:
@@ -35,12 +54,14 @@ async def show_market_overview(update: Update):
         + "Будь конкретен, используй цифры из данных выше. Без философии и общих фраз."
     )
     try:
-        analysis = await ai_analyzer.analyze_raw(prompt)
+        analysis = _clean(await ai_analyzer.analyze_raw(prompt))
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
-    try: await msg.delete()
-    except Exception: pass
-    await update.message.reply_text(f"🌐 Обзор рынка от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await _send_chunks(update.message, f"🌐 Обзор рынка от AI\n\n{analysis}", reply_markup=ai_menu_keyboard())
 
 
 async def show_trends(update: Update):
@@ -54,18 +75,24 @@ async def show_trends(update: Update):
         if result.get('success') and len(klines) >= 2:
             try:
                 closes = [float(k.get('close', k.get('c', 0))) for k in klines]
-                highs = [float(k.get('high', k.get('h', 0))) for k in klines]
-                lows = [float(k.get('low', k.get('l', 0))) for k in klines]
+                highs  = [float(k.get('high',  k.get('h', 0))) for k in klines]
+                lows   = [float(k.get('low',   k.get('l', 0))) for k in klines]
                 first_close = closes[0]
-                last_close = closes[-1]
+                last_close  = closes[-1]
                 if first_close:
                     change = (last_close - first_close) / first_close * 100
-                    data_lines.append(f"{sym}: изменение за 24ч {change:+.2f}%, максимум {max(highs):.2f}, минимум {min(lows):.2f}, текущая цена {last_close:.2f}")
+                    data_lines.append(
+                        f"{sym}: изменение за 24ч {change:+.2f}%, "
+                        f"максимум {max(highs):.2f}, минимум {min(lows):.2f}, "
+                        f"текущая цена {last_close:.2f}"
+                    )
             except (ValueError, TypeError, AttributeError):
                 continue
     if not data_lines:
-        try: await msg.delete()
-        except Exception: pass
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         await update.message.reply_text("❌ Не удалось получить данные по трендам.", reply_markup=ai_menu_keyboard())
         return
     prompt = (
@@ -78,12 +105,14 @@ async def show_trends(update: Update):
         + "Кратко, без воды, используй цифры из данных выше."
     )
     try:
-        analysis = await ai_analyzer.analyze_raw(prompt)
+        analysis = _clean(await ai_analyzer.analyze_raw(prompt))
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
-    try: await msg.delete()
-    except Exception: pass
-    await update.message.reply_text(f"📊 Тренды от AI\n\n{analysis[:3500]}", reply_markup=ai_menu_keyboard())
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await _send_chunks(update.message, f"📊 Тренды от AI\n\n{analysis}", reply_markup=ai_menu_keyboard())
 
 
 async def show_journal_analysis(update: Update):
@@ -98,23 +127,32 @@ async def show_journal_analysis(update: Update):
     data_for_ai = []
     for t in trades:
         data_for_ai.append({
-            'symbol': t['symbol'], 'side': t['side'],
-            'entry_price': t['entry_price'], 'exit_price': t['exit_price'],
-            'pnl': t['realized_pnl'], 'leverage': t.get('leverage', 1),
-            'stop_loss': t.get('stop_loss'), 'take_profit': t.get('take_profit'),
+            'symbol':        t['symbol'],
+            'side':          t['side'],
+            'entry_price':   t['entry_price'],
+            'exit_price':    t['exit_price'],
+            'pnl':           t['realized_pnl'],
+            'leverage':      t.get('leverage', 1),
+            'stop_loss':     t.get('stop_loss'),
+            'take_profit':   t.get('take_profit'),
             'entry_comment': t.get('entry_comment', ''),
-            'exit_comment': t.get('exit_comment', t.get('comment', ''))
+            'exit_comment':  t.get('exit_comment', t.get('comment', ''))
         })
     trades_text = json.dumps(data_for_ai, ensure_ascii=False, indent=2)
     prompt = (
         "Проанализируй журнал сделок трейдера. "
         "Выдели повторяющиеся паттерны, главные ошибки в риск-менеджменте, "
         "психологические ловушки и сильные стороны. "
-        "Дай конкретные рекомендации по улучшению стратегии и дисциплины.\n\n"
+        "Дай конкретные рекомендации по улучшению стратегии и дисциплины. "
+        "Пиши без markdown-форматирования — только чистый текст.\n\n"
         f"Журнал сделок:\n{trades_text}"
     )
-    answer = await ai_analyzer.analyze_raw(prompt)
-    await msg.edit_text(f"📊 Анализ журнала:\n\n{answer[:3500]}")
+    answer = _clean(await ai_analyzer.analyze_raw(prompt))
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await _send_chunks(update.message, f"📊 Анализ журнала:\n\n{answer}", reply_markup=ai_menu_keyboard())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -126,10 +164,10 @@ def consilium_keyboard():
 
 
 async def consilium_menu(update: Update):
-    keyboard = ReplyKeyboardMarkup([
-        [CONSILIUM_OPEN], [CONSILIUM_SETUP], [BTN_BACK]
-    ], resize_keyboard=True)
-    await update.message.reply_text("🧠 Консилиум\nВыбери режим:", reply_markup=keyboard)
+    await update.message.reply_text(
+        "🧠 Консилиум\nВыбери режим:",
+        reply_markup=ReplyKeyboardMarkup([[CONSILIUM_OPEN], [CONSILIUM_SETUP], [BTN_BACK]], resize_keyboard=True)
+    )
 
 
 async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,23 +179,23 @@ async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT
     context.user_data['consilium_positions'] = trades
     keyboard = []
     for t in trades:
-        sym = t['symbol']
+        sym      = t['symbol']
         raw_side = str(t.get('side', '')).upper()
-        side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
+        side     = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
         keyboard.append([f"{sym} {side}"])
     keyboard.append([BTN_BACK])
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("Выбери позицию для анализа:", reply_markup=markup)
+    await update.message.reply_text("Выбери позицию для анализа:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     context.user_data['state'] = 'consilium_choose_position'
 
 
 async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
     consensus = get_consensus()
-    text = update.message.text.strip()
+    text   = update.message.text.strip()
     trades = context.user_data.get('consilium_positions', [])
     chosen = None
+    expected_side = ''
     for t in trades:
-        raw_side = str(t.get('side', '')).upper()
+        raw_side      = str(t.get('side', '')).upper()
         expected_side = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
         if f"{t['symbol']} {expected_side}" == text:
             chosen = t
@@ -166,10 +204,10 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text("Выбери позицию из списка.", reply_markup=consilium_keyboard())
         return
     context.user_data['state'] = None
-    msg = await update.message.reply_text("🔄 Анализирую позицию...")
+    msg    = await update.message.reply_text("🔄 Анализирую позицию...")
     result = await consensus.analyze_open_position(chosen)
     response = _build_response(result, chosen['symbol'], expected_side)
-    await msg.edit_text(response)
+    await msg.edit_text(response[:4096])
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
 
@@ -184,7 +222,7 @@ async def consilium_new_setup(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from utils.parsers import parse_trade_idea
     consensus = get_consensus()
-    text = update.message.text.strip()
+    text             = update.message.text.strip()
     ticker, direction = parse_trade_idea(text)
     if not ticker or not direction:
         await update.message.reply_text(
@@ -193,10 +231,10 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
         )
         return
     context.user_data['state'] = None
-    msg = await update.message.reply_text("🔄 Анализирую сетап...")
+    msg    = await update.message.reply_text("🔄 Анализирую сетап...")
     result = await consensus.analyze_new_setup(ticker, direction, extra_notes=text)
     response = _build_response(result, ticker, direction)
-    await msg.edit_text(response)
+    await msg.edit_text(response[:4096])
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
 
 
@@ -209,13 +247,13 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
     )
     verdict_str = result.get('judge_verdict', '{}')
     try:
-        verdict = json.loads(verdict_str) if isinstance(verdict_str, str) else verdict_str
-        verdict_text = verdict.get('verdict', '—')
-        final_score = verdict.get('final_score', '—')
+        verdict         = json.loads(verdict_str) if isinstance(verdict_str, str) else verdict_str
+        verdict_text    = verdict.get('verdict', '—')
+        final_score     = verdict.get('final_score', '—')
         verdict_summary = verdict.get('summary', '')
-        warnings = verdict.get('warnings', [])
-        verdict_emoji = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
-        emoji = verdict_emoji.get(verdict_text, '⚪')
+        warnings        = verdict.get('warnings', [])
+        emoji_map       = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
+        emoji = emoji_map.get(verdict_text, '⚪')
         response += f"⚖️ Вердикт: {emoji} {verdict_text} ({final_score}/100)\n"
         if verdict_summary:
             response += f"{verdict_summary}\n"
@@ -225,7 +263,8 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
                 response += f"• {w}\n"
     except Exception:
         response += f"⚖️ Вердикт: {verdict_str}"
-    confidence = result.get('confidence')
+
+    confidence   = result.get('confidence')
     data_quality = result.get('data_quality')
     disagreement = result.get('disagreement')
     if confidence is not None:
