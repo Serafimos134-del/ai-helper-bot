@@ -4,6 +4,7 @@ System-level handlers: start, help, health, sync, status, ai_fix.
 """
 
 import os
+import re
 import json
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -18,6 +19,25 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
 def _check_chat(update: Update) -> bool:
     return str(update.effective_chat.id) == CHAT_ID
+
+
+def _clean(text: str) -> str:
+    """Убирает markdown LLM чтобы не конфликтовало с Telegram."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__',     r'\1', text)
+    text = re.sub(r'`(.+?)`',       r'\1', text)
+    return text.strip()
+
+
+async def _send_long(msg, text: str):
+    """Отправляет длинный текст кусками по 4000 символов."""
+    if len(text) <= 4000:
+        await msg.edit_text(text)
+        return
+    await msg.edit_text(text[:4000])
+    bot = msg.get_bot()
+    for i in range(4000, len(text), 4000):
+        await bot.send_message(chat_id=msg.chat.id, text=text[i:i+4000])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,9 +116,13 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
     results = await sync_trades(context.bot, CHAT_ID)
-    new_open = len(results.get('new_open', []))
+    new_open   = len(results.get('new_open', []))
     new_closed = len(results.get('new_closed', []))
-    await msg.edit_text(f"✅ Синхронизация завершена!\n\n🆕 Новых позиций: {new_open}\n🔒 Закрыто позиций: {new_closed}")
+    await msg.edit_text(
+        f"✅ Синхронизация завершена!\n\n"
+        f"🆕 Новых позиций: {new_open}\n"
+        f"🔒 Закрыто позиций: {new_closed}"
+    )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,7 +130,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     db = get_db()
     await update_pinned_status(context, db, CHAT_ID, force=True)
-    await update.message.reply_text("📌 Статус обновлён. Смотри закреплённое сообщение.", reply_markup=main_menu_keyboard())
+    await update.message.reply_text(
+        "📌 Статус обновлён. Смотри закреплённое сообщение.",
+        reply_markup=main_menu_keyboard()
+    )
 
 
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,12 +147,17 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not losing:
         await msg.edit_text("Убыточных сделок не найдено.")
         return
-    trades_text = json.dumps([{'symbol': t['symbol'], 'side': t['side'], 'pnl': t['realized_pnl'], 'comment': t.get('comment', '')} for t in losing], ensure_ascii=False, indent=2)
+    trades_text = json.dumps(
+        [{'symbol': t['symbol'], 'side': t['side'], 'pnl': t['realized_pnl'],
+          'comment': t.get('comment', '')} for t in losing],
+        ensure_ascii=False, indent=2
+    )
     prompt = (
         "Трейдер только что закрыл серию убыточных сделок. Проанализируй их и дай рекомендации.\n"
         f"Убыточные сделки:\n{trades_text}\n\n"
         "Определи возможные причины, ошибки в риск-менеджменте или психологии. "
-        "Дай конкретные советы, как избежать повторения."
+        "Дай конкретные советы, как избежать повторения. "
+        "Пиши без markdown-форматирования — только чистый текст."
     )
-    answer = await ai_analyzer.analyze_raw(prompt)
-    await msg.edit_text(f"🧠 *AI-разбор убытков:*\n\n{answer[:3500]}")
+    answer = _clean(await ai_analyzer.analyze_raw(prompt))
+    await _send_long(msg, f"🧠 AI-разбор убытков:\n\n{answer}")
