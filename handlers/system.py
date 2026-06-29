@@ -152,7 +152,7 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
           'comment': t.get('comment', '')} for t in losing],
         ensure_ascii=False, indent=2
     )
-        prompt = (
+    prompt = (
         "Проанализируй убыточные сделки трейдера. Отвечай строго по структуре:\n\n"
         "ОШИБКИ (максимум 3, каждая одним предложением):\n"
         "1. ...\n"
