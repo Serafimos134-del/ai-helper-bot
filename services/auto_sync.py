@@ -1,6 +1,7 @@
 """
 services/auto_sync.py
-Refactored sync engine with global lock, atomic trade closing, and error resilience.
+Refactored sync engine with global lock, atomic trade closing, error resilience,
+and Behavior Alerts Engine hooks.
 """
 
 import asyncio
@@ -8,8 +9,9 @@ import logging
 import sqlite3
 import json
 from datetime import datetime, timezone
-from services.bingx_api import get_open_positions
+from services.bingx_api import get_open_positions, get_kline
 from services.database import Database
+from services.behavior_engine import BehaviorEngine, format_alert
 from ai.trade_scorer import TradeScorer
 from ai.consensus_engine import ConsensusEngine
 from services.ai_trading import AITradingAnalyzer
@@ -19,11 +21,9 @@ logger = logging.getLogger(__name__)
 
 db = Database()
 trade_scorer = TradeScorer()
+behavior_engine = BehaviorEngine(db)
 
-# ─── Глобальная блокировка синхронизации ───
 _sync_lock = asyncio.Lock()
-
-# ─── Защита от ложных закрытий ───
 _missing_cycles: dict = {}
 _missing_cycles_lock = asyncio.Lock()
 _MISSING_CYCLES_CATEGORY = 'missing_cycles'
@@ -70,7 +70,6 @@ def _calculate_exit_price(trade: dict) -> float:
 
 
 def _format_verdict(verdict_raw) -> str:
-    """Парсит judge_verdict из JSON и возвращает читаемую строку."""
     try:
         verdict = json.loads(verdict_raw) if isinstance(verdict_raw, str) else verdict_raw
         verdict_text    = verdict.get('verdict', '—')
@@ -87,6 +86,42 @@ def _format_verdict(verdict_raw) -> str:
         return result
     except Exception:
         return str(verdict_raw)
+
+
+async def _check_behavior_on_open(bot, chat_id: str, user_id: str, trade: dict):
+    """Запускает Behavior Engine при открытии новой позиции."""
+    try:
+        revenge = behavior_engine.detect_revenge_trading(user_id, trade)
+        if revenge:
+            behavior_engine.save_event(user_id, revenge)
+            await bot.send_message(chat_id=chat_id, text=format_alert(revenge))
+
+        overtrading = behavior_engine.detect_overtrading(user_id)
+        if overtrading:
+            behavior_engine.save_event(user_id, overtrading)
+            await bot.send_message(chat_id=chat_id, text=format_alert(overtrading))
+
+        symbol = trade.get('symbol')
+        if symbol:
+            kline_result = await get_kline(symbol, "1h", 2)
+            if kline_result.get('success'):
+                fomo = behavior_engine.detect_fomo(trade, kline_result.get('klines', []))
+                if fomo:
+                    behavior_engine.save_event(user_id, fomo)
+                    await bot.send_message(chat_id=chat_id, text=format_alert(fomo))
+    except Exception as e:
+        logger.error(f"Ошибка Behavior Engine (open): {e}")
+
+
+async def _check_behavior_on_close(bot, chat_id: str, user_id: str, closed_trade: dict):
+    """Запускает Behavior Engine при закрытии позиции."""
+    try:
+        panic = behavior_engine.detect_panic_close(closed_trade)
+        if panic:
+            behavior_engine.save_event(user_id, panic)
+            await bot.send_message(chat_id=chat_id, text=format_alert(panic))
+    except Exception as e:
+        logger.error(f"Ошибка Behavior Engine (close): {e}")
 
 
 async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict):
@@ -144,6 +179,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
 
 async def _sync_trades_impl(bot, chat_id: str) -> dict:
     global _missing_cycles
+    user_id = 'default'  # пока single-user sync loop; multi-user loop будет отдельным шагом
     results = {'new_open': [], 'new_closed': []}
     logger.info("=== Синхронизация начата ===")
 
@@ -160,12 +196,14 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
     api_trades = [t for t in open_result.get('trades', []) if t.get('orderId')]
     api_ids = {str(t['orderId']) for t in api_trades}
 
-    stored_open = await asyncio.to_thread(db.get_open_trades)
+    stored_open = await asyncio.to_thread(db.get_open_trades, user_id)
     stored_by_id = {}
     for t in stored_open:
         oid = str(t.get('orderId')) if t.get('orderId') else None
         if oid:
             stored_by_id[oid] = t
+
+    new_trades_for_behavior_check = []
 
     async with _missing_cycles_lock:
         for trade in api_trades:
@@ -193,6 +231,7 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
             else:
                 try:
                     await asyncio.to_thread(db.add_open_trade, {
+                        'user_id':        user_id,
                         'orderId':        trade['orderId'],
                         'symbol':         trade.get('symbol'),
                         'side':           side,
@@ -205,6 +244,7 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
                         'entry_comment':  ''
                     })
                     results['new_open'].append(trade)
+                    new_trades_for_behavior_check.append(trade)
                     await _notify_new_trade(bot, chat_id, trade)
                 except sqlite3.IntegrityError:
                     logger.warning(f"Позиция {oid} уже существует в БД, пропущена")
@@ -230,12 +270,17 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
                 _missing_cycles.pop(oid, None)
                 _delete_missing_cycle(oid)
 
+    # Behavior Engine: проверка новых позиций (после release лока, чтобы не блокировать sync)
+    for trade in new_trades_for_behavior_check:
+        asyncio.create_task(_check_behavior_on_open(bot, chat_id, user_id, trade))
+
     for oid, stored in truly_closed.items():
-        closed_trade = _build_closed_trade(stored)
+        closed_trade = _build_closed_trade(stored, user_id)
         try:
             new_id = await asyncio.to_thread(db.close_trade_atomic, oid, closed_trade)
             results['new_closed'].append(stored)
             await _notify_closed_trade(bot, chat_id, closed_trade, closed_trade['realized_pnl'], new_id)
+            asyncio.create_task(_check_behavior_on_close(bot, chat_id, user_id, closed_trade))
             asyncio.create_task(_analyze_and_notify(bot, chat_id, new_id, closed_trade, stored))
         except sqlite3.IntegrityError:
             logger.warning(f"Закрытие {oid}: дубликат в closed_trades")
@@ -248,7 +293,7 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
     return results
 
 
-def _build_closed_trade(stored_open: dict) -> dict:
+def _build_closed_trade(stored_open: dict, user_id: str = 'default') -> dict:
     now = datetime.now(timezone.utc)
     open_time = stored_open.get('created_at')
     close_time = now.isoformat()
@@ -266,6 +311,7 @@ def _build_closed_trade(stored_open: dict) -> dict:
     exit_price = _calculate_exit_price(stored_open)
 
     return {
+        'user_id':       stored_open.get('user_id', user_id),
         'orderId':       stored_open['orderId'],
         'symbol':        stored_open['symbol'],
         'side':          stored_open['side'],
@@ -293,8 +339,6 @@ def _build_closed_trade(stored_open: dict) -> dict:
         'ai_score':      None
     }
 
-
-# ─── Уведомления ───
 
 async def _notify_new_trade(bot, chat_id: str, trade: dict):
     try:
