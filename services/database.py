@@ -1,7 +1,7 @@
 """
 services/database.py
 Refactored database layer with atomic transactions, thread safety, retry logic.
-Prepared for multi-user support (user_id column added).
+Multi-user support: users table + user_id everywhere.
 """
 
 import sqlite3
@@ -14,6 +14,7 @@ import os
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'trading.db')
+
 
 # ======================== retry decorator ========================
 def retry_on_locked(max_attempts: int = 3, delay: float = 0.2):
@@ -38,7 +39,7 @@ def retry_on_locked(max_attempts: int = 3, delay: float = 0.2):
 
 class Database:
     """Thread-safe SQLite manager (singleton) with WAL mode, atomic close, retries.
-    All tables include user_id for future multi-user support."""
+    All tables include user_id for multi-user support."""
 
     _instance = None
     _lock_init = threading.Lock()
@@ -69,9 +70,20 @@ class Database:
             self.conn.execute("PRAGMA foreign_keys=ON;")
 
     def _migrate(self):
-        """Create tables/indexes if missing, add new columns safely (including user_id)."""
+        """Create tables/indexes if missing, add new columns safely."""
         with self.lock:
             self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    telegram_id TEXT UNIQUE NOT NULL,
+                    username TEXT,
+                    subscription_tier TEXT NOT NULL DEFAULT 'free',
+                    subscription_expires_at TIMESTAMP,
+                    bingx_api_key TEXT,
+                    bingx_secret_key TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_active_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS open_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT DEFAULT 'default',
@@ -128,9 +140,10 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
                 CREATE INDEX IF NOT EXISTS idx_closed_user_id ON closed_trades(user_id);
                 CREATE INDEX IF NOT EXISTS idx_open_user_id ON open_trades(user_id);
+                CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
             """)
 
-            # Add missing columns (safe migration — adds user_id if missing)
+            # Add missing columns (safe migration)
             for table, cols in {
                 'open_trades': [
                     ('user_id', "TEXT DEFAULT 'default'"),
@@ -163,6 +176,13 @@ class Database:
                     ('risk_review', 'TEXT'),
                     ('psychology_review', 'TEXT'),
                     ('judge_verdict', 'TEXT')
+                ],
+                'users': [
+                    ('subscription_tier', "TEXT NOT NULL DEFAULT 'free'"),
+                    ('subscription_expires_at', 'TIMESTAMP'),
+                    ('bingx_api_key', 'TEXT'),
+                    ('bingx_secret_key', 'TEXT'),
+                    ('last_active_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
                 ]
             }.items():
                 for col, col_def in cols:
@@ -172,24 +192,27 @@ class Database:
                     except sqlite3.OperationalError:
                         pass
 
-            # Update existing rows to have default user_id (safe — may fail if column doesn't exist)
             for tbl in ['open_trades', 'closed_trades', 'trader_memory']:
                 try:
                     self.conn.execute(f"UPDATE {tbl} SET user_id = 'default' WHERE user_id IS NULL")
                 except sqlite3.OperationalError:
                     pass
 
-            # Cleanup any NULL orderIds (shouldn't exist with NOT NULL, but just in case)
             self.conn.execute("DELETE FROM open_trades WHERE orderId IS NULL OR orderId = ''")
-            # Ensure unique indexes
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_orderId ON open_trades(orderId)")
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
+
+            # Гарантируем что 'default' пользователь существует (для обратной совместимости)
+            default_telegram_id = os.getenv('TELEGRAM_CHAT_ID', 'default')
+            self.conn.execute(
+                "INSERT OR IGNORE INTO users (user_id, telegram_id, subscription_tier) VALUES (?, ?, 'premium')",
+                ('default', default_telegram_id)
+            )
             self.conn.commit()
 
     # ==================== thread-safe execution ====================
     @retry_on_locked()
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Execute SQL with lock and retry. Returns cursor for further use."""
         with self.lock:
             return self.conn.execute(sql, params)
 
@@ -202,7 +225,6 @@ class Database:
             self.conn.rollback()
 
     def transaction(self):
-        """Context manager for a transaction block."""
         class TransactionContext:
             def __init__(self, db):
                 self.db = db
@@ -216,20 +238,85 @@ class Database:
                 return False
         return TransactionContext(self)
 
+    # ==================== users / multi-user ====================
+    def get_or_create_user(self, telegram_id: str, username: str = None) -> dict:
+        """
+        Возвращает существующего пользователя по telegram_id или создаёт нового (free tier).
+        Использует telegram_id как user_id для простоты — один Telegram-аккаунт = один user_id.
+        """
+        telegram_id = str(telegram_id)
+        row = self._execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        if row:
+            with self.transaction():
+                self._execute(
+                    "UPDATE users SET last_active_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
+                    (telegram_id,)
+                )
+            return dict(row)
+
+        with self.transaction():
+            self._execute(
+                "INSERT INTO users (user_id, telegram_id, username, subscription_tier) VALUES (?, ?, ?, 'free')",
+                (telegram_id, telegram_id, username)
+            )
+        logger.info(f"Новый пользователь зарегистрирован: telegram_id={telegram_id}")
+        row = self._execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+        return dict(row)
+
+    def get_user(self, user_id: str) -> dict:
+        row = self._execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def is_premium(self, user_id: str) -> bool:
+        user = self.get_user(user_id)
+        if not user:
+            return False
+        if user.get('subscription_tier') != 'premium':
+            return False
+        expires = user.get('subscription_expires_at')
+        if expires is None:
+            return True  # подписка без срока (например default/lifetime)
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(expires) > datetime.now()
+        except Exception:
+            return True
+
+    def set_subscription(self, user_id: str, tier: str, expires_at: str = None):
+        with self.transaction():
+            self._execute(
+                "UPDATE users SET subscription_tier = ?, subscription_expires_at = ? WHERE user_id = ?",
+                (tier, expires_at, user_id)
+            )
+
+    def set_bingx_keys(self, user_id: str, api_key: str, secret_key: str):
+        with self.transaction():
+            self._execute(
+                "UPDATE users SET bingx_api_key = ?, bingx_secret_key = ? WHERE user_id = ?",
+                (api_key, secret_key, user_id)
+            )
+
+    def get_bingx_keys(self, user_id: str) -> tuple:
+        user = self.get_user(user_id)
+        if not user:
+            return None, None
+        return user.get('bingx_api_key'), user.get('bingx_secret_key')
+
+    def get_all_active_users(self) -> list:
+        """Возвращает всех пользователей с настроенными API ключами (для sync loop)."""
+        rows = self._execute(
+            "SELECT * FROM users WHERE bingx_api_key IS NOT NULL AND bingx_api_key != ''"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     # ==================== atomic trade closing ====================
     def close_trade_atomic(self, order_id: str, closed_trade_data: dict) -> int:
-        """
-        Atomically moves a trade from open_trades to closed_trades.
-        Returns the new closed_trade id, or raises an exception on failure.
-        """
         with self.transaction():
-            # Check open trade exists
             cursor = self._execute("SELECT id FROM open_trades WHERE orderId = ?", (order_id,))
             open_row = cursor.fetchone()
             if not open_row:
                 raise ValueError(f"Open trade with orderId {order_id} not found")
 
-            # Insert into closed_trades
             insert_sql = """
                 INSERT INTO closed_trades 
                 (user_id, orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
@@ -268,19 +355,16 @@ class Database:
             )
             self._execute(insert_sql, params)
             new_id = self._execute("SELECT last_insert_rowid()").fetchone()[0]
-
-            # Delete from open_trades
             self._execute("DELETE FROM open_trades WHERE orderId = ?", (order_id,))
             logger.info(f"Trade closed atomically: orderId={order_id}, new closed_id={new_id}")
             return new_id
 
-    # ==================== existing methods (backward compatible) ====================
+    # ==================== trades (backward compatible) ====================
     def get_open_trades(self, user_id: str = 'default'):
         rows = self._execute("SELECT * FROM open_trades WHERE user_id = ?", (user_id,)).fetchall()
         return [dict(row) for row in rows]
 
     def add_open_trade(self, trade: dict):
-        """Insert a new open trade. Raises IntegrityError if orderId already exists."""
         if not trade.get('orderId'):
             raise ValueError("orderId is required")
         sql = """
@@ -339,11 +423,9 @@ class Database:
                 logger.warning(f"delete_open_trade_by_order_id: orderId {order_id} not found")
 
     def cleanup_orphan_open_trades(self):
-        """Deprecated: kept for compatibility, does nothing since orderId is NOT NULL."""
         logger.debug("cleanup_orphan_open_trades skipped (no NULL orderIds allowed)")
 
     def add_closed_trade(self, trade: dict):
-        """Insert a closed trade. Raises IntegrityError if orderId already exists."""
         if not trade.get('orderId'):
             raise ValueError("orderId is required for closed trade")
         sql = """
