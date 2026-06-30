@@ -14,7 +14,7 @@ from core.container import get_db
 from core.router import setup_router
 from core.scheduler import setup_scheduler
 
-from handlers.system import start, health_command, sync_command, status_command, ai_fix_command
+from handlers.system import start, health_command, sync_command, status_command, ai_fix_command, test_behavior_command
 from handlers.menu import menu_handler
 
 load_dotenv()
@@ -52,7 +52,6 @@ async def restore_history_command(update: Update, context):
             oid = order.get('orderId')
             if not oid:
                 continue
-            # Проверяем, существует ли уже такая сделка
             existing = db._execute("SELECT id FROM closed_trades WHERE orderId = ?", (oid,)).fetchone()
             if existing:
                 skipped += 1
@@ -93,6 +92,7 @@ def main():
     app.add_handler(CommandHandler('sync', sync_command))
     app.add_handler(CommandHandler('status', status_command))
     app.add_handler(CommandHandler('ai_fix', ai_fix_command))
+    app.add_handler(CommandHandler('test_behavior', test_behavior_command))
     app.add_handler(CommandHandler('health', health_command))
     app.add_handler(CommandHandler('restore_history', restore_history_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
