@@ -1,6 +1,6 @@
 """
 handlers/system.py
-System-level handlers: start, help, health, sync, status, ai_fix.
+System-level handlers: start, help, health, sync, status, ai_fix, test_behavior.
 """
 
 import os
@@ -69,6 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, parse_mode='Markdown')
 
+
 async def show_help(update: Update):
     text = (
         "ℹ️ *Помощь*\n\n"
@@ -84,6 +85,7 @@ async def show_help(update: Update):
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
+        "/test\\_behavior — тест детекторов поведения на реальных данных\n"
         "/health — состояние систем"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
@@ -182,5 +184,71 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Без вступления, без воды, только факты из данных ниже.\n"
         f"Сделки:\n{trades_text}"
     )
-    answer = _clean(await ai_analyzer.analyze_raw(prompt))
+    answer = _clean(await ai_analyzer.analyze_raw(prompt, max_tokens=1500))
     await _send_long(msg, f"🧠 AI-разбор убытков:\n\n{answer}")
+
+
+async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _check_chat(update):
+        return
+    from services.database import Database
+    from services.behavior_engine import BehaviorEngine, format_alert
+    from services.bingx_api import get_kline
+
+    db = Database()
+    engine = BehaviorEngine(db)
+    user_id = 'default'
+
+    msg = await update.message.reply_text("🧪 Тестирую детекторы поведения на реальных данных...")
+    results = []
+
+    overtrading = engine.detect_overtrading(user_id)
+    if overtrading:
+        results.append(("Overtrading", format_alert(overtrading)))
+    else:
+        results.append(("Overtrading", "Не сработал — частота входов в норме"))
+
+    closed = db.get_closed_trades(limit=10, user_id=user_id)
+    panic_hits = []
+    for t in closed:
+        panic = engine.detect_panic_close(t)
+        if panic:
+            panic_hits.append(f"{t['symbol']} (PNL ${float(t['realized_pnl']):.2f})")
+    if panic_hits:
+        results.append(("Panic Close", f"Сработал бы на: {', '.join(panic_hits)}"))
+    else:
+        results.append(("Panic Close", "Не сработал — нет быстрых закрытий в убыток без стопа"))
+
+    open_trades = db.get_open_trades(user_id=user_id)
+    if open_trades:
+        candidate = open_trades[0]
+        fake_new_trade = {
+            'symbol': candidate['symbol'],
+            'entryPrice': candidate['entry_price'],
+            'positionAmt': candidate['quantity'],
+            'side': candidate['side']
+        }
+        revenge = engine.detect_revenge_trading(user_id, fake_new_trade)
+        if revenge:
+            results.append(("Revenge Trading", format_alert(revenge)))
+        else:
+            results.append(("Revenge Trading", f"Не сработал на {candidate['symbol']} — нет признаков отыгрыша"))
+
+        kline_result = await get_kline(candidate['symbol'], "1h", 2)
+        if kline_result.get('success'):
+            fomo = engine.detect_fomo(fake_new_trade, kline_result.get('klines', []))
+            if fomo:
+                results.append(("FOMO", format_alert(fomo)))
+            else:
+                results.append(("FOMO", f"Не сработал на {candidate['symbol']} — вход не выглядит погоней"))
+        else:
+            results.append(("FOMO", "Не удалось получить данные свечей"))
+    else:
+        results.append(("Revenge Trading", "Нет открытых позиций для проверки"))
+        results.append(("FOMO", "Нет открытых позиций для проверки"))
+
+    text = "🧪 Результаты теста Behavior Engine:\n\n"
+    for name, result in results:
+        text += f"▪️ {name}:\n{result}\n\n"
+
+    await msg.edit_text(text[:4096])
