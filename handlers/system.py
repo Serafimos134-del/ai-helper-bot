@@ -41,17 +41,33 @@ async def _send_long(msg, text: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
-        return
     context.user_data.clear()
-    text = (
-        "👋 *AI Helper Bot*\n\n"
-        "Твой помощник трейдера.\n"
-        "Отслеживаю сделки, веду дневник, считаю статистику.\n\n"
-        "Используй кнопки меню 👇"
-    )
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+    db = get_db()
 
+    telegram_id = str(update.effective_chat.id)
+    username = update.effective_user.username if update.effective_user else None
+    user = db.get_or_create_user(telegram_id, username)
+    context.user_data['user_id'] = user['user_id']
+
+    is_owner = _check_chat(update)
+    tier_label = "Premium ⭐️" if db.is_premium(user['user_id']) else "Free"
+
+    if is_owner:
+        text = (
+            "👋 *AI Helper Bot*\n\n"
+            "Твой помощник трейдера.\n"
+            "Отслеживаю сделки, веду дневник, считаю статистику.\n\n"
+            "Используй кнопки меню 👇"
+        )
+        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+    else:
+        text = (
+            f"👋 *AI Helper Bot*\n\n"
+            f"Твой тариф: {tier_label}\n\n"
+            f"Бот сейчас в режиме раннего доступа. "
+            f"Полная многопользовательская версия скоро откроется."
+        )
+        await update.message.reply_text(text, parse_mode='Markdown')
 
 async def show_help(update: Update):
     text = (
