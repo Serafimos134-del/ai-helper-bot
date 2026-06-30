@@ -1,7 +1,7 @@
 """
 services/database.py
 Refactored database layer with atomic transactions, thread safety, retry logic.
-Multi-user support: users table + user_id everywhere.
+Multi-user support: users table + behavior_events for Behavior Alerts Engine.
 """
 
 import sqlite3
@@ -136,11 +136,20 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, category, key)
                 );
+                CREATE TABLE IF NOT EXISTS behavior_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT DEFAULT 'default',
+                    event_type TEXT NOT NULL,
+                    severity TEXT,
+                    metadata TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
                 CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
                 CREATE INDEX IF NOT EXISTS idx_closed_user_id ON closed_trades(user_id);
                 CREATE INDEX IF NOT EXISTS idx_open_user_id ON open_trades(user_id);
                 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
+                CREATE INDEX IF NOT EXISTS idx_behavior_user_id ON behavior_events(user_id);
             """)
 
             # Add missing columns (safe migration)
@@ -202,7 +211,6 @@ class Database:
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_orderId ON open_trades(orderId)")
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
 
-            # Гарантируем что 'default' пользователь существует (для обратной совместимости)
             default_telegram_id = os.getenv('TELEGRAM_CHAT_ID', 'default')
             self.conn.execute(
                 "INSERT OR IGNORE INTO users (user_id, telegram_id, subscription_tier) VALUES (?, ?, 'premium')",
@@ -240,10 +248,6 @@ class Database:
 
     # ==================== users / multi-user ====================
     def get_or_create_user(self, telegram_id: str, username: str = None) -> dict:
-        """
-        Возвращает существующего пользователя по telegram_id или создаёт нового (free tier).
-        Использует telegram_id как user_id для простоты — один Telegram-аккаунт = один user_id.
-        """
         telegram_id = str(telegram_id)
         row = self._execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if row:
@@ -275,7 +279,7 @@ class Database:
             return False
         expires = user.get('subscription_expires_at')
         if expires is None:
-            return True  # подписка без срока (например default/lifetime)
+            return True
         from datetime import datetime
         try:
             return datetime.fromisoformat(expires) > datetime.now()
@@ -303,10 +307,30 @@ class Database:
         return user.get('bingx_api_key'), user.get('bingx_secret_key')
 
     def get_all_active_users(self) -> list:
-        """Возвращает всех пользователей с настроенными API ключами (для sync loop)."""
         rows = self._execute(
             "SELECT * FROM users WHERE bingx_api_key IS NOT NULL AND bingx_api_key != ''"
         ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ==================== behavior alerts engine ====================
+    def add_behavior_event(self, user_id: str, event_type: str, severity: str, metadata: str):
+        with self.transaction():
+            self._execute(
+                "INSERT INTO behavior_events (user_id, event_type, severity, metadata) VALUES (?, ?, ?, ?)",
+                (user_id, event_type, severity, metadata)
+            )
+
+    def get_recent_behavior_events(self, user_id: str, event_type: str = None, limit: int = 20):
+        if event_type:
+            rows = self._execute(
+                "SELECT * FROM behavior_events WHERE user_id = ? AND event_type = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, event_type, limit)
+            ).fetchall()
+        else:
+            rows = self._execute(
+                "SELECT * FROM behavior_events WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit)
+            ).fetchall()
         return [dict(row) for row in rows]
 
     # ==================== atomic trade closing ====================
