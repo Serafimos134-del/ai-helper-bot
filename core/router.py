@@ -1,4 +1,6 @@
 import logging
+import re
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -17,6 +19,28 @@ ai_analyzer = AITradingAnalyzer()
 
 def setup_router(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+
+def _fmt_date(iso_str: str) -> str:
+    """Превращает ISO-дату в читаемый вид: '2026-07-01 01:13'."""
+    if not iso_str:
+        return "—"
+    try:
+        # Отрезаем миллисекунды и timezone, если есть
+        clean = re.sub(r"\.\d+", "", iso_str.replace("T", " ").rsplit("+", 1)[0].strip())
+        return datetime.strptime(clean, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso_str[:16] if len(iso_str) >= 16 else iso_str
+
+
+def _fmt_price(val) -> str:
+    """Безопасное форматирование цены."""
+    if val is None:
+        return "—"
+    try:
+        return f"${float(val):.4f}"
+    except (ValueError, TypeError):
+        return str(val)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -46,6 +70,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if trade:
             holding = trade.get('holding_minutes')
             duration_str = f"{holding} мин" if holding is not None else "—"
+            sl_line = f"\n🛑 Стоп: {_fmt_price(trade.get('stop_loss'))}" if trade.get('stop_loss') else ""
+            tp_line = f"\n🎯 Тейк: {_fmt_price(trade.get('take_profit'))}" if trade.get('take_profit') else ""
+            close_time = _fmt_date(trade.get('close_time') or trade.get('closed_at'))
             detail_text = (
                 f"📊 *Детали сделки #{trade_id}*\n\n"
                 f"Символ: {trade['symbol']}\n"
@@ -55,11 +82,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Объём: {trade['quantity']}\n"
                 f"Плечо: {trade.get('leverage', 1)}x\n"
                 f"Длительность: {duration_str}\n"
-                f"PNL: ${trade['realized_pnl']:.2f}\n"
-                f"Тренд рынка: {trade.get('market_trend', '—')}\n"
-                f"Сетап: {trade.get('setup_type', '—')}\n"
-                f"Комментарий: {trade.get('exit_comment') or trade.get('comment', '—')}\n"
-                f"Закрыта: {trade.get('close_time') or trade.get('closed_at', '—')}"
+                f"PNL: ${trade['realized_pnl']:.2f}"
+                f"{sl_line}{tp_line}\n"
+                f"Тренд рынка: {trade.get('market_trend') or '—'}\n"
+                f"Сетап: {trade.get('setup_type') or '—'}\n"
+                f"Комментарий: {trade.get('exit_comment') or trade.get('comment') or '—'}\n"
+                f"Закрыта: {close_time}"
             )
             detail_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Добавить комментарий", callback_data=f"comment_{trade_id}")]
