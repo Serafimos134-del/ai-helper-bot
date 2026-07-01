@@ -154,7 +154,7 @@ async def show_journal_analysis(update: Update):
     await _send_chunks(update.message, f"📊 Анализ журнала:\n\n{answer}", reply_markup=ai_menu_keyboard())
 
 
-async def show_coach(update: Update):
+async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """AI Coach — персональный разбор на основе Performance Engine."""
     from services.coach_engine import CoachEngine
     ai_analyzer = get_ai_analyzer()
