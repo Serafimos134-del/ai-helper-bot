@@ -1,7 +1,7 @@
 """
 ai/consensus_engine.py
-Refactored consensus engine with parallel agent execution,
-deterministic scoring, normalizer integration, and mode‑aware dispatch.
+Refactored consensus engine with parallel agents, deterministic scoring,
+normalizer integration, and mode‑aware dispatch.
 """
 
 import asyncio
@@ -14,6 +14,7 @@ from ai.agents.judge_agent import JudgeAgent
 from ai.context_builder import ContextBuilder
 from ai.trade_scorer import TradeScorer
 from ai.engines.normalizer import normalize_position, normalize_trade
+from ai.engines.scoring_engine import ScoringEngine
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,10 @@ class ConsensusEngine:
         self.judge = JudgeAgent(provider)
         self.context_builder = ContextBuilder()
         self.scorer = TradeScorer()
+        self.deterministic_scorer = ScoringEngine()          # новый слой
 
     async def analyze_open_position(self, position: dict) -> dict:
-        position = normalize_position(position)          # ← нормализация
+        position = normalize_position(position)
         context = await self.context_builder.build_for_open_position(position)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
@@ -47,7 +49,7 @@ class ConsensusEngine:
         return await self._run_agents_parallel(context, 'setup')
 
     async def analyze_closed_trade(self, trade: dict) -> dict:
-        trade = normalize_trade(trade)                  # ← нормализация
+        trade = normalize_trade(trade)
         score_result = self.scorer.score(trade)
         context = await self.context_builder.build_for_closed_trade(trade, score_result)
         if not self._is_market_data_valid(context):
@@ -72,6 +74,7 @@ class ConsensusEngine:
                 logger.error(f"{name} failed: {e}")
                 return self._degraded_result(name, str(e))
 
+        # Параллельный запуск MarketAgent, RiskAgent, PsychologyAgent (LLM для текста)
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(
@@ -87,20 +90,33 @@ class ConsensusEngine:
 
         market_result, risk_result, psych_result = results
 
+        # Проверка degradation
         for res in [market_result, risk_result, psych_result]:
             if res.get('degraded'):
                 degraded = True
                 degraded_agents.append(res.get('agent_name', 'unknown'))
 
+        # Текстовые выводы (от LLM)
         market_text = market_result.get('text', str(market_result))
         risk_text = risk_result.get('text', str(risk_result))
         psych_text = psych_result.get('text', str(psych_result))
 
-        market_score = market_result.get('score', DEGRADED_SCORE)
-        risk_score = risk_result.get('score', DEGRADED_SCORE)
-        psych_score = psych_result.get('score', DEGRADED_SCORE)
+        # Извлекаем объект для детерминированного скоринга
+        target_obj = context.get('position') or context.get('trade')
+        if target_obj is None:
+            target_obj = {}
 
-        # Trade score
+        # Детерминированные метрики (Python)
+        det_scores = self.deterministic_scorer.calculate(target_obj, mode)
+
+        # Используем детерминированные risk и psychology scores
+        risk_score = det_scores['risk_score']
+        psych_score = det_scores['psychology_score']
+
+        # Market score остаётся от LLM (MarketAgent)
+        market_score = market_result.get('score', DEGRADED_SCORE)
+
+        # Trade score (если есть)
         trade_score = None
         position = context.get('position')
         trade = context.get('trade')
@@ -115,13 +131,13 @@ class ConsensusEngine:
             except Exception:
                 pass
 
-        # JudgeAgent
+        # JudgeAgent с детерминированными скорами
         try:
             verdict = await asyncio.wait_for(
                 self.judge.synthesize(
                     json.dumps(market_result.get('raw', {})),
-                    json.dumps(risk_result.get('raw', {})),
-                    json.dumps(psych_result.get('raw', {})),
+                    json.dumps({"risk_score": risk_score, "summary": risk_text}),
+                    json.dumps({"psychology_score": psych_score, "summary": psych_text}),
                     mode=mode,
                     trade_score=trade_score
                 ),
@@ -134,24 +150,10 @@ class ConsensusEngine:
 
         market_trend = self._extract_market_trend(market_text, context)
 
-        # Реалистичные метрики
-        data_quality = self._calculate_data_quality(context)
-        agent_confidences = [
-            c for c in [
-                market_result.get('confidence'),
-                risk_result.get('confidence'),
-                psych_result.get('confidence')
-            ] if c is not None
-        ]
-        avg_agent_confidence = sum(agent_confidences) / len(agent_confidences) if agent_confidences else 0.5
-        confidence = avg_agent_confidence * data_quality
-        if degraded:
-            confidence *= 0.7
-        confidence = max(0.1, min(1.0, confidence))
-
-        # Disagreement на основе разброса скоров
-        scores = [market_score, risk_score, psych_score]
-        disagreement = self._calculate_disagreement_from_scores(scores)
+        # Берём метрики из детерминированного скорера
+        confidence = det_scores['confidence']
+        data_quality = det_scores['data_quality']
+        disagreement = det_scores['disagreement']
 
         memory = context.get('memory', '')
         if degraded:
@@ -163,14 +165,14 @@ class ConsensusEngine:
             'psychology_review': psych_text,
             'market_trend': market_trend,
             'judge_verdict': verdict,
-            'confidence': round(confidence, 2),
-            'disagreement': round(disagreement, 2),
-            'data_quality': round(data_quality, 2),
+            'confidence': confidence,
+            'disagreement': disagreement,
+            'data_quality': data_quality,
             'degraded': degraded,
             'memory': memory
         }
 
-    # ─── helpers ────────────────────────────────────────────────
+    # ─── helpers (без изменений) ─────────────────────────────────
     def _extract_market_trend(self, market_text: str, context: dict) -> str:
         text_lower = market_text.lower()
         if any(w in text_lower for w in ['bullish', 'бычий', 'восходящий', 'рост']):
@@ -223,35 +225,6 @@ class ConsensusEngine:
             'agent_name': agent_name,
             'raw': {}
         }
-
-    def _calculate_data_quality(self, context: dict) -> float:
-        score = 0.0
-        ticker = context.get('ticker')
-        if ticker and (ticker.get('price', 0) or 0) > 0:
-            score += 0.3
-        market = context.get('market', {}) or {}
-        btc = (market.get('btc') or {}) if market else {}
-        if btc and (btc.get('price', 0) or 0) > 0:
-            score += 0.2
-        history = context.get('history', {}) or {}
-        if history and (history.get('stats') or {}).get('total_trades', 0) > 0:
-            score += 0.1
-
-        trade = context.get('trade') or context.get('position')
-        if trade:
-            if trade.get('stop_loss'):
-                score += 0.2
-            if trade.get('take_profit'):
-                score += 0.2
-
-        return min(1.0, score)
-
-    def _calculate_disagreement_from_scores(self, scores: list) -> float:
-        if not scores:
-            return 0.0
-        avg = sum(scores) / len(scores)
-        variance = sum((s - avg) ** 2 for s in scores) / len(scores)
-        return min(1.0, variance / 2500)
 
     def _is_market_data_valid(self, context: dict) -> bool:
         if context.get('idea') or context.get('ticker'):
