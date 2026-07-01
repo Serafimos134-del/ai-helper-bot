@@ -138,7 +138,8 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
                                 market_review=analysis['market_review'],
                                 risk_review=analysis['risk_review'],
                                 psychology_review=analysis['psychology_review'],
-                                judge_verdict=analysis['judge_verdict'])
+                                judge_verdict=analysis['judge_verdict'],
+                                market_trend=analysis.get('market_trend'))
         logger.info(f"Сделка #{trade_id} проанализирована")
 
         try:
