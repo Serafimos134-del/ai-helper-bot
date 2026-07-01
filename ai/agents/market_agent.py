@@ -72,6 +72,8 @@ class MarketAgent:
         pnl = trade.get('realized_pnl', 0)
         sl = trade.get('stop_loss')
         tp = trade.get('take_profit')
+        sl_str = f"${sl:.4f}" if sl is not None else "не установлен"
+        tp_str = f"${tp:.4f}" if tp is not None else "не установлен"
         duration = trade.get('holding_minutes', '?')
         market_trend = trade.get('market_trend') or 'UNKNOWN'
         btc = market.get('btc') or {}
@@ -83,7 +85,8 @@ TRADE OBJECT:
 Symbol: {symbol}
 Side: {trade.get('side', '')}
 Entry: {entry}, Exit: {exit_p}, PnL: {pnl}
-Stop Loss: {sl}, Take Profit: {tp}
+Stop Loss: {sl_str}
+Take Profit: {tp_str}
 Duration: {duration} min
 Market trend at close: {market_trend}
 Overall market regime: {regime}, BTC: {btc.get('price', '?')}
@@ -105,6 +108,8 @@ Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
         pnl = pos.get('unrealized_pnl', 0)
         sl = pos.get('stop_loss')
         tp = pos.get('take_profit')
+        sl_str = f"${sl:.4f}" if sl is not None else "не установлен"
+        tp_str = f"${tp:.4f}" if tp is not None else "не установлен"
         btc = market.get('btc') or {}
         regime = market.get('market_regime', 'UNKNOWN')
 
@@ -113,7 +118,8 @@ Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
 POSITION:
 Symbol: {symbol} {side}
 Entry: {entry}, Unrealized PnL: {pnl}
-Stop Loss: {sl}, Take Profit: {tp}
+Stop Loss: {sl_str}
+Take Profit: {tp_str}
 Market regime: {regime}, BTC: {btc.get('price', '?')}
 
 Evaluate whether current market conditions support holding this position.
