@@ -64,7 +64,7 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
 
 
 def _build_status_text(balance: dict, open_positions: list) -> str:
-    """Build status message text with dynamic entry size."""
+    """Build status message text with dynamic entry size and TP/SL display."""
     text = "📌 *Текущий статус*\n\n"
 
     equity = 0.0
@@ -99,6 +99,12 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
             pnl = pos.get('unrealized_pnl', 0) or 0.0
             emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
             text += f"{emoji} {symbol} {side} | PnL: ${pnl:+,.2f}\n"
+            sl = pos.get('stop_loss')
+            tp = pos.get('take_profit')
+            if sl:
+                text += f"   🛑 SL: ${float(sl):.4f}\n"
+            if tp:
+                text += f"   🎯 TP: ${float(tp):.4f}\n"
         text += f"\n🔒 *Всего позиций:* {len(open_positions)}/2\n"
     else:
         text += "🔓 *Нет открытых позиций*\n\n"
@@ -131,7 +137,8 @@ def _make_state_key(balance: dict, open_positions: list) -> str:
         f"up={balance.get('unrealized_pnl', 0):.2f}",
     ]
     for pos in open_positions:
-        parts.append(f"{pos.get('symbol')}:{pos.get('side')}:{pos.get('unrealized_pnl', 0):.2f}")
+        parts.append(f"{pos.get('symbol')}:{pos.get('side')}:{pos.get('unrealized_pnl', 0):.2f}"
+                     f":sl={pos.get('stop_loss')}:tp={pos.get('take_profit')}")
     return "|".join(parts)
 
 
