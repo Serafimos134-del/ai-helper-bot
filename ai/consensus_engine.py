@@ -1,19 +1,19 @@
 """
 ai/consensus_engine.py
-Refactored consensus engine with realistic metrics, parallel agents,
-degraded state support, and mode‑aware context dispatch.
+Refactored consensus engine with parallel agent execution,
+deterministic scoring, normalizer integration, and mode‑aware dispatch.
 """
 
 import asyncio
 import json
 import logging
-import re
 from ai.agents.market_agent import MarketAgent
 from ai.agents.risk_agent import RiskAgent
 from ai.agents.psychology_agent import PsychologyAgent
 from ai.agents.judge_agent import JudgeAgent
 from ai.context_builder import ContextBuilder
 from ai.trade_scorer import TradeScorer
+from ai.engines.normalizer import normalize_position, normalize_trade
 
 logger = logging.getLogger(__name__)
 
@@ -32,22 +32,27 @@ class ConsensusEngine:
         self.scorer = TradeScorer()
 
     async def analyze_open_position(self, position: dict) -> dict:
+        position = normalize_position(position)          # ← нормализация
         context = await self.context_builder.build_for_open_position(position)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
+        logger.info(f"CONSENSUS ENGINE: analyzing position {position.get('symbol')}")
         return await self._run_agents_parallel(context, 'open')
 
     async def analyze_new_setup(self, ticker: str, direction: str, extra_notes: str = '') -> dict:
         context = await self.context_builder.build_for_new_setup(ticker, direction, extra_notes)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
+        logger.info(f"CONSENSUS ENGINE: analyzing setup {ticker} {direction}")
         return await self._run_agents_parallel(context, 'setup')
 
     async def analyze_closed_trade(self, trade: dict) -> dict:
+        trade = normalize_trade(trade)                  # ← нормализация
         score_result = self.scorer.score(trade)
         context = await self.context_builder.build_for_closed_trade(trade, score_result)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
+        logger.info(f"CONSENSUS ENGINE: analyzing closed trade {trade.get('symbol')}")
         return await self._run_agents_parallel(context, 'post_trade')
 
     async def _run_agents_parallel(self, context: dict, mode: str) -> dict:
@@ -95,6 +100,7 @@ class ConsensusEngine:
         risk_score = risk_result.get('score', DEGRADED_SCORE)
         psych_score = psych_result.get('score', DEGRADED_SCORE)
 
+        # Trade score
         trade_score = None
         position = context.get('position')
         trade = context.get('trade')
@@ -109,6 +115,7 @@ class ConsensusEngine:
             except Exception:
                 pass
 
+        # JudgeAgent
         try:
             verdict = await asyncio.wait_for(
                 self.judge.synthesize(
@@ -127,7 +134,7 @@ class ConsensusEngine:
 
         market_trend = self._extract_market_trend(market_text, context)
 
-        # --- Реалистичные метрики ---
+        # Реалистичные метрики
         data_quality = self._calculate_data_quality(context)
         agent_confidences = [
             c for c in [
@@ -142,7 +149,7 @@ class ConsensusEngine:
             confidence *= 0.7
         confidence = max(0.1, min(1.0, confidence))
 
-        # Реалистичный disagreement на основе разброса скоров агентов
+        # Disagreement на основе разброса скоров
         scores = [market_score, risk_score, psych_score]
         disagreement = self._calculate_disagreement_from_scores(scores)
 
@@ -166,11 +173,11 @@ class ConsensusEngine:
     # ─── helpers ────────────────────────────────────────────────
     def _extract_market_trend(self, market_text: str, context: dict) -> str:
         text_lower = market_text.lower()
-        if any(word in text_lower for word in ['bullish', 'бычий', 'восходящий', 'рост']):
+        if any(w in text_lower for w in ['bullish', 'бычий', 'восходящий', 'рост']):
             return "BULLISH"
-        if any(word in text_lower for word in ['bearish', 'медвежий', 'нисходящий', 'падение']):
+        if any(w in text_lower for w in ['bearish', 'медвежий', 'нисходящий', 'падение']):
             return "BEARISH"
-        if any(word in text_lower for word in ['sideways', 'нейтральный', 'боковик', 'консолидация']):
+        if any(w in text_lower for w in ['sideways', 'нейтральный', 'боковик', 'консолидация']):
             return "SIDEWAYS"
         market = context.get('market', {}) or {}
         trend = market.get('trend', '')
@@ -218,7 +225,6 @@ class ConsensusEngine:
         }
 
     def _calculate_data_quality(self, context: dict) -> float:
-        """Оценка полноты данных: рыночные данные + наличие SL/TP в сделке/позиции."""
         score = 0.0
         ticker = context.get('ticker')
         if ticker and (ticker.get('price', 0) or 0) > 0:
@@ -231,7 +237,6 @@ class ConsensusEngine:
         if history and (history.get('stats') or {}).get('total_trades', 0) > 0:
             score += 0.1
 
-        # Дополнительные баллы за наличие TP/SL в анализируемом объекте
         trade = context.get('trade') or context.get('position')
         if trade:
             if trade.get('stop_loss'):
@@ -242,14 +247,11 @@ class ConsensusEngine:
         return min(1.0, score)
 
     def _calculate_disagreement_from_scores(self, scores: list) -> float:
-        """Disagreement на основе дисперсии скоров (0-1)."""
         if not scores:
             return 0.0
         avg = sum(scores) / len(scores)
         variance = sum((s - avg) ** 2 for s in scores) / len(scores)
-        # Нормализуем: максимальная дисперсия при разбросе 0-100 ~ 2500
-        normalized = min(1.0, variance / 2500)
-        return normalized
+        return min(1.0, variance / 2500)
 
     def _is_market_data_valid(self, context: dict) -> bool:
         if context.get('idea') or context.get('ticker'):
