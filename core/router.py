@@ -43,6 +43,25 @@ def _fmt_price(val) -> str:
         return str(val)
 
 
+def _format_verdict(verdict_raw) -> str:
+    try:
+        verdict = json.loads(verdict_raw) if isinstance(verdict_raw, str) else verdict_raw
+        verdict_text    = verdict.get('verdict', '—')
+        final_score     = verdict.get('final_score', '—')
+        verdict_summary = verdict.get('summary', '')
+        warnings        = verdict.get('warnings', [])
+        emoji_map = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
+        emoji = emoji_map.get(verdict_text, '⚪')
+        result = f"{emoji} {verdict_text} ({final_score}/100)"
+        if verdict_summary:
+            result += f"\n{verdict_summary}"
+        if warnings:
+            result += "\n⚠️ " + " | ".join(warnings)
+        return result
+    except Exception:
+        return str(verdict_raw)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -208,7 +227,18 @@ async def generate_full_ai_analysis(query, trade_id):
             setup_type=setup,
             ai_score=analysis.get('ai_score')
         )
-        await query.edit_message_text(f"✅ Полный AI-анализ для сделки #{trade_id} выполнен. Обновите детали.")
+        # Формируем читаемый ответ для пользователя
+        verdict_line = _format_verdict(analysis.get('judge_verdict', '{}'))
+        text = (
+            f"🧠 *AI-разбор сделки #{trade_id}*\n\n"
+            f"📈 Рынок:\n{analysis.get('market_review', '—')}\n\n"
+            f"⚠️ Риск:\n{analysis.get('risk_review', '—')}\n\n"
+            f"🧘 Психология:\n{analysis.get('psychology_review', '—')}\n\n"
+            f"⚖️ Вердикт: {verdict_line}\n\n"
+            f"📊 Тренд рынка: {analysis.get('market_trend', '—')}\n"
+            f"_Данные сохранены. Обновите детали сделки, чтобы увидеть изменения._"
+        )
+        await query.edit_message_text(text, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Ошибка полного AI-анализа сделки #{trade_id}: {e}")
         await query.edit_message_text(f"❌ Ошибка анализа: {e}")
