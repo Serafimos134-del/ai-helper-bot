@@ -10,6 +10,7 @@ from telegram.ext import (
 from services.database import Database
 from services.ai_trading import AITradingAnalyzer
 from core.keyboards import cancel_keyboard
+from core.container import get_consensus, get_ai_analyzer
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,6 @@ def _fmt_date(iso_str: str) -> str:
     if not iso_str:
         return "—"
     try:
-        # Отрезаем миллисекунды и timezone, если есть
         clean = re.sub(r"\.\d+", "", iso_str.replace("T", " ").rsplit("+", 1)[0].strip())
         return datetime.strptime(clean, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M")
     except Exception:
@@ -48,7 +48,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # Универсальный парсинг: префикс + id + опциональный суффикс
     if data.startswith("comment_"):
         parts = data.split("_", 1)
         if len(parts) < 2:
@@ -90,11 +89,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Закрыта: {close_time}"
             )
             detail_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✏️ Добавить комментарий", callback_data=f"comment_{trade_id}")]
+                [InlineKeyboardButton("✏️ Добавить комментарий", callback_data=f"comment_{trade_id}"),
+                 InlineKeyboardButton("🤖 AI-оценка", callback_data=f"ai_full_{trade_id}")]
             ])
             await query.edit_message_text(detail_text, parse_mode='Markdown', reply_markup=detail_keyboard)
         else:
             await query.edit_message_text("❌ Сделка не найдена.")
+    elif data.startswith("ai_full_"):
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            return
+        trade_id = int(parts[2])
+        await generate_full_ai_analysis(query, trade_id)
     elif data.startswith("eval_"):
         parts = data.split("_", 1)
         if len(parts) < 2:
@@ -178,3 +184,31 @@ async def generate_ai_review(query, trade_id):
     review = await ai_analyzer.analyze_raw(prompt)
     db.update_trade_metrics(trade_id, ai_review=review)
     await query.edit_message_text(f"🤖 *AI-оценка сделки #{trade_id}:*\n\n{review}", parse_mode='Markdown')
+
+
+async def generate_full_ai_analysis(query, trade_id):
+    trade = db.find_trade_by_id(trade_id)
+    if not trade:
+        await query.edit_message_text("❌ Сделка не найдена.")
+        return
+    await query.edit_message_text("🔄 Запускаю полный AI-анализ...")
+    try:
+        consensus = get_consensus()
+        analysis = await consensus.analyze_closed_trade(trade)
+        # Сохраняем все метрики, кроме setup_type (если уже был задан вручную, не перезаписываем)
+        existing = db.find_trade_by_id(trade_id)
+        setup = existing.get('setup_type') if existing else None
+        db.update_trade_metrics(
+            trade_id,
+            market_review=analysis.get('market_review', ''),
+            risk_review=analysis.get('risk_review', ''),
+            psychology_review=analysis.get('psychology_review', ''),
+            judge_verdict=analysis.get('judge_verdict', ''),
+            market_trend=analysis.get('market_trend'),
+            setup_type=setup,
+            ai_score=analysis.get('ai_score')
+        )
+        await query.edit_message_text(f"✅ Полный AI-анализ для сделки #{trade_id} выполнен. Обновите детали.")
+    except Exception as e:
+        logger.error(f"Ошибка полного AI-анализа сделки #{trade_id}: {e}")
+        await query.edit_message_text(f"❌ Ошибка анализа: {e}")
