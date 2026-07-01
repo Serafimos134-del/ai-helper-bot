@@ -103,39 +103,81 @@ async def get_balance() -> dict:
 
 
 async def get_open_positions() -> dict:
+    """Возвращает список открытых позиций с актуальными стоп‑лоссами и тейк‑профитами."""
     path = '/openApi/swap/v2/user/positions'
     result = await _request_with_retry('GET', path)
-    if result.get('code') == 0:
-        positions = result.get('data', [])
-        if not isinstance(positions, list):
-            positions = positions.get('positions', []) if isinstance(positions, dict) else []
-        trades = []
-        for pos in positions:
-            amt = float(pos.get('positionAmt', 0))
-            if amt != 0:
-                symbol = pos.get('symbol', '')
-                side = 'LONG' if amt > 0 else 'SHORT'
-                position_id = f"{symbol}_{side}"
-                trades.append({
-                    'orderId':       position_id,
-                    'symbol':        symbol,
-                    'side':          side,
-                    'entryPrice':    float(pos.get('avgPrice', 0)),
-                    'positionAmt':   abs(amt),
-                    'size':          abs(amt),
-                    'unrealizedPnl': float(pos.get('unrealizedProfit', 0)),
-                    'leverage':      pos.get('leverage', 1),
-                    'stopLoss':      pos.get('stopLoss') or pos.get('stopLossPrice') or None,
-                    'takeProfit':    pos.get('takeProfit') or pos.get('takeProfitPrice') or None,
-                    'status':        'OPEN',
-                })
-        return {'success': True, 'trades': trades}
-    else:
+
+    if result.get('code') != 0:
         return {
             'success': False,
             'error': result.get('msg', 'Неизвестная ошибка'),
             'trades': []
         }
+
+    positions = result.get('data', [])
+    if not isinstance(positions, list):
+        positions = positions.get('positions', []) if isinstance(positions, dict) else []
+
+    trades = []
+    for pos in positions:
+        amt = float(pos.get('positionAmt', 0))
+        if amt == 0:
+            continue
+        symbol = pos.get('symbol', '')
+        side = 'LONG' if amt > 0 else 'SHORT'
+        position_id = f"{symbol}_{side}"
+        trades.append({
+            'orderId':       position_id,
+            'symbol':        symbol,
+            'side':          side,
+            'entryPrice':    float(pos.get('avgPrice', 0)),
+            'positionAmt':   abs(amt),
+            'size':          abs(amt),
+            'unrealizedPnl': float(pos.get('unrealizedProfit', 0)),
+            'leverage':      pos.get('leverage', 1),
+            'stopLoss':      None,
+            'takeProfit':    None,
+            'status':        'OPEN',
+        })
+
+    # ------------------------------------------------------------
+    # Дополнительно получаем открытые ордера, чтобы подтянуть TP/SL
+    try:
+        orders_result = await _request_with_retry('GET', '/openApi/swap/v2/trade/openOrders')
+        if orders_result.get('code') == 0:
+            open_orders = orders_result.get('data', {}).get('orders', [])
+            # Словарь для быстрого поиска: key = "SYMBOL_LONG" или "SYMBOL_SHORT"
+            tp_sl_map = {}
+            for order in open_orders:
+                sym = order.get('symbol', '')
+                pos_side = order.get('positionSide', '')  # LONG или SHORT
+                stop_price = float(order.get('stopPrice', 0))
+                order_type = order.get('type', '')
+
+                if not sym or not pos_side or stop_price <= 0:
+                    continue
+
+                key = f"{sym}_{pos_side}"
+                if key not in tp_sl_map:
+                    tp_sl_map[key] = {'takeProfit': None, 'stopLoss': None}
+
+                if order_type == 'TAKE_PROFIT_MARKET':
+                    tp_sl_map[key]['takeProfit'] = stop_price
+                elif order_type == 'STOP_MARKET':
+                    tp_sl_map[key]['stopLoss'] = stop_price
+
+            # Применяем к trades
+            for t in trades:
+                key = f"{t['symbol']}_{t['side']}"
+                if key in tp_sl_map:
+                    t['stopLoss'] = tp_sl_map[key].get('stopLoss')
+                    t['takeProfit'] = tp_sl_map[key].get('takeProfit')
+
+    except Exception as e:
+        # Если не удалось получить ордера – оставляем null, логируем в вызывающем коде
+        pass
+
+    return {'success': True, 'trades': trades}
 
 
 async def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
