@@ -1,12 +1,14 @@
 """
 ai/consensus_engine.py
 Refactored consensus engine with parallel agent execution,
-degraded state support, and honest confidence scoring.
+degraded state support, honest confidence scoring,
+and market_trend extraction.
 """
 
 import asyncio
 import json
 import logging
+import re
 from ai.agents.market_agent import MarketAgent
 from ai.agents.risk_agent import RiskAgent
 from ai.agents.psychology_agent import PsychologyAgent
@@ -56,7 +58,7 @@ class ConsensusEngine:
         """
         Run Market, Risk, Psychology agents in parallel,
         then JudgeAgent with aggregated results.
-        Returns result dict with degraded flag if any agent failed.
+        Returns result dict with degraded flag and market_trend.
         """
         degraded = False
         degraded_agents = []
@@ -144,6 +146,9 @@ class ConsensusEngine:
             degraded = True
             degraded_agents.append("JudgeAgent")
 
+        # --- Determine market_trend ---
+        market_trend = self._extract_market_trend(market_text, context)
+
         # Calculate honest metrics
         data_quality = self._calculate_data_quality(context)
         agent_confidences = [
@@ -177,6 +182,7 @@ class ConsensusEngine:
             'market_review': market_text,
             'risk_review': risk_text,
             'psychology_review': psych_text,
+            'market_trend': market_trend,
             'judge_verdict': verdict,
             'confidence': round(confidence, 2),
             'disagreement': round(disagreement, 2),
@@ -184,6 +190,28 @@ class ConsensusEngine:
             'degraded': degraded,
             'memory': memory
         }
+
+    def _extract_market_trend(self, market_text: str, context: dict) -> str:
+        """
+        Попытаться извлечь тренд из текста MarketAgent,
+        если не удалось – использовать контекст рынка.
+        """
+        # Ищем ключевые слова в тексте агента
+        text_lower = market_text.lower()
+        if any(word in text_lower for word in ['bullish', 'бычий', 'восходящий', 'рост']):
+            return "BULLISH"
+        if any(word in text_lower for word in ['bearish', 'медвежий', 'нисходящий', 'падение']):
+            return "BEARISH"
+        if any(word in text_lower for word in ['sideways', 'нейтральный', 'боковик', 'консолидация']):
+            return "SIDEWAYS"
+
+        # Fallback к данным рынка
+        market = context.get('market', {}) or {}
+        trend = market.get('trend', '')
+        if trend in ('BULLISH', 'BEARISH', 'SIDEWAYS'):
+            return trend
+
+        return "UNKNOWN"
 
     def _parse_agent_response(self, response: str, agent_name: str) -> dict:
         """Parse agent JSON response, extracting text, score, and confidence."""
@@ -289,6 +317,7 @@ class ConsensusEngine:
             'market_review': message,
             'risk_review': message,
             'psychology_review': message,
+            'market_trend': 'UNKNOWN',
             'judge_verdict': json.dumps({"verdict": "AVOID", "final_score": 0, "summary": message}),
             'confidence': 0.0,
             'disagreement': 0.0,
