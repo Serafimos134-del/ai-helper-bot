@@ -112,7 +112,6 @@ class ConsensusEngine:
 
         # Обновляем confidence с учётом реального disagreement
         confidence = det_scores['confidence']
-        # Штраф за высокое расхождение агентов
         if disagreement > 0.3:
             confidence = max(0.15, confidence - (disagreement - 0.3) * 0.5)
         confidence = round(confidence, 2)
@@ -180,7 +179,6 @@ class ConsensusEngine:
         mean   = sum(scores) / len(scores)
         variance = sum((s - mean) ** 2 for s in scores) / len(scores)
         stdev  = math.sqrt(variance)
-        # Нормализуем к 0-1 (100 = максимальное возможное stdev)
         return round(min(1.0, stdev / 100), 2)
 
     def _extract_market_trend(self, market_text: str, context: dict) -> str:
@@ -191,9 +189,11 @@ class ConsensusEngine:
             return "BEARISH"
         if any(w in text_lower for w in ['sideways', 'нейтральный', 'боковик', 'консолидация']):
             return "SIDEWAYS"
+        if any(w in text_lower for w in ['ranging', 'рейнджинг', 'диапазон', 'флэт']):
+            return "RANGING"
         market = context.get('market') or {}
         trend  = market.get('trend', '')
-        if trend in ('BULLISH', 'BEARISH', 'SIDEWAYS'):
+        if trend in ('BULLISH', 'BEARISH', 'SIDEWAYS', 'RANGING'):
             return trend
         return "UNKNOWN"
 
@@ -237,17 +237,13 @@ class ConsensusEngine:
         }
 
     def _is_market_data_valid(self, context: dict) -> bool:
-        # Для setup: нужен ticker с ценой ИЛИ допускаем частичный анализ
         if context.get('idea'):
             ticker = context.get('ticker') or {}
             if ticker.get('price', 0) > 0:
                 return True
-            # Разрешаем продолжить даже без ticker — MarketAgent справится с общими данными
             market = context.get('market') or {}
             btc    = market.get('btc') or {}
             return btc.get('price', 0) > 0
-
-        # Для open/post_trade: достаточно BTC или ETH данных
         market = context.get('market') or context.get('market_snapshot', {}) or {}
         btc    = market.get('btc') or {}
         eth    = market.get('eth') or {}
