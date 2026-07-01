@@ -13,12 +13,12 @@ from core.keyboards import (
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
     BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
-    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN,
+    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN, BTN_AI_COACH,
     NAV_BUTTONS,
 )
 from handlers.trading import show_balance, show_last_trades, show_stats, show_ai_analysis
 from handlers.ai import (
-    show_market_overview, show_trends, show_journal_analysis,
+    show_market_overview, show_trends, show_journal_analysis, show_coach,
     consilium_menu, consilium_open_positions, consilium_analyze_position,
     consilium_new_setup, consilium_process_setup,
 )
@@ -32,9 +32,9 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != CHAT_ID:
         return
-    text = update.message.text.strip()
+    text  = update.message.text.strip()
     state = context.user_data.get('state')
-    db = get_db()
+    db    = get_db()
 
     if text == BTN_CANCEL:
         if state == 'consilium_setup_input':
@@ -50,7 +50,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
         if text in NAV_BUTTONS or text.startswith("🏠 *"):
-            await update.message.reply_text("⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.", reply_markup=cancel_keyboard())
+            await update.message.reply_text(
+                "⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.",
+                reply_markup=cancel_keyboard()
+            )
             return
 
     if state == 'entering_comment_inline':
@@ -119,5 +122,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_trends(update)
     elif text == BTN_AI_LEARN:
         await show_journal_analysis(update)
+    elif text == BTN_AI_COACH:
+        await show_coach(update, context)
     else:
         await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())
