@@ -15,6 +15,7 @@ from core.router import setup_router
 from core.scheduler import setup_scheduler
 
 from handlers.system import start, health_command, sync_command, status_command, ai_fix_command, test_behavior_command
+from handlers.ai import show_coach
 from handlers.menu import menu_handler
 
 load_dotenv()
@@ -47,7 +48,7 @@ async def restore_history_command(update: Update, context):
 
         db = Database()
         restored = 0
-        skipped = 0
+        skipped  = 0
         for order in orders:
             oid = order.get('orderId')
             if not oid:
@@ -58,17 +59,17 @@ async def restore_history_command(update: Update, context):
                 continue
             side = 'LONG' if str(order.get('side', '')).upper() in ('BUY', 'LONG') else 'SHORT'
             trade = {
-                'orderId': oid,
-                'symbol': order.get('symbol'),
-                'side': side,
+                'orderId':     oid,
+                'symbol':      order.get('symbol'),
+                'side':        side,
                 'entry_price': float(order.get('entryPrice', 0)),
-                'exit_price': float(order.get('exitPrice', 0)),
-                'quantity': abs(float(order.get('positionAmt', order.get('size', 0)))),
+                'exit_price':  float(order.get('exitPrice', 0)),
+                'quantity':    abs(float(order.get('positionAmt', order.get('size', 0)))),
                 'realized_pnl': float(order.get('realizedPnl', 0)),
-                'leverage': float(order.get('leverage', 1)),
-                'open_time': order.get('openTime'),
-                'close_time': order.get('closeTime'),
-                'comment': ''
+                'leverage':    float(order.get('leverage', 1)),
+                'open_time':   order.get('openTime'),
+                'close_time':  order.get('closeTime'),
+                'comment':     ''
             }
             try:
                 db.add_closed_trade(trade)
@@ -88,12 +89,13 @@ def main():
     init_db()
     db = get_db()
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('sync', sync_command))
-    app.add_handler(CommandHandler('status', status_command))
-    app.add_handler(CommandHandler('ai_fix', ai_fix_command))
-    app.add_handler(CommandHandler('test_behavior', test_behavior_command))
-    app.add_handler(CommandHandler('health', health_command))
+    app.add_handler(CommandHandler('start',           start))
+    app.add_handler(CommandHandler('sync',            sync_command))
+    app.add_handler(CommandHandler('status',          status_command))
+    app.add_handler(CommandHandler('ai_fix',          ai_fix_command))
+    app.add_handler(CommandHandler('test_behavior',   test_behavior_command))
+    app.add_handler(CommandHandler('coach',           show_coach))
+    app.add_handler(CommandHandler('health',          health_command))
     app.add_handler(CommandHandler('restore_history', restore_history_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     setup_router(app)
