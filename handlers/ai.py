@@ -1,33 +1,29 @@
 """
 handlers/ai.py
-AI-related handlers: market overview, trends, journal analysis, consilium.
+AI-related handlers: market overview, trends, journal analysis, consilium, coach.
 """
 
 import json
 import re
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
-from core.container import get_ai_analyzer, get_consensus
+from core.container import get_ai_analyzer, get_consensus, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
 
 
 def _clean(text: str) -> str:
-    """Убирает markdown-форматирование LLM чтобы не конфликтовало с Telegram."""
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # **bold** → bold
-    text = re.sub(r'__(.+?)__',     r'\1', text)   # __bold__ → bold
-    text = re.sub(r'`(.+?)`',       r'\1', text)   # `code` → code
+    """Убирает markdown LLM чтобы не конфликтовало с Telegram."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__',     r'\1', text)
+    text = re.sub(r'`(.+?)`',       r'\1', text)
     return text.strip()
 
 
-async def _send_chunks(obj, text: str, reply_markup=None):
-    """Разбивает длинный текст на куски по 4096 символов и отправляет.
-    Клавиатуру прикрепляет только к первому сообщению."""
-    limit = 4096
+async def _send_chunks(obj, text: str, **kwargs):
+    """Разбивает длинный текст на куски по 4000 символов и отправляет."""
+    limit = 4000
     for i in range(0, len(text), limit):
-        kwargs = {}
-        if i == 0 and reply_markup:
-            kwargs['reply_markup'] = reply_markup
         await obj.reply_text(text[i:i+limit], **kwargs)
 
 
@@ -120,7 +116,6 @@ async def show_trends(update: Update):
 
 
 async def show_journal_analysis(update: Update):
-    from core.container import get_db
     db = get_db()
     ai_analyzer = get_ai_analyzer()
     msg = await update.message.reply_text("🤖 Анализирую журнал сделок...")
@@ -159,6 +154,30 @@ async def show_journal_analysis(update: Update):
     await _send_chunks(update.message, f"📊 Анализ журнала:\n\n{answer}", reply_markup=ai_menu_keyboard())
 
 
+async def show_coach(update: Update):
+    """AI Coach — персональный разбор на основе Performance Engine."""
+    from services.coach_engine import CoachEngine
+    ai_analyzer = get_ai_analyzer()
+    db = get_db()
+
+    msg = await update.message.reply_text("🎯 Готовлю персональный разбор...")
+
+    if not ai_analyzer.provider:
+        await msg.edit_text("⚠️ AI недоступен. Проверь GROQ_API_KEY.")
+        return
+
+    coach = CoachEngine(ai_analyzer.provider, db)
+    result = await coach.generate_coaching(user_id='default')
+    text = _clean(result)
+
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    await _send_chunks(update.message, f"🎯 AI Coach\n\n{text}", reply_markup=ai_menu_keyboard())
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # КОНСИЛИУМ
 # ══════════════════════════════════════════════════════════════════════════════
@@ -188,15 +207,18 @@ async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT
         side     = 'LONG' if raw_side in ('BUY', 'LONG') else 'SHORT'
         keyboard.append([f"{sym} {side}"])
     keyboard.append([BTN_BACK])
-    await update.message.reply_text("Выбери позицию для анализа:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    await update.message.reply_text(
+        "Выбери позицию для анализа:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
     context.user_data['state'] = 'consilium_choose_position'
 
 
 async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
     consensus = get_consensus()
-    text   = update.message.text.strip()
-    trades = context.user_data.get('consilium_positions', [])
-    chosen = None
+    text      = update.message.text.strip()
+    trades    = context.user_data.get('consilium_positions', [])
+    chosen    = None
     expected_side = ''
     for t in trades:
         raw_side      = str(t.get('side', '')).upper()
@@ -225,7 +247,7 @@ async def consilium_new_setup(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from utils.parsers import parse_trade_idea
-    consensus = get_consensus()
+    consensus        = get_consensus()
     text             = update.message.text.strip()
     ticker, direction = parse_trade_idea(text)
     if not ticker or not direction:
