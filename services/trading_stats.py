@@ -1,4 +1,22 @@
-def format_stats_message(stats: dict) -> str:
+"""
+services/trading_stats.py
+Formatting for stats messages. Now delegates to PerformanceEngine for rich metrics.
+"""
+
+from services.performance_engine import PerformanceEngine, format_performance_report
+
+
+def format_stats_message(stats: dict, db=None, user_id: str = 'default') -> str:
+    """
+    Если передана db — показывает полный Performance Report.
+    Иначе — базовая статистика (обратная совместимость).
+    """
+    if db is not None:
+        engine = PerformanceEngine(db)
+        report = engine.get_full_report(user_id)
+        return format_performance_report(report)
+
+    # Fallback: базовая статистика без db
     if stats.get('total_trades', 0) == 0:
         return "📊 *Статистика*\n\nНет закрытых сделок для расчёта."
 
