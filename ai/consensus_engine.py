@@ -2,7 +2,7 @@
 ai/consensus_engine.py
 Refactored consensus engine with parallel agent execution,
 degraded state support, honest confidence scoring,
-and market_trend extraction.
+market_trend extraction, and mode‑aware context dispatch.
 """
 
 import asyncio
@@ -60,6 +60,9 @@ class ConsensusEngine:
         then JudgeAgent with aggregated results.
         Returns result dict with degraded flag and market_trend.
         """
+        # ----- CRITICAL FIX: inject mode into context so agents can gate their logic -----
+        context['mode'] = mode
+
         degraded = False
         degraded_agents = []
 
@@ -191,12 +194,8 @@ class ConsensusEngine:
             'memory': memory
         }
 
+    # ─── helpers unchanged ────────────────────────────────────────────────
     def _extract_market_trend(self, market_text: str, context: dict) -> str:
-        """
-        Попытаться извлечь тренд из текста MarketAgent,
-        если не удалось – использовать контекст рынка.
-        """
-        # Ищем ключевые слова в тексте агента
         text_lower = market_text.lower()
         if any(word in text_lower for word in ['bullish', 'бычий', 'восходящий', 'рост']):
             return "BULLISH"
@@ -204,17 +203,13 @@ class ConsensusEngine:
             return "BEARISH"
         if any(word in text_lower for word in ['sideways', 'нейтральный', 'боковик', 'консолидация']):
             return "SIDEWAYS"
-
-        # Fallback к данным рынка
         market = context.get('market', {}) or {}
         trend = market.get('trend', '')
         if trend in ('BULLISH', 'BEARISH', 'SIDEWAYS'):
             return trend
-
         return "UNKNOWN"
 
     def _parse_agent_response(self, response: str, agent_name: str) -> dict:
-        """Parse agent JSON response, extracting text, score, and confidence."""
         try:
             data = json.loads(response) if isinstance(response, str) else response
         except (json.JSONDecodeError, TypeError):
@@ -226,21 +221,14 @@ class ConsensusEngine:
                 'agent_name': agent_name,
                 'raw': {}
             }
-
-        # Extract display text
         text = data.get('analysis') or data.get('summary') or str(data)
-
-        # Extract score (market_score, risk_score, psychology_score)
         score = (
             data.get('market_score') or
             data.get('risk_score') or
             data.get('psychology_score') or
             DEGRADED_SCORE
         )
-
-        # Extract confidence (if agent provides it)
         confidence = data.get('confidence', 0.5)
-
         return {
             'text': str(text),
             'score': int(score) if score else DEGRADED_SCORE,
@@ -251,7 +239,6 @@ class ConsensusEngine:
         }
 
     def _degraded_result(self, agent_name: str, error: str) -> dict:
-        """Create a degraded result for a failed agent."""
         return {
             'text': f"⚠️ {agent_name} недоступен: {error}",
             'score': DEGRADED_SCORE,
@@ -283,7 +270,6 @@ class ConsensusEngine:
         market_lower = market.lower()
         risk_lower = risk.lower()
         psych_lower = psych.lower()
-
         if ('buy' in market_lower or 'bullish' in market_lower) and ('high' in risk_lower or 'extreme' in risk_lower):
             disagreement_score += 0.4
         if ('buy' in market_lower) and ('revenge' in psych_lower or 'tilt' in psych_lower or 'emotional' in psych_lower):
@@ -292,7 +278,6 @@ class ConsensusEngine:
             disagreement_score += 0.2
         if ('wait' in market_lower or 'wait' in risk_lower) and ('входить' in psych_lower or 'buy' in psych_lower):
             disagreement_score += 0.3
-
         return min(1.0, disagreement_score)
 
     def _is_market_data_valid(self, context: dict) -> bool:
@@ -302,7 +287,6 @@ class ConsensusEngine:
                 return True
             if context.get('idea'):
                 return False
-
         market = context.get('market') or context.get('market_snapshot', {})
         btc = market.get('btc', {}) if market else {}
         eth = market.get('eth', {}) if market else {}
