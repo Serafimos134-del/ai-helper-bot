@@ -101,13 +101,16 @@ class ConsensusEngine:
         risk_text = risk_result.get('text', str(risk_result))
         psych_text = psych_result.get('text', str(psych_result))
 
+        # Определяем рыночный тренд (до скорера)
+        market_trend = self._extract_market_trend(market_text, context)
+
         # Извлекаем объект для детерминированного скоринга
         target_obj = context.get('position') or context.get('trade')
         if target_obj is None:
             target_obj = {}
 
-        # Детерминированные метрики (Python)
-        det_scores = self.deterministic_scorer.calculate(target_obj, mode)
+        # Детерминированные метрики (Python), теперь с учётом market_regime
+        det_scores = self.deterministic_scorer.calculate(target_obj, mode, market_regime=market_trend)
 
         # Используем детерминированные risk и psychology scores
         risk_score = det_scores['risk_score']
@@ -148,8 +151,6 @@ class ConsensusEngine:
             degraded = True
             degraded_agents.append("JudgeAgent")
 
-        market_trend = self._extract_market_trend(market_text, context)
-
         # Берём метрики из детерминированного скорера
         confidence = det_scores['confidence']
         data_quality = det_scores['data_quality']
@@ -172,7 +173,7 @@ class ConsensusEngine:
             'memory': memory
         }
 
-    # ─── helpers (без изменений) ─────────────────────────────────
+    # ─── helpers ────────────────────────────────────────────────
     def _extract_market_trend(self, market_text: str, context: dict) -> str:
         text_lower = market_text.lower()
         if any(w in text_lower for w in ['bullish', 'бычий', 'восходящий', 'рост']):
