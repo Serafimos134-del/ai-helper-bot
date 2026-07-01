@@ -232,6 +232,9 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую позицию...")
     result = await consensus.analyze_open_position(chosen)
+    # Добавляем SL/TP из выбранной позиции в результат для отображения
+    result['stop_loss'] = chosen.get('stopLoss') or chosen.get('stop_loss')
+    result['take_profit'] = chosen.get('takeProfit') or chosen.get('take_profit')
     response = _build_response(result, chosen['symbol'], expected_side)
     await msg.edit_text(response[:4096])
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())
@@ -299,6 +302,15 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
             response += f" | Качество данных: {data_quality:.0%}"
         if disagreement is not None:
             response += f" | Разногласия: {disagreement:.0%}"
+
+    # Показываем SL/TP, если они есть в результате (для открытых позиций)
+    sl = result.get('stop_loss')
+    tp = result.get('take_profit')
+    if sl:
+        response += f"\n🛑 SL: ${float(sl):.4f}"
+    if tp:
+        response += f"\n🎯 TP: ${float(tp):.4f}"
+
     memory = result.get('memory')
     if memory:
         response += f"\n\n{memory}"
