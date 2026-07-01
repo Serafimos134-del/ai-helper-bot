@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class JudgeAgent:
-    """Финальный арбитр с взвешенной score matrix и опциональным LLM‑объяснением."""
+    """Финальный арбитр, использующий метрики из консенсус-движка и адаптирующий вердикт под режим анализа."""
 
     WEIGHTS = {
         "market": 0.35,
@@ -26,9 +26,10 @@ class JudgeAgent:
         self.provider = provider
 
     async def synthesize(self, market_json: str, risk_json: str, psychology_json: str,
-                         mode: str = None, trade_score: int = None) -> str:
+                         mode: str = None, trade_score: int = None,
+                         confidence: float = None, disagreement: float = None) -> str:
         """
-        Принимает JSON‑выводы трёх агентов + опциональный trade_score и возвращает финальный вердикт.
+        Принимает JSON‑выводы агентов, метрики консенсуса и возвращает финальный вердикт.
         """
         try:
             market = json.loads(market_json) if isinstance(market_json, str) else market_json
@@ -47,7 +48,6 @@ class JudgeAgent:
         risk_score = self._extract_score(risk, "risk_score")
         psychology_score = self._extract_score(psychology, "psychology_score")
 
-        # Trade score: передан извне (TradeScorer) или fallback
         if trade_score is not None:
             final_trade_score = int(trade_score)
         else:
@@ -61,11 +61,16 @@ class JudgeAgent:
         )
         final_score = int(max(0, min(100, final_score)))
 
-        verdict = self._get_verdict(final_score)
+        # Используем переданные из консенсуса confidence и disagreement, если они есть
+        if confidence is None:
+            scores = [market_score, risk_score, psychology_score]
+            raw_disagreement = max(scores) - min(scores)
+            confidence = max(20, 100 - raw_disagreement)
+        if disagreement is None:
+            scores = [market_score, risk_score, psychology_score]
+            disagreement = max(scores) - min(scores)
 
-        scores = [market_score, risk_score, psychology_score]
-        disagreement = max(scores) - min(scores)
-        confidence = max(20, 100 - disagreement)
+        verdict = self._get_verdict(final_score, mode)
 
         warnings = []
         if risk_score < 40:
@@ -75,11 +80,13 @@ class JudgeAgent:
         if disagreement > 40:
             warnings.append("Сильное расхождение мнений агентов")
 
-        summary = self._generate_summary(final_score, verdict, confidence, disagreement)
+        summary = self._generate_summary(final_score, verdict, confidence, disagreement, mode)
 
         if self.provider:
             try:
-                enhanced = await self._enhance_with_llm(final_score, verdict, confidence, market_score, risk_score, psychology_score)
+                enhanced = await self._enhance_with_llm(final_score, verdict, confidence,
+                                                        market_score, risk_score, psychology_score,
+                                                        mode)
                 if enhanced:
                     summary = enhanced
             except Exception as e:
@@ -101,51 +108,75 @@ class JudgeAgent:
 
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-    @staticmethod
-    def _extract_score(data: dict, key: str, default: int = 50) -> int:
-        if key in data:
-            return int(data[key])
-        metrics = data.get("metrics", {})
-        if key in metrics:
-            return int(metrics[key])
-        alt_keys = ["score", "final_score", "total_score"]
-        for alt in alt_keys:
-            if alt in data:
-                return int(data[alt])
-        return default
-
     @classmethod
-    def _get_verdict(cls, score: int) -> str:
+    def _get_verdict(cls, score: int, mode: str = None) -> str:
+        # Для открытых позиций и закрытых сделок используем HOLD/CLOSE вместо ENTER/AVOID
+        if mode in ('open', 'post_trade'):
+            if score >= 70:
+                return "HOLD" if mode == 'open' else "GOOD_TRADE"
+            elif score >= 55:
+                return "HOLD"  # для открытых позиций удержание, для закрытых - нейтрально
+            else:
+                return "CLOSE" if mode == 'open' else "BAD_TRADE"
+        # Для сетапов и общего анализа используем классические вердикты
         for verdict, threshold in cls.THRESHOLDS.items():
             if score >= threshold:
                 return verdict
         return "AVOID"
 
     @classmethod
-    def _generate_summary(cls, score: int, verdict: str, confidence: int, disagreement: int) -> str:
-        verdict_text = {
-            "STRONG_ENTER": "Сильный сигнал на вход. Все агенты согласны, риски минимальны.",
-            "ENTER": "Вход допустим. Большинство агентов дают положительный сигнал.",
-            "WAIT": "Рекомендуется подождать. Есть факторы, требующие осторожности.",
-            "AVOID": "Вход не рекомендуется. Высокий риск или плохое психологическое состояние.",
-        }
-        base = verdict_text.get(verdict, "Решение не определено.")
-        if confidence < 50:
-            base += f" Уверенность низкая ({confidence}%) из‑за расхождения мнений."
+    def _generate_summary(cls, score: int, verdict: str, confidence: float, disagreement: float,
+                          mode: str = None) -> str:
+        # Адаптивные сообщения в зависимости от режима
+        if mode == 'open':
+            if verdict == 'HOLD':
+                base = "Позицию рекомендуется удерживать."
+            elif verdict == 'CLOSE':
+                base = "Позицию рекомендуется закрыть."
+            else:
+                base = f"Решение по позиции неопределённое (вердикт: {verdict})."
+        elif mode == 'post_trade':
+            if verdict == 'GOOD_TRADE':
+                base = "Сделка качественная, соблюдены риск-менеджмент и дисциплина."
+            elif verdict == 'BAD_TRADE':
+                base = "Сделка неудачная, есть проблемы в управлении риском или психологии."
+            else:
+                base = f"Оценка сделки: {verdict}."
+        else:
+            verdict_text = {
+                "STRONG_ENTER": "Сильный сигнал на вход.",
+                "ENTER": "Вход допустим.",
+                "WAIT": "Рекомендуется подождать.",
+                "AVOID": "Вход не рекомендуется.",
+            }
+            base = verdict_text.get(verdict, "Решение не определено.")
+
+        if confidence < 0.6:
+            base += f" Уверенность низкая ({confidence:.0%})."
+        elif disagreement > 0.3:
+            base += f" Есть расхождения между агентами ({disagreement:.0%})."
+
         return base
 
-    async def _enhance_with_llm(self, score: int, verdict: str, confidence: int,
-                                market_score: int, risk_score: int, psychology_score: int) -> str:
+    async def _enhance_with_llm(self, score: int, verdict: str, confidence: float,
+                                market_score: int, risk_score: int, psychology_score: int,
+                                mode: str = None) -> str:
         if not self.provider:
             return ""
+        mode_context = {
+            'open': 'открытая позиция',
+            'post_trade': 'закрытая сделка',
+            'setup': 'новый сетап'
+        }.get(mode, 'анализ')
+
         prompt = (
             f"Ты — главный трейдер-ментор. На основе консилиума дай краткий вердикт (1-2 предложения) "
-            f"на русском языке, без воды.\n"
+            f"на русском языке для {mode_context}.\n"
             f"Итоговый счёт: {score}/100\n"
             f"Вердикт: {verdict}\n"
-            f"Уверенность: {confidence}%\n"
+            f"Уверенность: {confidence:.0%}\n"
             f"Market: {market_score}/100, Risk: {risk_score}/100, Psychology: {psychology_score}/100\n\n"
-            "Вердикт:"
+            "Твой вердикт (не повторяй цифры, только суть):"
         )
         try:
             loop = asyncio.get_running_loop()
