@@ -7,6 +7,7 @@ from typing import Dict, Any
 
 def normalize_position(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Открытая позиция из API BingX или из контекста."""
+    size = abs(float(raw.get("positionAmt", raw.get("size", raw.get("quantity", 0)))))
     return {
         "symbol": raw.get("symbol", ""),
         "side": raw.get("side", "LONG"),
@@ -16,7 +17,8 @@ def normalize_position(raw: Dict[str, Any]) -> Dict[str, Any]:
         "leverage": float(raw.get("leverage", 1)),
         "stop_loss": raw.get("stopLoss") or raw.get("stop_loss"),
         "take_profit": raw.get("takeProfit") or raw.get("take_profit"),
-        "size": abs(float(raw.get("positionAmt", raw.get("size", raw.get("quantity", 0))))),
+        "size": size,
+        "quantity": size,
     }
 
 def normalize_trade(raw: Dict[str, Any]) -> Dict[str, Any]:
