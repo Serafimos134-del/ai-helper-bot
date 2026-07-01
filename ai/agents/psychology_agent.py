@@ -6,11 +6,12 @@ from ai.psychology_engine import PsychologyEngine
 
 logger = logging.getLogger(__name__)
 
+
 class PsychologyAgent:
     """Агент психологии: детерминированный анализ позиций/сделок, rule-based для портфеля."""
 
     def __init__(self, provider=None):
-        self.provider = provider          # больше не используется для позиций/сделок
+        self.provider = provider
         self.context_builder = ContextBuilder()
 
     async def analyze(self, context: dict = None) -> str:
@@ -19,8 +20,8 @@ class PsychologyAgent:
         else:
             ctx = context
 
-        mode = ctx.get('mode', 'open')
-        trade = ctx.get('trade')
+        mode     = ctx.get('mode', 'open')
+        trade    = ctx.get('trade')
         position = ctx.get('position')
 
         if mode == 'post_trade' and trade:
@@ -29,19 +30,48 @@ class PsychologyAgent:
             return self._analyze_open_position(position)
         return await self._rule_based_analysis(ctx)
 
-    # ── Детерминированный анализ закрытой сделки ─────────────────
     def _analyze_post_trade(self, trade: dict) -> str:
-        sl = trade.get('stop_loss')
-        tp = trade.get('take_profit')
-        exit_price = trade.get('exit_price', 0)
-        pnl = trade.get('realized_pnl', 0)
-        duration = trade.get('holding_minutes', '?')
-        comment = trade.get('exit_comment', '')
+        sl         = trade.get('stop_loss')
+        tp         = trade.get('take_profit')
+        side       = trade.get('side', 'LONG')
+        exit_price = float(trade.get('exit_price', 0))
+        pnl        = float(trade.get('realized_pnl', 0))
+        duration   = trade.get('holding_minutes')
+        comment    = trade.get('exit_comment', '')
 
-        # Проверяем, сработали ли SL/TP
-        sl_hit = sl and exit_price <= sl and pnl < 0
-        tp_hit = tp and exit_price >= tp and pnl > 0
-        early_exit = not sl_hit and not tp_hit and duration != '?' and int(duration or 0) < 60
+        # Безопасное вычисление duration
+        try:
+            holding_int = int(duration) if duration is not None and str(duration) != '?' else None
+        except (ValueError, TypeError):
+            holding_int = None
+
+        # Проверка срабатывания SL с учётом направления
+        if sl is not None:
+            sl_f = float(sl)
+            if side == 'LONG':
+                sl_hit = exit_price <= sl_f and pnl < 0
+            else:
+                sl_hit = exit_price >= sl_f and pnl < 0
+        else:
+            sl_hit = False
+
+        # Проверка срабатывания TP с учётом направления
+        if tp is not None:
+            tp_f = float(tp)
+            if side == 'LONG':
+                tp_hit = exit_price >= tp_f and pnl > 0
+            else:
+                tp_hit = exit_price <= tp_f and pnl > 0
+        else:
+            tp_hit = False
+
+        # Ранний выход: закрыт не по SL/TP и менее 60 минут
+        early_exit = (
+            not sl_hit and
+            not tp_hit and
+            holding_int is not None and
+            holding_int < 60
+        )
 
         patterns = []
         if sl_hit:
@@ -61,9 +91,12 @@ class PsychologyAgent:
             patterns.append(f"Комментарий трейдера: {comment}")
 
         discipline_score = 10
-        if not sl: discipline_score -= 3
-        if not tp: discipline_score -= 2
-        if early_exit: discipline_score -= 2
+        if not sl:
+            discipline_score -= 3
+        if not tp:
+            discipline_score -= 2
+        if early_exit:
+            discipline_score -= 2
         discipline_score = max(0, min(10, discipline_score))
 
         result = {
@@ -72,12 +105,11 @@ class PsychologyAgent:
         }
         return json.dumps(result, ensure_ascii=False)
 
-    # ── Детерминированный анализ открытой позиции ─────────────────
     def _analyze_open_position(self, pos: dict) -> str:
-        sl = pos.get('stop_loss')
-        tp = pos.get('take_profit')
-        leverage = pos.get('leverage', 1)
-        size = pos.get('size', 0)
+        sl       = pos.get('stop_loss')
+        tp       = pos.get('take_profit')
+        leverage = float(pos.get('leverage', 1))
+        size     = pos.get('size', 0)
 
         patterns = []
         discipline_score = 10
@@ -100,7 +132,7 @@ class PsychologyAgent:
         elif leverage >= 5:
             patterns.append("Умеренное плечо — приемлемый уровень риска.")
 
-        if size > 0:
+        if size:
             patterns.append(f"Размер позиции: {size}.")
 
         discipline_score = max(0, min(10, discipline_score))
@@ -111,7 +143,6 @@ class PsychologyAgent:
         }
         return json.dumps(result, ensure_ascii=False)
 
-    # ── Rule-based портфельный анализ (без изменений) ────────────
     async def _rule_based_analysis(self, ctx: dict) -> str:
         history = ctx.get("history", {})
         signals = PsychologyEngine.assess(history)
@@ -124,19 +155,14 @@ class PsychologyAgent:
         score = signals.get("psychology_score", 50)
         if not flags:
             return "Психологическое состояние стабильное. Отклонений не обнаружено."
-        messages = []
         flag_map = {
-            "overtrading": "Обнаружен риск овертрейдинга. Снизить частоту входов.",
+            "overtrading":     "Обнаружен риск овертрейдинга. Снизить частоту входов.",
             "revenge_trading": "Признаки revenge trading. Рекомендуется пауза минимум 24 часа.",
-            "tilt": "Высокая вероятность тильта. Сделать перерыв.",
-            "fomo": "Замечен FOMO-паттерн. Пересмотреть критерии входа.",
-            "high_stress": "Повышенный стресс. Новые сделки не рекомендуются.",
+            "tilt":            "Высокая вероятность тильта. Сделать перерыв.",
+            "fomo":            "Замечен FOMO-паттерн. Пересмотреть критерии входа.",
+            "high_stress":     "Повышенный стресс. Новые сделки не рекомендуются.",
         }
-        for flag in flags:
-            if flag in flag_map:
-                messages.append(flag_map[flag])
-            else:
-                messages.append(f"Обнаружен флаг: {flag}.")
+        messages = [flag_map.get(f, f"Обнаружен флаг: {f}.") for f in flags]
         if score < 40:
             messages.append("Психологический счёт критически низкий. Настоятельно рекомендуется пауза.")
         elif score < 60:
