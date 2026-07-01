@@ -24,12 +24,10 @@ async def _send_long(msg, text: str):
     if len(text) <= 4000:
         await msg.edit_text(text)
         return
-    # Первый кусок через edit, остальные через reply
     await msg.edit_text(text[:4000])
-    chat_id = msg.chat.id
     bot = msg.get_bot()
     for i in range(4000, len(text), 4000):
-        await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
+        await bot.send_message(chat_id=msg.chat.id, text=text[i:i+4000])
 
 
 async def show_balance(update: Update):
@@ -86,9 +84,8 @@ async def show_last_trades(update: Update):
 async def show_stats(update: Update):
     db = get_db()
     msg  = await update.message.reply_text("⏳ Считаю статистику...")
-    stats = db.get_stats()
-    text  = format_stats_message(stats)
-    await msg.edit_text(text, parse_mode='Markdown')
+    text = format_stats_message({}, db=db)
+    await _send_long(msg, text)
 
 
 async def show_ai_analysis(update: Update):
