@@ -58,9 +58,14 @@ async def show_last_trades(update: Update):
         for t in open_trades:
             pnl = float(t.get('unrealized_pnl', 0))
             emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+            sl = t.get('stop_loss')
+            tp = t.get('take_profit')
+            sl_str = f" | SL: ${float(sl):.4f}" if sl else ""
+            tp_str = f" | TP: ${float(tp):.4f}" if tp else ""
             lines.append(
                 f"{emoji} {t.get('symbol')} {t.get('side')} "
-                f"| Вход: ${float(t.get('entry_price', 0)):.4f} "
+                f"| Вход: ${float(t.get('entry_price', 0)):.4f}"
+                f"{sl_str}{tp_str} "
                 f"| PNL: ${pnl:+.2f}"
             )
     else:
