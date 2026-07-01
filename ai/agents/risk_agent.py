@@ -88,9 +88,9 @@ class RiskAgent:
         else:
             rr = "—"
 
-        # Потенциальный убыток при SL
+        # Потенциальный убыток при SL (без плеча)
         if sl and size and entry:
-            loss_if_sl = abs(entry - sl) * size * leverage
+            loss_if_sl = abs(entry - sl) * size   # ← исправлено
             loss_str = f"${loss_if_sl:.2f}"
         else:
             loss_str = "неизвестен"
