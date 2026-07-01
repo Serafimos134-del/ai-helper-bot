@@ -184,3 +184,16 @@ class JudgeAgent:
             return result.strip()
         except Exception:
             return ""
+
+    @staticmethod
+    def _extract_score(data: dict, key: str, default: int = 50) -> int:
+        if key in data:
+            return int(data[key])
+        metrics = data.get("metrics", {})
+        if key in metrics:
+            return int(metrics[key])
+        alt_keys = ["score", "final_score", "total_score"]
+        for alt in alt_keys:
+            if alt in data:
+                return int(data[alt])
+        return default
