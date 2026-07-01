@@ -8,10 +8,10 @@ from ai.risk_engine import RiskRuleEngine
 logger = logging.getLogger(__name__)
 
 class RiskAgent:
-    """Агент оценки риска: детерминированный анализ позиций/сделок, rule-based для портфеля."""
+    """Агент оценки риска: детерминированный анализ позиций/сделок/сетапов, rule-based для портфеля."""
 
     def __init__(self, provider: BaseProvider = None):
-        self.provider = provider          # больше не используется для позиций/сделок
+        self.provider = provider
         self.context_builder = ContextBuilder()
 
     async def analyze(self, context: dict = None) -> str:
@@ -23,14 +23,70 @@ class RiskAgent:
         mode = ctx.get('mode', 'open')
         trade = ctx.get('trade')
         position = ctx.get('position')
+        idea = ctx.get('idea') or {}
 
         if mode == 'post_trade' and trade:
             return self._analyze_post_trade(trade)
         if mode == 'open' and position:
             return self._analyze_open_position(position)
+        # --- новый блок для сетапов ---
+        if mode == 'setup' and idea:
+            return self._analyze_setup(idea, ctx.get('ticker', {}))
+        # --- конец нового блока ---
         return await self._rule_based_analysis(ctx)
 
-    # ── Детерминированный анализ закрытой сделки ─────────────────
+    # ── Детерминированный анализ сетапа ──────────────────────────
+    def _analyze_setup(self, idea: dict, ticker: dict) -> str:
+        direction = idea.get('direction', '')
+        symbol = idea.get('symbol', '')
+        price = ticker.get('price', 0) or 0
+        atr = ticker.get('atr', 0) or 0
+        funding = ticker.get('funding_rate', 0) or 0
+        regime = ticker.get('market_regime', 'UNKNOWN')
+
+        # Оценка волатильности
+        if atr and price:
+            atr_pct = f"{atr / price * 100:.2f}%"
+        else:
+            atr_pct = "—"
+
+        # Оценка funding
+        if funding:
+            funding_note = "перегрев лонгов" if funding > 0.01 else "перегрев шортов" if funding < -0.01 else "нейтральный"
+        else:
+            funding_note = "неизвестно"
+
+        regime_risk = {
+            "TRENDING_UP": "низкий (тренд вверх)",
+            "TRENDING_DOWN": "высокий (тренд вниз)",
+            "RANGING": "умеренный (боковик)",
+            "SIDEWAYS": "умеренный (боковик)",
+            "UNKNOWN": "высокий (неопределённый рынок)"
+        }.get(regime, "неизвестен")
+
+        summary = (
+            f"Сетап {symbol} {direction}. "
+            f"Цена: ${price:.4f}, ATR: {atr_pct}, Funding: {funding_note}. "
+            f"Рыночный риск: {regime_risk}. "
+            f"Рекомендуется ограничить размер позиции 1% от депозита."
+        )
+
+        # Скор риска для сетапа (5 = нейтрально, без защитных ордеров)
+        risk_score = 5
+        if regime in ("TRENDING_UP", "TRENDING_DOWN"):
+            risk_score = 3 if direction.lower() == "long" and regime == "TRENDING_UP" else 7
+        elif regime in ("RANGING", "SIDEWAYS"):
+            risk_score = 5
+        elif regime == "UNKNOWN":
+            risk_score = 8
+
+        result = {
+            "risk_score": risk_score,
+            "summary": summary
+        }
+        return json.dumps(result, ensure_ascii=False)
+
+    # ── Существующие методы (без изменений) ──────────────────────
     def _analyze_post_trade(self, trade: dict) -> str:
         entry = float(trade.get('entry_price', 0))
         exit_p = float(trade.get('exit_price', 0))
@@ -39,7 +95,6 @@ class RiskAgent:
         tp = trade.get('take_profit')
         duration = trade.get('holding_minutes', '?')
 
-        # Расчёт RR и процентов
         sl_pct = f"{abs(entry - sl) / entry * 100:.2f}%" if sl and entry else "—"
         tp_pct = f"{abs(tp - entry) / entry * 100:.2f}%" if tp and entry else "—"
         if sl and tp and entry:
@@ -49,7 +104,6 @@ class RiskAgent:
         else:
             rr = "—"
 
-        # Оценка исполнения
         if pnl > 0 and tp and exit_p >= tp:
             execution = "Тейк-профит достигнут, сделка исполнена по плану."
         elif pnl < 0 and sl and exit_p <= sl:
@@ -68,7 +122,6 @@ class RiskAgent:
         }
         return json.dumps(result, ensure_ascii=False)
 
-    # ── Детерминированный анализ открытой позиции ─────────────────
     def _analyze_open_position(self, pos: dict) -> str:
         entry = float(pos.get('entry_price', 0))
         sl = pos.get('stop_loss')
@@ -78,7 +131,6 @@ class RiskAgent:
         current = pos.get('current_price', entry) or entry
         pnl = float(pos.get('unrealized_pnl', 0))
 
-        # Проценты и RR
         sl_pct = f"{abs(entry - sl) / entry * 100:.2f}%" if sl and entry else "—"
         tp_pct = f"{abs(tp - entry) / entry * 100:.2f}%" if tp and entry else "—"
         if sl and tp and entry:
@@ -88,14 +140,12 @@ class RiskAgent:
         else:
             rr = "—"
 
-        # Потенциальный убыток при SL (без плеча)
         if sl and size and entry:
-            loss_if_sl = abs(entry - sl) * size   # ← исправлено
+            loss_if_sl = abs(entry - sl) * size
             loss_str = f"${loss_if_sl:.2f}"
         else:
             loss_str = "неизвестен"
 
-        # Оценка адекватности SL/TP
         if sl and tp:
             adequacy = "Защитные ордера установлены, риск контролируется."
         elif sl and not tp:
@@ -118,7 +168,6 @@ class RiskAgent:
         return json.dumps(result, ensure_ascii=False)
 
     def _calc_risk_score(self, obj: dict) -> int:
-        """Простой детерминированный скор (0-10), синхронизированный со ScoringEngine."""
         score = 5
         if not obj.get('stop_loss'):
             score -= 2
