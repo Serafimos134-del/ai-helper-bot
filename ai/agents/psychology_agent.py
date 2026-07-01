@@ -7,7 +7,7 @@ from ai.psychology_engine import PsychologyEngine
 logger = logging.getLogger(__name__)
 
 class PsychologyAgent:
-    """Агент психологии: детерминированный анализ позиций/сделок/сетапов, rule-based для портфеля."""
+    """Агент психологии с жёсткой изоляцией режимов."""
 
     def __init__(self, provider=None):
         self.provider = provider
@@ -24,55 +24,99 @@ class PsychologyAgent:
         position = ctx.get('position')
         idea = ctx.get('idea') or {}
 
-        if mode == 'post_trade' and trade:
-            return self._analyze_post_trade(trade)
-        if mode == 'open' and position:
-            return self._analyze_open_position(position)
-        # --- новый блок для сетапов ---
+        # ── Жёсткая маршрутизация по режимам ──
         if mode == 'setup' and idea:
             return self._analyze_setup(idea)
-        # --- конец нового блока ---
+        if mode == 'open' and position:
+            return self._analyze_open_position(position)
+        if mode == 'post_trade' and trade:
+            return self._analyze_post_trade(trade)
+
+        # Fallback только если совсем нет данных
         return await self._rule_based_analysis(ctx)
 
-    # ── Детерминированный анализ сетапа ──────────────────────────
+    # ── NEW_SETUP: предвзятость и дисциплина планирования ────────
     def _analyze_setup(self, idea: dict) -> str:
         notes = idea.get('notes', '')
         direction = idea.get('direction', '')
         symbol = idea.get('symbol', '')
 
         patterns = []
-        discipline_score = 8   # базовый уровень для сетапа
+        discipline_score = 8
 
-        if notes:
-            if 'думаю' in notes.lower():
-                patterns.append("Неуверенность в формулировке — возможно, недостаток уверенности в сетапе.")
-                discipline_score -= 1
-            if 'хочу' in notes.lower():
-                patterns.append("Эмоциональное желание вместо объективного анализа — риск FOMO.")
-                discipline_score -= 2
-            if 'должен' in notes.lower():
-                patterns.append("Чувство обязательства — возможное давление или revenge trading.")
-                discipline_score -= 2
+        # Анализ формулировки
+        text_lower = notes.lower()
+        if 'думаю' in text_lower:
+            patterns.append("Неуверенность в формулировке — возможно, недостаток уверенности в сетапе.")
+            discipline_score -= 1
+        if 'хочу' in text_lower:
+            patterns.append("Эмоциональное желание вместо объективного анализа — риск FOMO.")
+            discipline_score -= 2
+        if 'должен' in text_lower:
+            patterns.append("Чувство обязательства — возможное давление или revenge trading.")
+            discipline_score -= 2
+        if 'страшно' in text_lower or 'боюсь' in text_lower:
+            patterns.append("Присутствует страх — может привести к hesitation или преждевременному выходу.")
+            discipline_score -= 2
 
-        if direction:
-            if direction.upper() == 'LONG':
-                patterns.append("Направление LONG — проверьте, нет ли перекоса в сторону лонгов.")
-            elif direction.upper() == 'SHORT':
-                patterns.append("Направление SHORT — проверьте, нет ли избыточной уверенности в падении.")
+        # Проверка на перекос направления
+        if direction.upper() == 'LONG':
+            patterns.append("Проверьте: нет ли систематического перекоса в лонги в последних сетапах?")
+        elif direction.upper() == 'SHORT':
+            patterns.append("Проверьте: нет ли избыточной уверенности в падении?")
 
         if not notes:
-            patterns.append("Сетап сформулирован без деталей — рекомендуется добавить больше конкретики.")
+            patterns.append("Сетап без деталей — рекомендуется добавить конкретные критерии входа.")
             discipline_score -= 1
 
         discipline_score = max(0, min(10, discipline_score))
 
         result = {
             "psychology_score": discipline_score,
-            "summary": " ".join(patterns) if patterns else "Формальных признаков эмоциональных ошибок нет."
+            "summary": " ".join(patterns) if patterns else "Формальных признаков эмоциональных ошибок в сетапе нет."
         }
         return json.dumps(result, ensure_ascii=False)
 
-    # ── Существующие методы (без изменений) ──────────────────────
+    # ── OPEN_POSITION: дисциплина исполнения ──────────────────────
+    def _analyze_open_position(self, pos: dict) -> str:
+        sl = pos.get('stop_loss')
+        tp = pos.get('take_profit')
+        leverage = pos.get('leverage', 1)
+        size = pos.get('size', 0)
+
+        patterns = []
+        discipline_score = 10
+
+        if sl and tp:
+            patterns.append("Оба защитных ордера установлены — высокий уровень дисциплины.")
+        elif sl and not tp:
+            patterns.append("Установлен только стоп-лосс — недостаток планирования прибыли.")
+            discipline_score -= 2
+        elif tp and not sl:
+            patterns.append("Установлен только тейк-профит — отсутствие защиты от убытков, рискованный оптимизм.")
+            discipline_score -= 3
+        else:
+            patterns.append("Нет ни стоп-лосса, ни тейк-профита — отсутствие дисциплины и плана.")
+            discipline_score -= 5
+
+        if leverage >= 10:
+            patterns.append("Высокое плечо (10x+) указывает на склонность к риску или самоуверенность.")
+            discipline_score -= 2
+        elif leverage >= 5:
+            patterns.append("Умеренное плечо — приемлемый уровень риска.")
+
+        if size > 0:
+            patterns.append(f"Размер позиции: {size}.")
+
+        discipline_score = max(0, min(10, discipline_score))
+
+        result = {
+            "psychology_score": discipline_score,
+            "summary": " ".join(patterns)
+        }
+        return json.dumps(result, ensure_ascii=False)
+
+    # ── POST_TRADE: анализ ошибок ─────────────────────────────────
     def _analyze_post_trade(self, trade: dict) -> str:
         sl = trade.get('stop_loss')
         tp = trade.get('take_profit')
@@ -106,44 +150,6 @@ class PsychologyAgent:
         if not sl: discipline_score -= 3
         if not tp: discipline_score -= 2
         if early_exit: discipline_score -= 2
-        discipline_score = max(0, min(10, discipline_score))
-
-        result = {
-            "psychology_score": discipline_score,
-            "summary": " ".join(patterns)
-        }
-        return json.dumps(result, ensure_ascii=False)
-
-    def _analyze_open_position(self, pos: dict) -> str:
-        sl = pos.get('stop_loss')
-        tp = pos.get('take_profit')
-        leverage = pos.get('leverage', 1)
-        size = pos.get('size', 0)
-
-        patterns = []
-        discipline_score = 10
-
-        if sl and tp:
-            patterns.append("Трейдер установил оба защитных ордера — высокий уровень дисциплины.")
-        elif sl and not tp:
-            patterns.append("Установлен только стоп-лосс — недостаток планирования прибыли.")
-            discipline_score -= 2
-        elif tp and not sl:
-            patterns.append("Установлен только тейк-профит — отсутствие защиты от убытков, рискованный оптимизм.")
-            discipline_score -= 3
-        else:
-            patterns.append("Нет ни стоп-лосса, ни тейк-профита — отсутствие дисциплины и плана.")
-            discipline_score -= 5
-
-        if leverage >= 10:
-            patterns.append("Высокое плечо (10x+) указывает на склонность к риску или самоуверенность.")
-            discipline_score -= 2
-        elif leverage >= 5:
-            patterns.append("Умеренное плечо — приемлемый уровень риска.")
-
-        if size > 0:
-            patterns.append(f"Размер позиции: {size}.")
-
         discipline_score = max(0, min(10, discipline_score))
 
         result = {
