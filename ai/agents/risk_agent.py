@@ -8,10 +8,10 @@ from ai.risk_engine import RiskRuleEngine
 logger = logging.getLogger(__name__)
 
 class RiskAgent:
-    """Агент оценки риска: LLM-анализ для отдельных позиций/сделок, rule-based для портфеля."""
+    """Агент оценки риска: детерминированный анализ позиций/сделок, rule-based для портфеля."""
 
     def __init__(self, provider: BaseProvider = None):
-        self.provider = provider
+        self.provider = provider          # больше не используется для позиций/сделок
         self.context_builder = ContextBuilder()
 
     async def analyze(self, context: dict = None) -> str:
@@ -24,104 +24,114 @@ class RiskAgent:
         trade = ctx.get('trade')
         position = ctx.get('position')
 
-        # LLM-анализ для закрытых сделок
-        if mode == 'post_trade' and trade and self.provider:
-            return await self._analyze_post_trade(trade)
-
-        # LLM-анализ для открытых позиций
-        if mode == 'open' and position and self.provider:
-            return await self._analyze_open_position(position)
-
-        # Во всех остальных случаях — rule-based портфельный анализ
+        if mode == 'post_trade' and trade:
+            return self._analyze_post_trade(trade)
+        if mode == 'open' and position:
+            return self._analyze_open_position(position)
         return await self._rule_based_analysis(ctx)
 
-    async def _analyze_post_trade(self, trade: dict) -> str:
+    # ── Детерминированный анализ закрытой сделки ─────────────────
+    def _analyze_post_trade(self, trade: dict) -> str:
+        entry = float(trade.get('entry_price', 0))
+        exit_p = float(trade.get('exit_price', 0))
+        pnl = float(trade.get('realized_pnl', 0))
         sl = trade.get('stop_loss')
         tp = trade.get('take_profit')
-        entry = trade.get('entry_price', 0)
-        exit_p = trade.get('exit_price', 0)
-        pnl = trade.get('realized_pnl', 0)
-        prompt = f"""You are a Risk Analyst for closed trade evaluation.
-Analyze ONLY this trade:
-Symbol: {trade.get('symbol')}
-Side: {trade.get('side')}
-Entry: {entry}, Exit: {exit_p}, PnL: {pnl}
-Stop Loss: {sl}, Take Profit: {tp}
-Duration: {trade.get('holding_minutes', '?')} min
+        duration = trade.get('holding_minutes', '?')
 
-Evaluate:
-- SL placement quality
-- R:R ratio based on entry/exit
-- whether risk was respected
-- execution efficiency of TP/SL
+        # Расчёт RR и процентов
+        sl_pct = f"{abs(entry - sl) / entry * 100:.2f}%" if sl and entry else "—"
+        tp_pct = f"{abs(tp - entry) / entry * 100:.2f}%" if tp and entry else "—"
+        if sl and tp and entry:
+            reward = abs(tp - entry)
+            risk = abs(entry - sl)
+            rr = f"1:{reward / risk:.2f}" if risk > 0 else "—"
+        else:
+            rr = "—"
 
-Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
-{{"risk_score": <0-10>, "summary": "<your analysis>"}}
-"""
-        loop = asyncio.get_running_loop()
-        try:
-            resp = await loop.run_in_executor(None, self.provider.generate, prompt)
-            try:
-                start = resp.find('{')
-                end = resp.rfind('}') + 1
-                if start >= 0 and end > start:
-                    parsed = json.loads(resp[start:end])
-                    if 'risk_score' not in parsed:
-                        parsed['risk_score'] = 5
-                    if 'summary' not in parsed:
-                        parsed['summary'] = resp
-                    return json.dumps(parsed, ensure_ascii=False)
-            except Exception:
-                pass
-            return json.dumps({"risk_score": 5, "summary": resp}, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"RiskAgent post_trade error: {e}")
-            return json.dumps({"risk_score": 0, "summary": f"Анализ риска недоступен: {e}"}, ensure_ascii=False)
+        # Оценка исполнения
+        if pnl > 0 and tp and exit_p >= tp:
+            execution = "Тейк-профит достигнут, сделка исполнена по плану."
+        elif pnl < 0 and sl and exit_p <= sl:
+            execution = "Стоп-лосс сработал, потери ограничены."
+        else:
+            execution = "Исполнение без явного TP/SL."
 
-    async def _analyze_open_position(self, pos: dict) -> str:
+        summary = (
+            f"Стоп-лосс: {sl_pct} от входа, тейк-профит: {tp_pct}, RR = {rr}. "
+            f"{execution} "
+            f"Длительность: {duration} мин. PnL: ${pnl:+.2f}."
+        )
+        result = {
+            "risk_score": self._calc_risk_score(trade),
+            "summary": summary
+        }
+        return json.dumps(result, ensure_ascii=False)
+
+    # ── Детерминированный анализ открытой позиции ─────────────────
+    def _analyze_open_position(self, pos: dict) -> str:
+        entry = float(pos.get('entry_price', 0))
         sl = pos.get('stop_loss')
         tp = pos.get('take_profit')
-        entry = pos.get('entry_price', 0)
-        pnl = pos.get('unrealized_pnl', 0)
         leverage = pos.get('leverage', 1)
-        prompt = f"""You are a Risk Analyst evaluating an OPEN position.
+        size = pos.get('size', 0)
+        current = pos.get('current_price', entry) or entry
+        pnl = float(pos.get('unrealized_pnl', 0))
 
-POSITION:
-Symbol: {pos.get('symbol')} {pos.get('side')}
-Entry: {entry}, Unrealized PnL: {pnl}
-Stop Loss: {sl if sl else "не установлен"}
-Take Profit: {tp if tp else "не установлен"}
-Leverage: {leverage}x
+        # Проценты и RR
+        sl_pct = f"{abs(entry - sl) / entry * 100:.2f}%" if sl and entry else "—"
+        tp_pct = f"{abs(tp - entry) / entry * 100:.2f}%" if tp and entry else "—"
+        if sl and tp and entry:
+            reward = abs(tp - entry)
+            risk = abs(entry - sl)
+            rr = f"1:{reward / risk:.2f}" if risk > 0 else "—"
+        else:
+            rr = "—"
 
-Evaluate the risk of THIS SINGLE POSITION:
-- Is the Stop Loss adequate? (distance from entry)
-- Is the Take Profit realistic?
-- What is the potential loss if SL is hit?
-- Is the position size reasonable?
+        # Потенциальный убыток при SL
+        if sl and size and entry:
+            loss_if_sl = abs(entry - sl) * size * leverage
+            loss_str = f"${loss_if_sl:.2f}"
+        else:
+            loss_str = "неизвестен"
 
-Do NOT evaluate the whole portfolio. Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
-{{"risk_score": <0-10>, "summary": "<your analysis>"}}
-"""
-        loop = asyncio.get_running_loop()
-        try:
-            resp = await loop.run_in_executor(None, self.provider.generate, prompt)
-            try:
-                start = resp.find('{')
-                end = resp.rfind('}') + 1
-                if start >= 0 and end > start:
-                    parsed = json.loads(resp[start:end])
-                    if 'risk_score' not in parsed:
-                        parsed['risk_score'] = 5
-                    if 'summary' not in parsed:
-                        parsed['summary'] = resp
-                    return json.dumps(parsed, ensure_ascii=False)
-            except Exception:
-                pass
-            return json.dumps({"risk_score": 5, "summary": resp}, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"RiskAgent open_position error: {e}")
-            return json.dumps({"risk_score": 0, "summary": f"Анализ риска недоступен: {e}"}, ensure_ascii=False)
+        # Оценка адекватности SL/TP
+        if sl and tp:
+            adequacy = "Защитные ордера установлены, риск контролируется."
+        elif sl and not tp:
+            adequacy = "Стоп-лосс установлен, но отсутствует тейк-профит."
+        elif tp and not sl:
+            adequacy = "Тейк-профит установлен, но стоп-лосс отсутствует – высокий риск."
+        else:
+            adequacy = "Стоп-лосс и тейк-профит не установлены – неконтролируемый риск."
 
+        summary = (
+            f"SL: {sl_pct} от входа, TP: {tp_pct}, RR = {rr}. "
+            f"Потенциальный убыток при SL: {loss_str}. "
+            f"{adequacy} "
+            f"Плечо: {leverage}x, размер позиции: {size}."
+        )
+        result = {
+            "risk_score": self._calc_risk_score(pos),
+            "summary": summary
+        }
+        return json.dumps(result, ensure_ascii=False)
+
+    def _calc_risk_score(self, obj: dict) -> int:
+        """Простой детерминированный скор (0-10), синхронизированный со ScoringEngine."""
+        score = 5
+        if not obj.get('stop_loss'):
+            score -= 2
+        if not obj.get('take_profit'):
+            score -= 1
+        leverage = float(obj.get('leverage', 1))
+        if leverage >= 10:
+            score -= 2
+        elif leverage >= 5:
+            score -= 1
+        return max(0, min(10, score))
+
+    # ── Rule-based портфельный анализ (без изменений) ────────────
     async def _rule_based_analysis(self, ctx: dict) -> str:
         portfolio = ctx.get("portfolio", {})
         history = ctx.get("history", {})
