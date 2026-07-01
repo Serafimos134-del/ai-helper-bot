@@ -1,5 +1,6 @@
 import logging
 import re
+import json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -227,18 +228,18 @@ async def generate_full_ai_analysis(query, trade_id):
             setup_type=setup,
             ai_score=analysis.get('ai_score')
         )
-        # Формируем читаемый ответ для пользователя
+        # Формируем читаемый ответ для пользователя (без Markdown, чтобы избежать ошибок парсинга)
         verdict_line = _format_verdict(analysis.get('judge_verdict', '{}'))
         text = (
-            f"🧠 *AI-разбор сделки #{trade_id}*\n\n"
+            f"🧠 AI-разбор сделки #{trade_id}\n\n"
             f"📈 Рынок:\n{analysis.get('market_review', '—')}\n\n"
             f"⚠️ Риск:\n{analysis.get('risk_review', '—')}\n\n"
             f"🧘 Психология:\n{analysis.get('psychology_review', '—')}\n\n"
             f"⚖️ Вердикт: {verdict_line}\n\n"
             f"📊 Тренд рынка: {analysis.get('market_trend', '—')}\n"
-            f"_Данные сохранены. Обновите детали сделки, чтобы увидеть изменения._"
+            f"Данные сохранены. Обновите детали сделки, чтобы увидеть изменения."
         )
-        await query.edit_message_text(text, parse_mode='Markdown')
+        await query.edit_message_text(text)
     except Exception as e:
         logger.error(f"Ошибка полного AI-анализа сделки #{trade_id}: {e}")
         await query.edit_message_text(f"❌ Ошибка анализа: {e}")
