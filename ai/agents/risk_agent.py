@@ -8,7 +8,7 @@ from ai.risk_engine import RiskRuleEngine
 logger = logging.getLogger(__name__)
 
 class RiskAgent:
-    """Агент оценки риска, включая forensic-анализ отдельной сделки."""
+    """Агент оценки риска: LLM-анализ для отдельных позиций/сделок, rule-based для портфеля."""
 
     def __init__(self, provider: BaseProvider = None):
         self.provider = provider
@@ -22,11 +22,18 @@ class RiskAgent:
 
         mode = ctx.get('mode', 'open')
         trade = ctx.get('trade')
+        position = ctx.get('position')
 
+        # LLM-анализ для закрытых сделок
         if mode == 'post_trade' and trade and self.provider:
             return await self._analyze_post_trade(trade)
-        else:
-            return await self._rule_based_analysis(ctx)
+
+        # LLM-анализ для открытых позиций
+        if mode == 'open' and position and self.provider:
+            return await self._analyze_open_position(position)
+
+        # Во всех остальных случаях — rule-based портфельный анализ
+        return await self._rule_based_analysis(ctx)
 
     async def _analyze_post_trade(self, trade: dict) -> str:
         sl = trade.get('stop_loss')
@@ -54,7 +61,6 @@ Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
         loop = asyncio.get_running_loop()
         try:
             resp = await loop.run_in_executor(None, self.provider.generate, prompt)
-            # попытка извлечь JSON
             try:
                 start = resp.find('{')
                 end = resp.rfind('}') + 1
@@ -70,6 +76,50 @@ Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
             return json.dumps({"risk_score": 5, "summary": resp}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"RiskAgent post_trade error: {e}")
+            return json.dumps({"risk_score": 0, "summary": f"Анализ риска недоступен: {e}"}, ensure_ascii=False)
+
+    async def _analyze_open_position(self, pos: dict) -> str:
+        sl = pos.get('stop_loss')
+        tp = pos.get('take_profit')
+        entry = pos.get('entry_price', 0)
+        pnl = pos.get('unrealized_pnl', 0)
+        leverage = pos.get('leverage', 1)
+        prompt = f"""You are a Risk Analyst evaluating an OPEN position.
+
+POSITION:
+Symbol: {pos.get('symbol')} {pos.get('side')}
+Entry: {entry}, Unrealized PnL: {pnl}
+Stop Loss: {sl if sl else "не установлен"}
+Take Profit: {tp if tp else "не установлен"}
+Leverage: {leverage}x
+
+Evaluate the risk of THIS SINGLE POSITION:
+- Is the Stop Loss adequate? (distance from entry)
+- Is the Take Profit realistic?
+- What is the potential loss if SL is hit?
+- Is the position size reasonable?
+
+Do NOT evaluate the whole portfolio. Answer in Russian, 2-3 sentences. Return ONLY valid JSON:
+{{"risk_score": <0-10>, "summary": "<your analysis>"}}
+"""
+        loop = asyncio.get_running_loop()
+        try:
+            resp = await loop.run_in_executor(None, self.provider.generate, prompt)
+            try:
+                start = resp.find('{')
+                end = resp.rfind('}') + 1
+                if start >= 0 and end > start:
+                    parsed = json.loads(resp[start:end])
+                    if 'risk_score' not in parsed:
+                        parsed['risk_score'] = 5
+                    if 'summary' not in parsed:
+                        parsed['summary'] = resp
+                    return json.dumps(parsed, ensure_ascii=False)
+            except Exception:
+                pass
+            return json.dumps({"risk_score": 5, "summary": resp}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"RiskAgent open_position error: {e}")
             return json.dumps({"risk_score": 0, "summary": f"Анализ риска недоступен: {e}"}, ensure_ascii=False)
 
     async def _rule_based_analysis(self, ctx: dict) -> str:
