@@ -180,7 +180,7 @@ async def sync_trades(bot, chat_id: str) -> dict:
 
 async def _sync_trades_impl(bot, chat_id: str) -> dict:
     global _missing_cycles
-    user_id = 'default'  # пока single-user sync loop; multi-user loop будет отдельным шагом
+    user_id = 'default'
     results = {'new_open': [], 'new_closed': []}
     logger.info("=== Синхронизация начата ===")
 
@@ -284,7 +284,8 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
             asyncio.create_task(_check_behavior_on_close(bot, chat_id, user_id, closed_trade))
             asyncio.create_task(_analyze_and_notify(bot, chat_id, new_id, closed_trade, stored))
         except sqlite3.IntegrityError:
-            logger.warning(f"Закрытие {oid}: дубликат в closed_trades")
+            logger.warning(f"Закрытие {oid}: дубликат в closed_trades, принудительно удаляю из open_trades")
+            await asyncio.to_thread(db.delete_open_trade_by_order_id, oid)
         except ValueError as e:
             logger.error(f"Закрытие {oid}: {e}")
         except Exception as e:
