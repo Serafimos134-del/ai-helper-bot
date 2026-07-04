@@ -16,7 +16,8 @@ from core.scheduler import setup_scheduler
 
 from handlers.system import (
     start, health_command, sync_command, status_command,
-    ai_fix_command, test_behavior_command, calc_command
+    ai_fix_command, test_behavior_command, calc_command,
+    setidea_command          # ← добавлено
 )
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
@@ -93,15 +94,18 @@ def main():
     db  = get_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Команды
     app.add_handler(CommandHandler('start',           start))
     app.add_handler(CommandHandler('sync',            sync_command))
     app.add_handler(CommandHandler('status',          status_command))
     app.add_handler(CommandHandler('calc',            calc_command))
+    app.add_handler(CommandHandler('setidea',         setidea_command))   # ← новая команда
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))
     app.add_handler(CommandHandler('test_behavior',   test_behavior_command))
     app.add_handler(CommandHandler('coach',           show_coach))
     app.add_handler(CommandHandler('health',          health_command))
     app.add_handler(CommandHandler('restore_history', restore_history_command))
+    # Текстовые сообщения (меню)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
 
     setup_router(app)
