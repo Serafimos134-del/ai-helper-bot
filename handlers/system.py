@@ -1,6 +1,6 @@
 """
 handlers/system.py
-System-level handlers: start, help, health, sync, status, ai_fix, test_behavior, calc, setidea.
+System-level handlers: start, help, health, sync, status, ai_fix, test_behavior, calc, setidea, analyze.
 """
 
 import os
@@ -85,6 +85,7 @@ async def show_help(update: Update):
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/calc — калькулятор позиции\n"
         "/setidea — установить торговую идею и уровни\n"
+        "/analyze — AI-анализ позиции (стопы, тейки, решение)\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
         "/test\\_behavior — тест детекторов поведения\n"
         "/health — состояние систем"
@@ -315,7 +316,6 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(text)
 
 
-# ─────────────────────────────────── NEW: /setidea ───────────────────────────────────
 async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _check_chat(update):
         return
@@ -342,7 +342,6 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if '-' not in symbol:
         symbol = f"{symbol}-USDT"
 
-    # Ищем открытую позицию по этому символу
     open_positions = db.get_open_trades()
     target_order_id = None
     for pos in open_positions:
@@ -354,25 +353,19 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Нет открытой позиции по {symbol}")
         return
 
-    # Парсим оставшиеся аргументы: idea, invalidation, tp_zones
     idea = None
     invalidation_sl = None
     tp_zones = []
 
-    # Собираем всё после символа в строку и разбираем
     raw_tail = " ".join(args[1:])
 
-    # Извлекаем строку в кавычках (идея)
     idea_match = re.search(r'"([^"]*)"', raw_tail)
     if idea_match:
         idea = idea_match.group(1)
-        # Убираем идею из хвоста, чтобы не мешала парсингу чисел
         raw_tail = raw_tail.replace(f'"{idea}"', '').strip()
 
-    # Оставшиеся токены
     tokens = raw_tail.split()
     for tok in tokens:
-        # Проверяем, не список ли TP через запятую
         if ',' in tok:
             try:
                 parts = tok.split(',')
@@ -394,7 +387,6 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Не указана идея. Заключите её в кавычки. Пример: /setidea BTC \"поддержка\" 59500")
         return
 
-    # Устанавливаем идею
     tm.set_idea(target_order_id, idea, invalidation_sl, tp_zones if tp_zones else None)
 
     response = f"✅ Идея для {symbol} установлена:\n🎯 {idea}"
@@ -407,7 +399,101 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 
 
-# ── Регистрация команд (нужно добавить в bot.py) ──
-# В bot.py добавьте:
-# from handlers.system import setidea_command
-# app.add_handler(CommandHandler('setidea', setidea_command))
+# ─────────────────────────── /analyze ───────────────────────────
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _check_chat(update):
+        return
+
+    args = context.args
+    db = get_db()
+
+    if args:
+        symbol = args[0].upper()
+        if '-' not in symbol:
+            symbol = f"{symbol}-USDT"
+        open_positions = db.get_open_trades()
+        target = None
+        for pos in open_positions:
+            if pos['symbol'].upper() == symbol:
+                target = pos
+                break
+        if not target:
+            await update.message.reply_text(f"❌ Нет открытой позиции по {symbol}")
+            return
+    else:
+        open_positions = db.get_open_trades()
+        if not open_positions:
+            await update.message.reply_text("❌ Нет открытых позиций для анализа")
+            return
+        target = open_positions[0]
+
+    msg = await update.message.reply_text("🔍 Анализирую позицию...")
+
+    from services.market_data import get_market_snapshot
+    from services.ai_decision_engine import analyze_decision
+
+    snapshot = await get_market_snapshot(target['symbol'])
+    decision = analyze_decision(snapshot, target)
+
+    side = target.get('side', 'LONG')
+    emoji = "🟢" if side == 'LONG' else "🔴"
+    pnl = float(target.get('unrealized_pnl', 0))
+    pnl_emoji = "📈" if pnl > 0 else "📉" if pnl < 0 else "➖"
+
+    text = (
+        f"{emoji} *{target['symbol']} {side}* | PnL: ${pnl:+.2f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    idea = target.get('idea')
+    if idea:
+        text += f"🎯 *Идея:* {idea}\n"
+
+    struct = decision['details'].get('structure', {})
+    trend = struct.get('trend', 'UNKNOWN')
+    trend_emoji = {'BULLISH': '📈', 'BEARISH': '📉', 'RANGING': '📊'}.get(trend, '❓')
+    text += f"{trend_emoji} *Тренд:* {trend}\n"
+
+    dca_count = int(target.get('dca_count', 0))
+    text += f"📐 *DCA:* {dca_count}/2\n\n"
+
+    stop = decision['details'].get('stop', {})
+    if stop.get('hard_sl'):
+        text += f"🛑 *Hard SL:* ${stop['hard_sl']:.4f}"
+        if stop.get('status') == 'exit':
+            text += " ⚠️ ДОСТИГНУТ!"
+        text += "\n"
+    if stop.get('recommended_sl'):
+        text += f"🔒 *Recommended SL:* ${stop['recommended_sl']:.4f} ({stop.get('reason', '')})\n"
+    text += "\n"
+
+    tp = decision['details'].get('tp', {})
+    if tp.get('tp1'):
+        text += f"🎯 *TP1:* ${tp['tp1']:.4f}"
+        if tp.get('status') == 'tp1_near':
+            text += " ← БЛИЗКО"
+        text += "\n"
+    if tp.get('tp2'):
+        text += f"🎯 *TP2:* ${tp['tp2']:.4f}"
+        if tp.get('status') == 'tp2_near':
+            text += " ← БЛИЗКО"
+        text += "\n"
+    if tp.get('runner'):
+        text += f"🏃 *Runner:* ${tp['runner']:.4f}\n"
+    text += "\n"
+
+    dec = decision.get('decision', 'UNKNOWN')
+    conf = decision.get('confidence', 'low')
+    dec_emoji = {
+        'HOLD': '✋',
+        'EXIT': '🚪',
+        'DCA': '📥',
+        'PARTIAL_TP': '💰',
+        'FULL_TP': '🏆'
+    }.get(dec, '❓')
+    conf_label = {'high': 'Высокая', 'medium': 'Средняя', 'low': 'Низкая'}.get(conf, conf)
+    text += f"{dec_emoji} *Решение:* {dec}\n"
+    text += f"📊 *Уверенность:* {conf_label}\n"
+    text += f"💬 *Причина:* {decision.get('reason', '—')}"
+
+    await msg.edit_text(text, parse_mode='Markdown')
