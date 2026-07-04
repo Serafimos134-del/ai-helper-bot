@@ -1,6 +1,6 @@
 """
 handlers/system.py
-System-level handlers: start, help, health, sync, status, ai_fix, test_behavior.
+System-level handlers: start, help, health, sync, status, ai_fix, test_behavior, calc.
 """
 
 import os
@@ -22,7 +22,6 @@ def _check_chat(update: Update) -> bool:
 
 
 def _clean(text: str) -> str:
-    """Убирает markdown LLM чтобы не конфликтовало с Telegram."""
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'__(.+?)__',     r'\1', text)
     text = re.sub(r'`(.+?)`',       r'\1', text)
@@ -30,7 +29,6 @@ def _clean(text: str) -> str:
 
 
 async def _send_long(msg, text: str):
-    """Отправляет длинный текст кусками по 4000 символов."""
     if len(text) <= 4000:
         await msg.edit_text(text)
         return
@@ -49,7 +47,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = db.get_or_create_user(telegram_id, username)
     context.user_data['user_id'] = user['user_id']
 
-    is_owner = _check_chat(update)
+    is_owner   = _check_chat(update)
     tier_label = "Premium ⭐️" if db.is_premium(user['user_id']) else "Free"
 
     if is_owner:
@@ -84,8 +82,9 @@ async def show_help(update: Update):
         "/start — главное меню\n"
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
+        "/calc — калькулятор позиции\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
-        "/test\\_behavior — тест детекторов поведения на реальных данных\n"
+        "/test\\_behavior — тест детекторов поведения\n"
         "/health — состояние систем"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
@@ -195,7 +194,7 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
     from services.behavior_engine import BehaviorEngine, format_alert
     from services.bingx_api import get_kline
 
-    db = Database()
+    db     = Database()
     engine = BehaviorEngine(db)
     user_id = 'default'
 
@@ -208,7 +207,7 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         results.append(("Overtrading", "Не сработал — частота входов в норме"))
 
-    closed = db.get_closed_trades(limit=10, user_id=user_id)
+    closed     = db.get_closed_trades(limit=10, user_id=user_id)
     panic_hits = []
     for t in closed:
         panic = engine.detect_panic_close(t)
@@ -223,10 +222,10 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
     if open_trades:
         candidate = open_trades[0]
         fake_new_trade = {
-            'symbol': candidate['symbol'],
+            'symbol':     candidate['symbol'],
             'entryPrice': candidate['entry_price'],
             'positionAmt': candidate['quantity'],
-            'side': candidate['side']
+            'side':       candidate['side']
         }
         revenge = engine.detect_revenge_trading(user_id, fake_new_trade)
         if revenge:
@@ -250,5 +249,63 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
     text = "🧪 Результаты теста Behavior Engine:\n\n"
     for name, result in results:
         text += f"▪️ {name}:\n{result}\n\n"
-
     await msg.edit_text(text[:4096])
+
+
+async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /calc BTC 108000 10x [long/short] [риск%]
+    /calc SOL 71.5 20x short 2
+    """
+    if not _check_chat(update):
+        return
+
+    args = context.args
+    if not args or len(args) < 3:
+        await update.message.reply_text(
+            "Использование:\n"
+            "/calc СИМВОЛ ЦЕНА ПЛЕЧО [long/short] [риск%]\n\n"
+            "Примеры:\n"
+            "/calc BTC 108000 10x\n"
+            "/calc SOL 71.5 20x long 2\n"
+            "/calc ETH 3500 5x short 1.5"
+        )
+        return
+
+    from services.calc_engine import calculate_position, format_calc_result
+
+    symbol = args[0].upper()
+    if '-' not in symbol:
+        symbol = f"{symbol}-USDT"
+
+    try:
+        price = float(args[1].replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text("❌ Некорректная цена. Пример: /calc BTC 108000 10x")
+        return
+
+    try:
+        leverage = int(args[2].lower().replace('x', '').replace('х', ''))
+    except ValueError:
+        await update.message.reply_text("❌ Некорректное плечо. Пример: 10x или 10")
+        return
+
+    side         = None
+    risk_percent = 1.0
+
+    for arg in args[3:]:
+        if arg.lower() in ('long', 'short', 'лонг', 'шорт'):
+            side = 'LONG' if arg.lower() in ('long', 'лонг') else 'SHORT'
+        else:
+            try:
+                risk_percent = float(arg.replace(',', '.'))
+            except ValueError:
+                pass
+
+    msg = await update.message.reply_text("⏳ Получаю баланс...")
+    balance_result = await get_balance()
+    balance = balance_result['equity'] if balance_result.get('success') else 1000.0
+
+    result = calculate_position(symbol, price, leverage, balance, risk_percent)
+    text   = format_calc_result(result, side)
+    await msg.edit_text(text)
