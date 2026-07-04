@@ -17,7 +17,7 @@ from core.scheduler import setup_scheduler
 from handlers.system import (
     start, health_command, sync_command, status_command,
     ai_fix_command, test_behavior_command, calc_command,
-    setidea_command          # ← добавлено
+    setidea_command, analyze_command          # ← добавлено
 )
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
@@ -99,7 +99,8 @@ def main():
     app.add_handler(CommandHandler('sync',            sync_command))
     app.add_handler(CommandHandler('status',          status_command))
     app.add_handler(CommandHandler('calc',            calc_command))
-    app.add_handler(CommandHandler('setidea',         setidea_command))   # ← новая команда
+    app.add_handler(CommandHandler('setidea',         setidea_command))
+    app.add_handler(CommandHandler('analyze',         analyze_command))   # ← новая команда
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))
     app.add_handler(CommandHandler('test_behavior',   test_behavior_command))
     app.add_handler(CommandHandler('coach',           show_coach))
