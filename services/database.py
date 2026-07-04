@@ -2,6 +2,7 @@
 services/database.py
 Refactored database layer with atomic transactions, thread safety, retry logic.
 Multi-user support: users table + behavior_events for Behavior Alerts Engine.
+Trade Management Engine v2: added idea, invalidation_sl, dca_count, tp_zones to open_trades.
 """
 
 import sqlite3
@@ -70,7 +71,7 @@ class Database:
             self.conn.execute("PRAGMA foreign_keys=ON;")
 
     def _migrate(self):
-        """Create tables/indexes if missing, add new columns safely."""
+        """Create tables/indexes if missing, add new columns safely (including idea, invalidation_sl, dca_count, tp_zones)."""
         with self.lock:
             self.conn.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -97,6 +98,10 @@ class Database:
                     stop_loss REAL,
                     take_profit REAL,
                     entry_comment TEXT DEFAULT '',
+                    idea TEXT,
+                    invalidation_sl REAL,
+                    dca_count INTEGER DEFAULT 0,
+                    tp_zones TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS closed_trades (
@@ -159,7 +164,11 @@ class Database:
                     ('orderId', 'TEXT NOT NULL DEFAULT ""'),
                     ('stop_loss', 'REAL'),
                     ('take_profit', 'REAL'),
-                    ('entry_comment', "TEXT DEFAULT ''")
+                    ('entry_comment', "TEXT DEFAULT ''"),
+                    ('idea', 'TEXT'),
+                    ('invalidation_sl', 'REAL'),
+                    ('dca_count', 'INTEGER DEFAULT 0'),
+                    ('tp_zones', 'TEXT'),
                 ],
                 'closed_trades': [
                     ('user_id', "TEXT DEFAULT 'default'"),
@@ -410,7 +419,8 @@ class Database:
 
     def update_open_trade(self, symbol: str, **kwargs):
         allowed = ['unrealized_pnl', 'leverage', 'quantity', 'entry_price',
-                   'stop_loss', 'take_profit', 'entry_comment']
+                   'stop_loss', 'take_profit', 'entry_comment',
+                   'idea', 'invalidation_sl', 'dca_count', 'tp_zones']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
@@ -423,7 +433,8 @@ class Database:
 
     def update_open_trade_by_order_id(self, order_id: str, **kwargs):
         allowed = ['entry_comment', 'unrealized_pnl', 'leverage', 'quantity', 'entry_price',
-                   'stop_loss', 'take_profit']
+                   'stop_loss', 'take_profit',
+                   'idea', 'invalidation_sl', 'dca_count', 'tp_zones']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
