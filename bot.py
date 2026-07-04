@@ -1,6 +1,7 @@
 """
 bot.py
-Main entry point — thin launcher.
+Main entry point — thin launcher with global error handler.
+Phase 1 Cleanup Architecture: removed /analyze and /calc from public commands.
 """
 
 import os
@@ -16,8 +17,8 @@ from core.scheduler import setup_scheduler
 
 from handlers.system import (
     start, health_command, sync_command, status_command,
-    ai_fix_command, test_behavior_command, calc_command,
-    setidea_command, analyze_command          # ← добавлено
+    ai_fix_command, test_behavior_command,
+    setidea_command                       # internal/admin
 )
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
@@ -32,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')
+
+
+async def error_handler(update: object, context) -> None:
+    """Глобальный обработчик ошибок — логирует и не даёт боту упасть."""
+    logger.error("Ошибка при обработке обновления:", exc_info=context.error)
 
 
 async def restore_history_command(update: Update, context):
@@ -94,19 +100,23 @@ def main():
     db  = get_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Команды
+    # Глобальный обработчик ошибок
+    app.add_error_handler(error_handler)
+
+    # Публичные команды
     app.add_handler(CommandHandler('start',           start))
     app.add_handler(CommandHandler('sync',            sync_command))
     app.add_handler(CommandHandler('status',          status_command))
-    app.add_handler(CommandHandler('calc',            calc_command))
-    app.add_handler(CommandHandler('setidea',         setidea_command))
-    app.add_handler(CommandHandler('analyze',         analyze_command))   # ← новая команда
+    app.add_handler(CommandHandler('health',          health_command))
+    app.add_handler(CommandHandler('coach',           show_coach))
+
+    # Debug / admin (можно оставить для тестов)
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))
     app.add_handler(CommandHandler('test_behavior',   test_behavior_command))
-    app.add_handler(CommandHandler('coach',           show_coach))
-    app.add_handler(CommandHandler('health',          health_command))
+    app.add_handler(CommandHandler('setidea',         setidea_command))
     app.add_handler(CommandHandler('restore_history', restore_history_command))
-    # Текстовые сообщения (меню)
+
+    # Основное меню
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
 
     setup_router(app)
