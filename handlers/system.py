@@ -1,6 +1,6 @@
 """
 handlers/system.py
-System-level handlers: start, help, health, sync, status, ai_fix, test_behavior, calc.
+System-level handlers: start, help, health, sync, status, ai_fix, test_behavior, calc, setidea.
 """
 
 import os
@@ -13,6 +13,7 @@ from core.keyboards import main_menu_keyboard
 from services.bingx_api import get_balance
 from services.auto_sync import sync_trades
 from core.scheduler import update_pinned_status
+from services.trade_manager import TradeManager
 
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
@@ -83,6 +84,7 @@ async def show_help(update: Update):
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/calc — калькулятор позиции\n"
+        "/setidea — установить торговую идею и уровни\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
         "/test\\_behavior — тест детекторов поведения\n"
         "/health — состояние систем"
@@ -311,3 +313,101 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = calculate_position(symbol, price, leverage, balance, risk_percent, margin_type)
     text   = format_calc_result(result, side)
     await msg.edit_text(text)
+
+
+# ─────────────────────────────────── NEW: /setidea ───────────────────────────────────
+async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _check_chat(update):
+        return
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "Использование:\n"
+            "/setidea СИМВОЛ \"Идея\" [invalidation_price] [tp1,tp2,...]\n\n"
+            "Примеры:\n"
+            "/setidea BTC \"bullish continuation from support\" 59500\n"
+            "/setidea ETH \"breakout retest\" 3450 3600,3700\n\n"
+            "• Символ без USDT (BTC, ETH, SOL и т.д.)\n"
+            "• Идея в кавычках\n"
+            "• Invalidation — цена слома идеи\n"
+            "• TP-зоны через запятую (опционально)"
+        )
+        return
+
+    db = get_db()
+    tm = TradeManager(db)
+
+    symbol = args[0].upper()
+    if '-' not in symbol:
+        symbol = f"{symbol}-USDT"
+
+    # Ищем открытую позицию по этому символу
+    open_positions = db.get_open_trades()
+    target_order_id = None
+    for pos in open_positions:
+        if pos['symbol'].upper() == symbol:
+            target_order_id = pos['orderId']
+            break
+
+    if not target_order_id:
+        await update.message.reply_text(f"❌ Нет открытой позиции по {symbol}")
+        return
+
+    # Парсим оставшиеся аргументы: idea, invalidation, tp_zones
+    idea = None
+    invalidation_sl = None
+    tp_zones = []
+
+    # Собираем всё после символа в строку и разбираем
+    raw_tail = " ".join(args[1:])
+
+    # Извлекаем строку в кавычках (идея)
+    idea_match = re.search(r'"([^"]*)"', raw_tail)
+    if idea_match:
+        idea = idea_match.group(1)
+        # Убираем идею из хвоста, чтобы не мешала парсингу чисел
+        raw_tail = raw_tail.replace(f'"{idea}"', '').strip()
+
+    # Оставшиеся токены
+    tokens = raw_tail.split()
+    for tok in tokens:
+        # Проверяем, не список ли TP через запятую
+        if ',' in tok:
+            try:
+                parts = tok.split(',')
+                for p in parts:
+                    tp_zones.append(float(p.strip()))
+            except ValueError:
+                pass
+        else:
+            try:
+                num = float(tok)
+                if invalidation_sl is None:
+                    invalidation_sl = num
+                else:
+                    tp_zones.append(num)
+            except ValueError:
+                pass
+
+    if idea is None:
+        await update.message.reply_text("❌ Не указана идея. Заключите её в кавычки. Пример: /setidea BTC \"поддержка\" 59500")
+        return
+
+    # Устанавливаем идею
+    tm.set_idea(target_order_id, idea, invalidation_sl, tp_zones if tp_zones else None)
+
+    response = f"✅ Идея для {symbol} установлена:\n🎯 {idea}"
+    if invalidation_sl:
+        response += f"\n🛑 Invalidation SL: ${invalidation_sl:.4f}"
+    if tp_zones:
+        zones_str = ', '.join([f"${z:.4f}" for z in tp_zones])
+        response += f"\n🎯 TP Zones: {zones_str}"
+
+    await update.message.reply_text(response)
+
+
+# ── Регистрация команд (нужно добавить в bot.py) ──
+# В bot.py добавьте:
+# from handlers.system import setidea_command
+# app.add_handler(CommandHandler('setidea', setidea_command))
