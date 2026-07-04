@@ -1,7 +1,8 @@
 """
 core/scheduler.py
 Refactored scheduler with persistent pinned message state,
-thread-safe status updates, and restart resilience.
+thread-safe status updates, restart resilience,
+and Trade Management Engine v2 display.
 """
 
 import asyncio
@@ -10,13 +11,12 @@ from telegram.ext import ContextTypes
 from services.bingx_api import get_balance
 from services.database import Database
 from services.auto_sync import sync_trades
+from services.trade_manager import TradeManager
 
 logger = logging.getLogger(__name__)
 
-# Lock for pinned status updates to prevent concurrent edits
 _pinned_lock = asyncio.Lock()
 
-# Memory keys for persisting state in trader_memory
 MEMORY_CATEGORY = "bot_state"
 KEY_PINNED_MSG_ID = "pinned_msg_id"
 KEY_LAST_STATE = "last_state_key"
@@ -46,7 +46,6 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
         new_closed = len(results.get('new_closed', []))
         new_open = len(results.get('new_open', []))
 
-        # Если есть изменения — обновить статус сразу
         if new_closed > 0 or new_open > 0:
             await update_pinned_status(context, db, chat_id, force=True)
 
@@ -63,8 +62,8 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
         logger.error(f"Ошибка авто-синхронизации: {e}")
 
 
-def _build_status_text(balance: dict, open_positions: list) -> str:
-    """Build status message text with dynamic entry size and TP/SL display."""
+def _build_status_text(balance: dict, open_positions: list, db: Database) -> str:
+    """Build status message text with dynamic entry size and Trade Manager v2 display."""
     text = "📌 *Текущий статус*\n\n"
 
     equity = 0.0
@@ -74,7 +73,6 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
         used_margin = balance.get('used_margin') or 0.0
         unrealized_pnl = balance.get('unrealized_pnl') or 0.0
 
-        # Dynamic entry size based on equity
         entry_size = equity * 0.10 if equity > 0 else 0.0
         add_size = equity * 0.03 if equity > 0 else 0.0
         add_max = equity * 0.05 if equity > 0 else 0.0
@@ -92,6 +90,7 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
         text += "❌ Не удалось получить баланс\n\n"
 
     if open_positions:
+        tm = TradeManager(db)
         text += "*Открытые позиции:*\n"
         for pos in open_positions:
             symbol = pos.get('symbol', '?')
@@ -99,17 +98,26 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
             pnl = pos.get('unrealized_pnl', 0) or 0.0
             emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
             text += f"{emoji} {symbol} {side} | PnL: ${pnl:+,.2f}\n"
-            sl = pos.get('stop_loss')
-            tp = pos.get('take_profit')
-            if sl:
-                text += f"   🛑 SL: ${float(sl):.4f}\n"
-            if tp:
-                text += f"   🎯 TP: ${float(tp):.4f}\n"
+
+            # ─── Trade Manager v2 fields ───
+            idea = pos.get('idea')
+            if idea:
+                text += f"   🎯 Идея: {idea}\n"
+            dca_count = int(pos.get('dca_count', 0))
+            max_dca = 2
+            text += f"   📐 DCA: {dca_count}/{max_dca}\n"
+            inval = pos.get('invalidation_sl')
+            if inval:
+                text += f"   🛑 Invalidation SL: ${float(inval):.4f}\n"
+            tp_zones = tm.get_tp_zones(pos.get('orderId', ''))
+            if tp_zones:
+                zones_str = ', '.join([f"${z:.4f}" for z in tp_zones])
+                text += f"   🎯 TP Zones: {zones_str}\n"
+
         text += f"\n🔒 *Всего позиций:* {len(open_positions)}/2\n"
     else:
         text += "🔓 *Нет открытых позиций*\n\n"
 
-    # Trading rules block
     text += (
         "\n📋 *Правила:*\n"
         "• Вход: 10% от депо\n"
@@ -118,8 +126,8 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
         "• Добор: 3–5% от депо, max 2\n"
         "• Опоздал = пропуск\n"
         "• Max 2 сделки одновременно\n"
-        "• SL: −2% цены против позиции\n"
-        "• TP: +20% PnL → фикс 50% + SL в Б/У\n"
+        "• SL: по инвалидации идеи\n"
+        "• TP: по рыночным зонам (TP1, TP2, Runner)\n"
         "• Daily stop: 2 стопа или −5% депо"
     )
 
@@ -127,7 +135,6 @@ def _build_status_text(balance: dict, open_positions: list) -> str:
 
 
 def _make_state_key(balance: dict, open_positions: list) -> str:
-    """Create a key for comparing states to detect changes."""
     if not balance.get('success'):
         return "no_balance"
     parts = [
@@ -137,13 +144,17 @@ def _make_state_key(balance: dict, open_positions: list) -> str:
         f"up={balance.get('unrealized_pnl', 0):.2f}",
     ]
     for pos in open_positions:
-        parts.append(f"{pos.get('symbol')}:{pos.get('side')}:{pos.get('unrealized_pnl', 0):.2f}"
-                     f":sl={pos.get('stop_loss')}:tp={pos.get('take_profit')}")
+        parts.append(
+            f"{pos.get('symbol')}:{pos.get('side')}:{pos.get('unrealized_pnl', 0):.2f}"
+            f":idea={pos.get('idea')}"
+            f":sl={pos.get('invalidation_sl')}"
+            f":dca={pos.get('dca_count')}"
+            f":tp={pos.get('tp_zones')}"
+        )
     return "|".join(parts)
 
 
 def _get_pinned_msg_id(db: Database) -> int | None:
-    """Retrieve saved pinned message ID from DB."""
     raw = db.memory_get(MEMORY_CATEGORY, KEY_PINNED_MSG_ID)
     if raw:
         try:
@@ -154,18 +165,15 @@ def _get_pinned_msg_id(db: Database) -> int | None:
 
 
 def _save_pinned_msg_id(db: Database, msg_id: int):
-    """Persist pinned message ID to DB."""
     db.memory_set(MEMORY_CATEGORY, KEY_PINNED_MSG_ID, str(msg_id))
 
 
 def _save_state(db: Database, state_key: str, equity: float):
-    """Persist last state key and equity to DB."""
     db.memory_set(MEMORY_CATEGORY, KEY_LAST_STATE, state_key)
     db.memory_set(MEMORY_CATEGORY, KEY_LAST_EQUITY, str(equity))
 
 
 def _get_saved_state(db: Database) -> tuple:
-    """Retrieve saved state key and equity from DB."""
     state_key = db.memory_get(MEMORY_CATEGORY, KEY_LAST_STATE) or ""
     equity_raw = db.memory_get(MEMORY_CATEGORY, KEY_LAST_EQUITY) or "0.0"
     try:
@@ -176,11 +184,6 @@ def _get_saved_state(db: Database) -> tuple:
 
 
 async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_id: str, force: bool = False):
-    """
-    Update the pinned status message in the chat.
-    Uses a lock to prevent concurrent edits.
-    Persists state to DB for restart resilience.
-    """
     if not chat_id:
         return
 
@@ -189,18 +192,15 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
             balance = await get_balance()
             open_positions = await asyncio.to_thread(db.get_open_trades)
 
-            # Check if state has changed
             state_key = _make_state_key(balance, open_positions)
             last_state_key, _ = _get_saved_state(db)
 
             if not force and state_key == last_state_key:
-                return  # Nothing changed — skip update
+                return
 
-            # Save new state
-            text, equity = _build_status_text(balance, open_positions)
+            text, equity = _build_status_text(balance, open_positions, db)
             _save_state(db, state_key, equity)
 
-            # Try to edit existing pinned message
             pinned_msg_id = _get_pinned_msg_id(db)
             if pinned_msg_id:
                 try:
@@ -214,10 +214,8 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
                     return
                 except Exception as e:
                     logger.warning(f"Failed to edit pinned message {pinned_msg_id}: {e}")
-                    # Message probably deleted — clear saved ID
                     _save_pinned_msg_id(db, 0)
 
-            # Create new pinned message
             msg = await context.bot.send_message(
                 chat_id=chat_id,
                 text=text,
