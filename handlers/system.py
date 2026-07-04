@@ -253,10 +253,6 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /calc BTC 108000 10x [long/short] [риск%]
-    /calc SOL 71.5 20x short 2
-    """
     if not _check_chat(update):
         return
 
@@ -264,11 +260,11 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args or len(args) < 3:
         await update.message.reply_text(
             "Использование:\n"
-            "/calc СИМВОЛ ЦЕНА ПЛЕЧО [long/short] [риск%]\n\n"
+            "/calc СИМВОЛ ЦЕНА ПЛЕЧО [long/short] [риск%] [cross/isolated]\n\n"
             "Примеры:\n"
             "/calc BTC 108000 10x\n"
-            "/calc SOL 71.5 20x long 2\n"
-            "/calc ETH 3500 5x short 1.5"
+            "/calc SOL 71.5 20x long 2 cross\n"
+            "/calc ETH 3500 5x short 1.5 isolated"
         )
         return
 
@@ -292,10 +288,16 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     side         = None
     risk_percent = 1.0
+    margin_type  = 'isolated'
 
     for arg in args[3:]:
-        if arg.lower() in ('long', 'short', 'лонг', 'шорт'):
-            side = 'LONG' if arg.lower() in ('long', 'лонг') else 'SHORT'
+        arg_lower = arg.lower()
+        if arg_lower in ('long', 'short', 'лонг', 'шорт'):
+            side = 'LONG' if arg_lower in ('long', 'лонг') else 'SHORT'
+        elif arg_lower in ('cross', 'кросс'):
+            margin_type = 'cross'
+        elif arg_lower in ('isolated', 'изолированная', 'изол'):
+            margin_type = 'isolated'
         else:
             try:
                 risk_percent = float(arg.replace(',', '.'))
@@ -306,6 +308,6 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance_result = await get_balance()
     balance = balance_result['equity'] if balance_result.get('success') else 1000.0
 
-    result = calculate_position(symbol, price, leverage, balance, risk_percent)
+    result = calculate_position(symbol, price, leverage, balance, risk_percent, margin_type)
     text   = format_calc_result(result, side)
     await msg.edit_text(text)
