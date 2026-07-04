@@ -38,14 +38,10 @@ async def get_market_snapshot(symbol: str) -> dict:
         if cached:
             tasks[tf] = cached
         else:
-            tasks[tf] = None  # будем заполнять ниже
+            tasks[tf] = None
 
-    # Запрашиваем только те таймфреймы, которых нет в кэше
-    fetch_tasks = []
-    for tf in TIMEFRAMES:
-        if tasks[tf] is None:
-            fetch_tasks.append(tf)
-
+    # Запрашиваем только отсутствующие в кэше
+    fetch_tasks = [tf for tf in TIMEFRAMES if tasks[tf] is None]
     if fetch_tasks:
         logger.info(f"Запрашиваю свечи {symbol} для {fetch_tasks}")
         results = await asyncio.gather(*[
@@ -55,13 +51,12 @@ async def get_market_snapshot(symbol: str) -> dict:
             if result.get('success'):
                 klines = result.get('klines', [])
                 tasks[tf] = klines
-                # Кэшируем на 1 минуту (5m), 3 минуты (15m), 5 минут (1h), 10 минут (4h)
                 ttl = {'5m': 60, '15m': 180, '1h': 300, '4h': 600}.get(tf, 300)
                 await api_cache.set(f"market_snapshot:{symbol}:{tf}", klines, ttl=ttl)
             else:
                 tasks[tf] = []
 
-    # Последняя цена из 5m свечи (или из 15m если 5m пуст)
+    # Последняя цена
     price = None
     for tf in ['5m', '15m', '1h']:
         if tasks[tf] and len(tasks[tf]) > 0:
