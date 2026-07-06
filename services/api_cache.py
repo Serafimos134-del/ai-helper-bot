@@ -36,16 +36,18 @@ class APICache:
             entry = self._cache.get(key)
             if entry is None:
                 return None
-            timestamp, value = entry
-            ttl = self._get_ttl(key)
+            timestamp, value, ttl_override = entry
+            ttl = ttl_override if ttl_override is not None else self._get_ttl(key)
             if time.time() - timestamp > ttl:
                 del self._cache[key]
                 return None
             return value
 
-    async def set(self, key: str, value: any):
+    async def set(self, key: str, value: any, ttl: int = None):
+        """ttl (в секундах) — необязательное явное переопределение времени жизни
+        записи; если не задано, используется DEFAULT_TTL по префиксу ключа."""
         async with self._lock:
-            self._cache[key] = (time.time(), value)
+            self._cache[key] = (time.time(), value, ttl)
 
     async def invalidate(self, prefix: str = None):
         async with self._lock:

@@ -67,18 +67,23 @@ class ScoringEngine:
         }
 
     def _calc_risk(self, obj: dict) -> float:
-        score = 50.0
+        """Скор безопасности позиции: ВЫШЕ = БЕЗОПАСНЕЕ (есть SL/TP, разумное плечо).
+        JudgeAgent и остальной код (RiskAgent, warnings-проверки) считают risk_score
+        именно в этой ориентации — выше значит лучше. Раньше здесь была обратная
+        шкала (выше = опаснее), из-за чего опасные позиции завышали итоговый score
+        вместо того, чтобы его понижать."""
+        score = 100.0
         if not obj.get("stop_loss"):
-            score += 25
+            score -= 25
         if not obj.get("take_profit"):
-            score += 10
+            score -= 10
         leverage = float(obj.get("leverage", 1))
         if leverage >= 10:
-            score += 15
+            score -= 15
         elif leverage >= 5:
-            score += 10
+            score -= 10
         elif leverage >= 3:
-            score += 5
+            score -= 5
         return max(0, min(100, score))
 
     def _calc_psychology(self, obj: dict) -> float:

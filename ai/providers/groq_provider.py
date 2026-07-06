@@ -140,9 +140,13 @@ class GroqProvider(BaseProvider):
                 last_exception = e
                 break
 
-        # All retries exhausted or non-retryable exception
+        # Все ретраи исчерпаны или ошибка не подлежит повтору.
+        # Раньше здесь возвращалась строка "AI analysis unavailable: ...", которую
+        # часть вызывающего кода не проверяла — неудачный запрос выглядел как
+        # валидный ответ модели. Все текущие вызовы .generate() уже оборачивают
+        # его в try/except, так что кидать исключение безопасно и корректно.
         error_msg = f"AI analysis unavailable: {last_exception}"
         logger.error(error_msg)
-        # To maintain backward compatibility, return an error string.
-        # In future sprints we can change to raise GroqProviderError and handle in caller.
-        return error_msg
+        if isinstance(last_exception, GroqProviderError):
+            raise last_exception
+        raise GroqProviderError(error_msg) from last_exception

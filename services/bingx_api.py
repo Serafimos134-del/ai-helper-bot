@@ -3,9 +3,12 @@ import hmac
 import time
 import asyncio
 import os
+import logging
 from urllib.parse import urlencode
 import httpx
 from services.api_cache import api_cache
+
+logger = logging.getLogger(__name__)
 
 BINGX_API_KEY = os.getenv('BINGX_API_KEY', '')
 BINGX_SECRET_KEY = os.getenv('BINGX_SECRET_KEY', '')
@@ -30,9 +33,13 @@ def _sign(params: dict) -> str:
 
 
 async def _request_with_retry(method: str, path: str, params: dict = None) -> dict:
+    # Ретраим только транспортные/сетевые сбои (см. _transport_error в _request),
+    # а не бизнес-ошибки биржи (недостаточно маржи, неверные параметры и т.п.) —
+    # те могут случайно совпасть с code=-1 и раньше тоже ретраились бы, что не нужно.
+    result = {}
     for attempt in range(MAX_RETRIES + 1):
         result = await _request(method, path, params)
-        if result.get('code') != -1:
+        if not result.get('_transport_error'):
             return result
         if attempt < MAX_RETRIES:
             await asyncio.sleep(RETRY_DELAY)
@@ -58,12 +65,12 @@ async def _request(method: str, path: str, params: dict = None) -> dict:
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
-                return {'error': 'Unexpected response format', 'code': -1, 'raw': data}
+                return {'error': 'Unexpected response format', 'code': -1, '_transport_error': True, 'raw': data}
             return data
     except httpx.HTTPError as e:
-        return {'error': str(e), 'code': -1}
+        return {'error': str(e), 'code': -1, '_transport_error': True}
     except ValueError as e:
-        return {'error': f'Invalid JSON response: {e}', 'code': -1}
+        return {'error': f'Invalid JSON response: {e}', 'code': -1, '_transport_error': True}
 
 
 async def _public_request_with_retry(url: str, params: dict = None) -> dict:
@@ -174,8 +181,8 @@ async def get_open_positions() -> dict:
                     t['takeProfit'] = tp_sl_map[key].get('takeProfit')
 
     except Exception as e:
-        # Если не удалось получить ордера – оставляем null, логируем в вызывающем коде
-        pass
+        # Если не удалось получить ордера – оставляем null (SL/TP будут None)
+        logger.warning(f"get_open_positions: не удалось получить TP/SL из openOrders: {e}")
 
     return {'success': True, 'trades': trades}
 

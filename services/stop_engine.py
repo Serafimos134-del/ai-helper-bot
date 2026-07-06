@@ -6,8 +6,16 @@ Phase 3 фундамента для AI Market Analysis Engine.
 
 import logging
 from services.structure_engine import analyze_structure
+from utils.liquidation import get_volatility_class
 
 logger = logging.getLogger(__name__)
+
+# Запасной % инвалидации, когда в рыночной структуре нет уровня поддержки/
+# сопротивления. Раньше был фиксированным (5%) независимо от актива — теперь
+# масштабируется по волатильности символа (та же классификация, что и для
+# оценки ликвидации в utils/liquidation.py), чтобы для волатильных альтов
+# запасной стоп не был неоправданно узким, а для BTC/ETH — неоправданно широким.
+HARD_SL_FALLBACK_PCT = {'LOW': 0.03, 'MEDIUM': 0.05, 'HIGH': 0.08}
 
 
 def analyze_stop(snapshot: dict, position: dict) -> dict:
@@ -33,6 +41,9 @@ def analyze_stop(snapshot: dict, position: dict) -> dict:
     if entry_price <= 0:
         return {'hard_sl': None, 'recommended_sl': None, 'status': 'unknown', 'reason': 'Нет цены входа'}
 
+    symbol = position.get('symbol') or snapshot.get('symbol', '')
+    fallback_pct = HARD_SL_FALLBACK_PCT.get(get_volatility_class(symbol), 0.05)
+
     # Определяем hard_sl (идея ломается)
     if invalidation_sl:
         hard_sl = float(invalidation_sl)
@@ -40,10 +51,10 @@ def analyze_stop(snapshot: dict, position: dict) -> dict:
         # используем структурный уровень: для лонга – ближайшая поддержка, для шорта – ближайшее сопротивление
         if side == 'LONG':
             supports = structure.get('support_levels', [])
-            hard_sl = max([s for s in supports if s < current_price], default=entry_price * 0.95)
+            hard_sl = max([s for s in supports if s < current_price], default=entry_price * (1 - fallback_pct))
         else:
             resistances = structure.get('resistance_levels', [])
-            hard_sl = min([r for r in resistances if r > current_price], default=entry_price * 1.05)
+            hard_sl = min([r for r in resistances if r > current_price], default=entry_price * (1 + fallback_pct))
 
     # Процент прибыли
     if quantity > 0:

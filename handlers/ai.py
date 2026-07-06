@@ -4,20 +4,12 @@ AI-related handlers: market overview, trends, journal analysis, consilium, coach
 """
 
 import json
-import re
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_consensus, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
-
-
-def _clean(text: str) -> str:
-    """Убирает markdown LLM чтобы не конфликтовало с Telegram."""
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    text = re.sub(r'__(.+?)__',     r'\1', text)
-    text = re.sub(r'`(.+?)`',       r'\1', text)
-    return text.strip()
+from utils.telegram_text import clean_markdown as _clean
 
 
 async def _send_chunks(obj, text: str, **kwargs):

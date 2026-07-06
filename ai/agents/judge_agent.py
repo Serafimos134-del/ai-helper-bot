@@ -69,7 +69,11 @@ class JudgeAgent:
         verdict = self._get_verdict(final_score, mode)
 
         warnings = []
-        if risk_score < 40:
+        # ScoringEngine._calc_risk отдаёт скор безопасности в диапазоне ~50-100
+        # (100 = SL/TP выставлены и разумное плечо, 50 = худший случай: нет
+        # защитных ордеров + плечо ≥10x). Порог 70 ловит реально рискованные
+        # комбинации, не срабатывая на единичных мелких минусах.
+        if risk_score < 70:
             warnings.append("Высокий риск")
         if psychology_score < 40:
             warnings.append("Психологическая нестабильность")

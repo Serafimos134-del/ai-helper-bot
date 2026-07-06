@@ -1,6 +1,5 @@
 import logging
 import re
-import json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -8,15 +7,18 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-from services.database import Database
-from services.ai_trading import AITradingAnalyzer
 from core.keyboards import cancel_keyboard
-from core.container import get_consensus, get_ai_analyzer
+from core.container import get_consensus, get_ai_analyzer, get_db
+from utils.formatting import format_verdict
 
 logger = logging.getLogger(__name__)
 
-db = Database()
-ai_analyzer = AITradingAnalyzer()
+# Раньше здесь стояло db = Database() и ai_analyzer = AITradingAnalyzer() —
+# для Database разницы нет (это синглтон), а вот AITradingAnalyzer им не
+# является, так что создавался второй, отдельный от контейнера экземпляр
+# (лишний GroqProvider). Теперь используем те же объекты, что и остальной код.
+db = get_db()
+ai_analyzer = get_ai_analyzer()
 
 
 def setup_router(app: Application) -> None:
@@ -42,25 +44,6 @@ def _fmt_price(val) -> str:
         return f"${float(val):.4f}"
     except (ValueError, TypeError):
         return str(val)
-
-
-def _format_verdict(verdict_raw) -> str:
-    try:
-        verdict = json.loads(verdict_raw) if isinstance(verdict_raw, str) else verdict_raw
-        verdict_text    = verdict.get('verdict', '—')
-        final_score     = verdict.get('final_score', '—')
-        verdict_summary = verdict.get('summary', '')
-        warnings        = verdict.get('warnings', [])
-        emoji_map = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
-        emoji = emoji_map.get(verdict_text, '⚪')
-        result = f"{emoji} {verdict_text} ({final_score}/100)"
-        if verdict_summary:
-            result += f"\n{verdict_summary}"
-        if warnings:
-            result += "\n⚠️ " + " | ".join(warnings)
-        return result
-    except Exception:
-        return str(verdict_raw)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,7 +212,7 @@ async def generate_full_ai_analysis(query, trade_id):
             ai_score=analysis.get('ai_score')
         )
         # Формируем читаемый ответ для пользователя (без Markdown, чтобы избежать ошибок парсинга)
-        verdict_line = _format_verdict(analysis.get('judge_verdict', '{}'))
+        verdict_line = format_verdict(analysis.get('judge_verdict', '{}'))
         text = (
             f"🧠 AI-разбор сделки #{trade_id}\n\n"
             f"📈 Рынок:\n{analysis.get('market_review', '—')}\n\n"

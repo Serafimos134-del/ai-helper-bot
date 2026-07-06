@@ -3,31 +3,12 @@ handlers/trading.py
 Trading-related handlers: balance, last trades, stats, AI analysis.
 """
 
-import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from core.container import get_db, get_ai_analyzer
 from core.keyboards import trading_menu_keyboard
 from services.bingx_api import get_balance
 from services.trading_stats import format_stats_message
-
-
-def _clean(text: str) -> str:
-    """Убирает markdown LLM чтобы не конфликтовало с Telegram."""
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    text = re.sub(r'__(.+?)__',     r'\1', text)
-    text = re.sub(r'`(.+?)`',       r'\1', text)
-    return text.strip()
-
-
-async def _send_long(msg, text: str):
-    """Отправляет длинный текст кусками по 4000 символов."""
-    if len(text) <= 4000:
-        await msg.edit_text(text)
-        return
-    await msg.edit_text(text[:4000])
-    bot = msg.get_bot()
-    for i in range(4000, len(text), 4000):
-        await bot.send_message(chat_id=msg.chat.id, text=text[i:i+4000])
+from utils.telegram_text import clean_markdown as _clean, send_long as _send_long
 
 
 async def show_balance(update: Update):

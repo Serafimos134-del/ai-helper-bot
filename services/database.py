@@ -12,6 +12,8 @@ import functools
 import logging
 import os
 
+from services.crypto_utils import encrypt, decrypt
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'trading.db')
@@ -306,20 +308,24 @@ class Database:
         with self.transaction():
             self._execute(
                 "UPDATE users SET bingx_api_key = ?, bingx_secret_key = ? WHERE user_id = ?",
-                (api_key, secret_key, user_id)
+                (encrypt(api_key), encrypt(secret_key), user_id)
             )
 
     def get_bingx_keys(self, user_id: str) -> tuple:
         user = self.get_user(user_id)
         if not user:
             return None, None
-        return user.get('bingx_api_key'), user.get('bingx_secret_key')
+        return decrypt(user.get('bingx_api_key')), decrypt(user.get('bingx_secret_key'))
 
     def get_all_active_users(self) -> list:
         rows = self._execute(
             "SELECT * FROM users WHERE bingx_api_key IS NOT NULL AND bingx_api_key != ''"
         ).fetchall()
-        return [dict(row) for row in rows]
+        users = [dict(row) for row in rows]
+        for u in users:
+            u['bingx_api_key'] = decrypt(u.get('bingx_api_key'))
+            u['bingx_secret_key'] = decrypt(u.get('bingx_secret_key'))
+        return users
 
     # ==================== behavior alerts engine ====================
     def add_behavior_event(self, user_id: str, event_type: str, severity: str, metadata: str):

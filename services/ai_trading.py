@@ -1,11 +1,14 @@
 import os
 import json
 import asyncio
+import logging
 from dotenv import load_dotenv
 from ai.providers.groq_provider import GroqProvider
 from services.database import Database
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class AITradingAnalyzer:
@@ -13,10 +16,10 @@ class AITradingAnalyzer:
         self.api_key = os.getenv("GROQ_API_KEY")
         if self.api_key:
             self.provider = GroqProvider(self.api_key)
-            print("✅ Groq AI инициализирован (через прокси)")
+            logger.info("Groq AI инициализирован (через прокси)")
         else:
             self.provider = None
-            print("⚠️ GROQ_API_KEY не найден. AI отключён.")
+            logger.warning("GROQ_API_KEY не найден. AI отключён.")
 
     def analyze(self) -> str:
         """Основной AI-анализ статистики и последних сделок."""
@@ -67,7 +70,7 @@ class AITradingAnalyzer:
             response = self.provider.generate(prompt)
             return response + "\n\n🤖 Анализ от Groq (Llama 3.3 70B). Не финансовая рекомендация."
         except Exception as e:
-            print(f"❌ Ошибка Groq: {e}")
+            logger.error(f"Ошибка Groq: {e}")
             return f"⚠️ Ошибка AI: {e}\n\n{self._fallback_analysis(stats)}"
 
     async def analyze_raw(self, prompt: str, max_tokens: int = None) -> str:
@@ -87,7 +90,7 @@ class AITradingAnalyzer:
             else:
                 return self.provider.generate(prompt)
         except Exception as e:
-            print(f"❌ Ошибка Groq (analyze_raw): {e}")
+            logger.error(f"Ошибка Groq (analyze_raw): {e}")
             return f"⚠️ Ошибка AI: {e}"
 
     def _fallback_analysis(self, stats: dict = None) -> str:

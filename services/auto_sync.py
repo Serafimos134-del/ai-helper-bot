@@ -7,7 +7,6 @@ and Behavior Alerts Engine hooks.
 import asyncio
 import logging
 import sqlite3
-import json
 from datetime import datetime, timezone
 from services.bingx_api import get_open_positions, get_kline
 from services.database import Database
@@ -15,6 +14,7 @@ from services.behavior_engine import BehaviorEngine, format_alert
 from ai.trade_scorer import TradeScorer
 from ai.consensus_engine import ConsensusEngine
 from services.ai_trading import AITradingAnalyzer
+from utils.formatting import format_verdict
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,11 @@ _MISSING_THRESHOLD = 2
 
 
 def _calculate_exit_price(trade: dict) -> float:
+    """ОЦЕНКА цены выхода, а не фактическая цена исполнения.
+    BingX positions API не отдаёт реальную цену закрытия — здесь мы
+    восстанавливаем её из последнего известного unrealized_pnl перед тем, как
+    позиция исчезла из ответа API. Это приближение (не учитывает комиссии/
+    funding), поэтому в уведомлениях помечаем как оценочное значение."""
     entry = float(trade.get('entry_price', 0))
     qty   = float(trade.get('quantity', 0))
     pnl   = float(trade.get('unrealized_pnl', 0))
@@ -67,25 +72,6 @@ def _calculate_exit_price(trade: dict) -> float:
     if qty == 0:
         return entry
     return entry + (pnl / qty) if side == 'LONG' else entry - (pnl / qty)
-
-
-def _format_verdict(verdict_raw) -> str:
-    try:
-        verdict = json.loads(verdict_raw) if isinstance(verdict_raw, str) else verdict_raw
-        verdict_text    = verdict.get('verdict', '—')
-        final_score     = verdict.get('final_score', '—')
-        verdict_summary = verdict.get('summary', '')
-        warnings        = verdict.get('warnings', [])
-        emoji_map = {'STRONG_ENTER': '🟢', 'ENTER': '🟢', 'WAIT': '🟡', 'AVOID': '🔴'}
-        emoji = emoji_map.get(verdict_text, '⚪')
-        result = f"{emoji} {verdict_text} ({final_score}/100)"
-        if verdict_summary:
-            result += f"\n{verdict_summary}"
-        if warnings:
-            result += "\n⚠️ " + " | ".join(warnings)
-        return result
-    except Exception:
-        return str(verdict_raw)
 
 
 async def _check_behavior_on_open(bot, chat_id: str, user_id: str, trade: dict):
@@ -149,7 +135,7 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
             logger.error(f"Ошибка Memory Engine для сделки #{trade_id}: {mem_e}")
 
         try:
-            verdict_line = _format_verdict(analysis.get('judge_verdict', '{}'))
+            verdict_line = format_verdict(analysis.get('judge_verdict', '{}'))
             text = (
                 f"🧠 AI-разбор сделки #{trade_id}\n\n"
                 f"📈 Рынок:\n{analysis.get('market_review', '—')}\n\n"
@@ -397,8 +383,9 @@ async def _notify_closed_trade(bot, chat_id: str, trade: dict, pnl: float, trade
             f"🔔 *Позиция закрыта!*\n\n"
             f"{pnl_emoji} {symbol} — {side}\n"
             f"💰 PNL: ${pnl:+.2f}\n"
-            f"💵 Цена выхода: ${exit_price:.4f}\n"
+            f"💵 Цена выхода (оценочно): ≈${exit_price:.4f}\n"
             f"{sl_line}{tp_line}{duration_line}\n"
+            f"_Цена выхода и PNL восстановлены расчётным путём — биржа не отдаёт точную цену исполнения через этот метод._\n\n"
             f"*Добавьте вывод или выберите сетап:*"
         )
         keyboard = InlineKeyboardMarkup([

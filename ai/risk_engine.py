@@ -1,6 +1,13 @@
 import logging
 from typing import Dict, List, Tuple
 
+from utils.liquidation import (
+    LOW_VOLATILITY,
+    MEDIUM_VOLATILITY,
+    get_volatility_class,
+    estimate_liquidation_price,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,45 +29,14 @@ class RiskRuleEngine:
     LIQUIDATION_WARN = 5.0
     LIQUIDATION_CRITICAL = 2.0
 
-    LOW_VOLATILITY = {"BTC-USDT", "ETH-USDT"}
-    MEDIUM_VOLATILITY = {"SOL-USDT", "BNB-USDT", "XRP-USDT", "ADA-USDT"}
+    # Классификация волатильности и оценка ликвидации вынесены в
+    # utils/liquidation.py — общий модуль, используемый также в calc_engine.py,
+    # чтобы /calc и портфельная оценка риска не расходились в цифрах.
+    LOW_VOLATILITY = LOW_VOLATILITY
+    MEDIUM_VOLATILITY = MEDIUM_VOLATILITY
 
-    @staticmethod
-    def _get_volatility_class(symbol: str) -> str:
-        if symbol in RiskRuleEngine.LOW_VOLATILITY:
-            return "LOW"
-        if symbol in RiskRuleEngine.MEDIUM_VOLATILITY:
-            return "MEDIUM"
-        return "HIGH"
-
-    @staticmethod
-    def _get_mmr(symbol: str) -> float:
-        """
-        Возвращает maintenance margin rate для символа.
-        BTC/ETH: 0.5%, популярные альты: 1%, остальные: 2%.
-        """
-        if symbol in RiskRuleEngine.LOW_VOLATILITY:
-            return 0.005
-        if symbol in RiskRuleEngine.MEDIUM_VOLATILITY:
-            return 0.01
-        return 0.02
-
-    @staticmethod
-    def _estimate_liquidation_price(entry: float, leverage: float, side: str, symbol: str = "") -> float:
-        """
-        Цена ликвидации с учётом maintenance margin (BingX cross-margin).
-        Формула:
-          LONG:  liq = entry * (1 - (1 - mmr) / leverage)
-          SHORT: liq = entry * (1 + (1 - mmr) / leverage)
-        """
-        if leverage <= 0:
-            leverage = 1
-        mmr = RiskRuleEngine._get_mmr(symbol)
-        margin_factor = (1.0 - mmr) / leverage
-        if side == "LONG":
-            return entry * (1.0 - margin_factor)
-        else:
-            return entry * (1.0 + margin_factor)
+    _get_volatility_class = staticmethod(get_volatility_class)
+    _estimate_liquidation_price = staticmethod(estimate_liquidation_price)
 
     @staticmethod
     def assess(portfolio: Dict, history: Dict) -> Dict:

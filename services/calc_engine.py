@@ -4,6 +4,8 @@ Position calculator — маржа, ликвидация, риск.
 Поддерживает isolated и cross margin.
 """
 
+from utils.liquidation import estimate_liquidation_price, get_mmr
+
 
 def calculate_position(
     symbol: str,
@@ -16,12 +18,23 @@ def calculate_position(
     if price <= 0 or leverage <= 0 or balance <= 0:
         return {'error': 'Некорректные данные'}
 
+    # risk_amount — сколько денег готовы выделить под маржу этой сделки.
+    # margin = risk_amount (маржа = то, что вносим), leverage применяется
+    # только один раз при переводе маржи в номинальный объём позиции.
+    # (Раньше leverage применялся дважды: margin = risk_amount * leverage,
+    # что завышало реальный объём позиции в leverage раз против заявленного риска.)
     risk_amount   = balance * risk_percent / 100
-    margin        = risk_amount * leverage
+    margin        = risk_amount
     position_size = margin * leverage / price
     notional      = position_size * price
 
-    maintenance = 0.005  # 0.5% — стандарт для большинства пар
+    # maintenance margin rate теперь берётся по символу (BTC/ETH ниже, мелкие
+    # альты выше) из общего модуля utils/liquidation.py — той же функцией,
+    # что использует портфельная оценка риска (ai/risk_engine.py). Раньше тут
+    # была отдельная формула с фиксированным maintenance=0.5%, из-за чего /calc
+    # и оценка риска портфеля показывали разную цену ликвидации для одной и
+    # той же позиции.
+    maintenance = get_mmr(symbol.upper())
 
     if margin_type == 'cross':
         # Cross: весь баланс защищает позицию
@@ -33,12 +46,12 @@ def calculate_position(
             liq_long  = max(liq_long,  price * 0.01)
             liq_short = min(liq_short, price * 10.0)
         except ZeroDivisionError:
-            liq_long  = price * (1 - 1 / leverage + maintenance)
-            liq_short = price * (1 + 1 / leverage - maintenance)
+            liq_long  = estimate_liquidation_price(price, leverage, 'LONG', symbol.upper())
+            liq_short = estimate_liquidation_price(price, leverage, 'SHORT', symbol.upper())
     else:
-        # Isolated: маржа фиксирована
-        liq_long  = price * (1 - 1 / leverage + maintenance)
-        liq_short = price * (1 + 1 / leverage - maintenance)
+        # Isolated: используем общую формулу (см. utils/liquidation.py)
+        liq_long  = estimate_liquidation_price(price, leverage, 'LONG', symbol.upper())
+        liq_short = estimate_liquidation_price(price, leverage, 'SHORT', symbol.upper())
 
     liq_distance_long  = round(abs(price - liq_long)  / price * 100, 2)
     liq_distance_short = round(abs(liq_short - price) / price * 100, 2)
