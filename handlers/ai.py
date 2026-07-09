@@ -6,7 +6,7 @@ AI-related handlers: market overview, trends, journal analysis, consilium, coach
 import json
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
-from core.container import get_ai_analyzer, get_consensus, get_db
+from core.container import get_ai_analyzer, get_orchestrator, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
 from utils.telegram_text import clean_markdown as _clean
@@ -207,7 +207,7 @@ async def consilium_open_positions(update: Update, context: ContextTypes.DEFAULT
 
 
 async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    consensus = get_consensus()
+    orchestrator = get_orchestrator()
     text      = update.message.text.strip()
     trades    = context.user_data.get('consilium_positions', [])
     chosen    = None
@@ -223,7 +223,7 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
         return
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую позицию...")
-    result = await consensus.analyze_open_position(chosen)
+    result = await orchestrator.review_open_position(chosen)
     # Добавляем SL/TP из выбранной позиции в результат для отображения
     result['stop_loss'] = chosen.get('stopLoss') or chosen.get('stop_loss')
     result['take_profit'] = chosen.get('takeProfit') or chosen.get('take_profit')
@@ -242,7 +242,7 @@ async def consilium_new_setup(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from utils.parsers import parse_trade_idea
-    consensus        = get_consensus()
+    orchestrator     = get_orchestrator()
     text             = update.message.text.strip()
     ticker, direction = parse_trade_idea(text)
     if not ticker or not direction:
@@ -253,7 +253,7 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
         return
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую сетап...")
-    result = await consensus.analyze_new_setup(ticker, direction, extra_notes=text)
+    result = await orchestrator.evaluate_new_setup(ticker, direction, extra_notes=text)
     response = _build_response(result, ticker, direction)
     await msg.edit_text(response[:4096])
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())

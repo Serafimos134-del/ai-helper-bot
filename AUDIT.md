@@ -131,3 +131,51 @@
 3. ~~Зафиксировать версии `groq`/`aiohttp`.~~ ✅ При проверке выяснилось, что оба пакета нигде не импортируются в коде (`GroqProvider` ходит в Groq API напрямую через `requests`, а не через официальный SDK) — это были мёртвые зависимости. Убраны из `requirements.txt` вместо пиновки; `cryptography` зафиксирован на `==49.0.0`. `pip-audit` по оставшимся пакетам (`python-telegram-bot`, `httpx`, `requests`, `flask`, `python-dotenv`, `cryptography`) ещё не прогонялся.
 
 Разбиение `database.py`/`context_builder.py` на репозитории и доведение мультитенантности до конца можно отложить — это влияет на читаемость, но не на корректность, и естественно решится по ходу вынесения агентов в `AI Trading Core` (Этап 2), когда контракты между слоями и так придётся переопределять.
+
+---
+
+## Этап 2/3 плана AI Trading Core: AI Orchestrator (2026-07-09)
+
+Добавлен `ai/orchestrator.py` — класс `AIOrchestrator`, единая точка входа в
+AI Trading Core, зарегистрирован в `core/container.py` как `get_orchestrator()`.
+Все точки вызова (`handlers/ai.py`, `core/router.py`, `services/auto_sync.py`)
+переведены с прямого обращения к `get_consensus()`/`ConsensusEngine` на
+`get_orchestrator()`.
+
+Маршрутизация запросов (согласно плану, Этап 3):
+
+| Тип запроса | Агенты (по плану) | Метод |
+|---|---|---|
+| `open_position` | Position Analyst + Risk Manager + Judge | `review_open_position()` |
+| `closed_trade` | Trade Reviewer + Risk Manager + Judge | `review_closed_trade()` |
+| `new_setup` | Market Analyst + Strategy Advisor + Risk Manager + Judge | `evaluate_new_setup()` |
+
+**Важное архитектурное решение, которое стоит зафиксировать:** роли Position
+Analyst / Trade Reviewer / Strategy Advisor из плана **не выделены в отдельные
+классы**. Они уже существуют как режимы (`mode='open'|'post_trade'|'setup'`)
+внутри `MarketAgent`/`RiskAgent`/`PsychologyAgent`, которыми управляет
+`ConsensusEngine` — именно он и делает основную работу по подбору поведения
+под тип запроса. Выделение их в отдельные классы прямо сейчас было бы чистым
+переименованием без изменения поведения (запрещённая шаблоном
+преждевременная абстракция). `AIOrchestrator` — тонкий слой поверх
+`ConsensusEngine`: документирует маршрутизацию из плана, даёт единую точку
+входа и логирование по типу запроса, и место, куда позже можно подставить
+принципиально новых агентов (Portfolio/News/Macro Analyst — Этап 3) не
+меняя вызывающий код.
+
+Побочная находка при чтении `ai/agents/risk_agent.py` и `ai/agents/psychology_agent.py`:
+их методы `_analyze_open_position`/`_analyze_setup`/`_analyze_post_trade`
+возвращают `risk_score`/`psychology_score` в шкале 0–10, тогда как
+`JudgeAgent` и `ScoringEngine` работают в шкале 0–100. На данный момент это
+не баг: `ConsensusEngine._run_agents_parallel()` не использует эти числовые
+поля для `open`/`post_trade`/`setup` — реальные `risk_score`/`psychology_score`,
+которые видит Judge, считает отдельно `ScoringEngine.calculate()`, а из
+ответов RiskAgent/PsychologyAgent берётся только текстовое `summary`. Но это
+скрытая ловушка: 0–10 значения выглядят валидными и лежат прямо в JSON-ответе
+агента — если в будущем код случайно начнёт брать `risk_score`/`psychology_score`
+напрямую из ответа агента вместо `ScoringEngine`, Judge получит на порядок
+заниженные числа и будет считать почти любую позицию критически рискованной.
+Стоит либо привести шкалы к единому виду, либо явно переименовать эти поля
+(например, `discipline_score_10`), чтобы несовместимость шкал была видна по
+имени. Не исправлено в этом проходе — требует решения, какая шкала канонична,
+и трогает промпты/пороги в нескольких файлах одновременно.
