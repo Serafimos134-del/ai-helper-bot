@@ -131,3 +131,69 @@
 3. ~~Зафиксировать версии `groq`/`aiohttp`.~~ ✅ При проверке выяснилось, что оба пакета нигде не импортируются в коде (`GroqProvider` ходит в Groq API напрямую через `requests`, а не через официальный SDK) — это были мёртвые зависимости. Убраны из `requirements.txt` вместо пиновки; `cryptography` зафиксирован на `==49.0.0`. `pip-audit` по оставшимся пакетам (`python-telegram-bot`, `httpx`, `requests`, `flask`, `python-dotenv`, `cryptography`) ещё не прогонялся.
 
 Разбиение `database.py`/`context_builder.py` на репозитории и доведение мультитенантности до конца можно отложить — это влияет на читаемость, но не на корректность, и естественно решится по ходу вынесения агентов в `AI Trading Core` (Этап 2), когда контракты между слоями и так придётся переопределять.
+
+---
+
+## Этап 2/3 плана AI Trading Core: AI Orchestrator (2026-07-09)
+
+Добавлен `ai/orchestrator.py` — класс `AIOrchestrator`, единая точка входа в
+AI Trading Core, зарегистрирован в `core/container.py` как `get_orchestrator()`.
+Все точки вызова (`handlers/ai.py`, `core/router.py`, `services/auto_sync.py`)
+переведены с прямого обращения к `get_consensus()`/`ConsensusEngine` на
+`get_orchestrator()`.
+
+Маршрутизация запросов (согласно плану, Этап 3):
+
+| Тип запроса | Агенты (по плану) | Метод |
+|---|---|---|
+| `open_position` | Position Analyst + Risk Manager + Judge | `review_open_position()` |
+| `closed_trade` | Trade Reviewer + Risk Manager + Judge | `review_closed_trade()` |
+| `new_setup` | Market Analyst + Strategy Advisor + Risk Manager + Judge | `evaluate_new_setup()` |
+
+**Важное архитектурное решение, которое стоит зафиксировать:** роли Position
+Analyst / Trade Reviewer / Strategy Advisor из плана **не выделены в отдельные
+классы**. Они уже существуют как режимы (`mode='open'|'post_trade'|'setup'`)
+внутри `MarketAgent`/`RiskAgent`/`PsychologyAgent`, которыми управляет
+`ConsensusEngine` — именно он и делает основную работу по подбору поведения
+под тип запроса. Выделение их в отдельные классы прямо сейчас было бы чистым
+переименованием без изменения поведения (запрещённая шаблоном
+преждевременная абстракция). `AIOrchestrator` — тонкий слой поверх
+`ConsensusEngine`: документирует маршрутизацию из плана, даёт единую точку
+входа и логирование по типу запроса, и место, куда позже можно подставить
+принципиально новых агентов (Portfolio/News/Macro Analyst — Этап 3) не
+меняя вызывающий код.
+
+**Побочная находка — исправлено в этом же проходе.** При чтении
+`ai/agents/risk_agent.py` и `ai/agents/psychology_agent.py` обнаружилось, что
+их методы `_analyze_open_position`/`_analyze_setup`/`_analyze_post_trade`
+возвращали `risk_score`/`psychology_score` в шкале 0–10, тогда как
+`JudgeAgent` и `ScoringEngine` работают в шкале 0–100. На тот момент это не
+было активным багом: `ConsensusEngine._run_agents_parallel()` не использовал
+эти числовые поля для `open`/`post_trade`/`setup` — реальные
+`risk_score`/`psychology_score`, которые видит Judge, считает отдельно
+`ScoringEngine.calculate()`, а из ответов RiskAgent/PsychologyAgent берётся
+только текстовое `summary`. Но это была скрытая ловушка: 0–10 значения
+выглядели валидными и лежали прямо в JSON-ответе агента — если бы в будущем
+код случайно начал брать `risk_score`/`psychology_score` напрямую из ответа
+агента вместо `ScoringEngine`, Judge получил бы на порядок заниженные числа
+и считал бы почти любую позицию критически рискованной.
+
+Исправление:
+- `ScoringEngine._calc_risk`/`_calc_psychology`/`_calc_data_quality` сделаны
+  публичными (`calc_risk`/`calc_psychology`/`calc_data_quality`) — это теперь
+  единственная реализация шкалы риска 0–100 (выше = безопаснее) в проекте.
+- `RiskAgent._calc_risk_score()` (открытая позиция/закрытая сделка) больше не
+  дублирует логику проверки SL/TP/leverage в своей шкале — делегирует в
+  `ScoringEngine.calc_risk()`.
+- `RiskAgent._analyze_setup()` — свой более богатый, направленно-зависимый
+  расчёт риска сетапа сохранён (он не дублирует `ScoringEngine`, а несёт
+  доп. сигнал), но приведён к шкале 0–100 с той же ориентацией "выше =
+  безопаснее" (раньше была обратная ориентация: выше = опаснее).
+- `PsychologyAgent._analyze_setup`/`_analyze_open_position`/`_analyze_post_trade`
+  — логика не дублирует `ScoringEngine` (анализ формулировок, early-exit и
+  т.п.), поэтому просто пересчитана из шкалы 0–10 в 0–100 с сохранением всех
+  относительных весов (все базовые значения и штрафы ×10).
+- Проверено смоук-тестом: безопасная позиция (SL+TP, leverage 3x) даёт
+  risk_score=95/psychology_score=100, рискованная (без SL/TP, leverage 15x) —
+  risk_score=50/psychology_score=30; сетап LONG+TRENDING_UP — risk_score=70,
+  LONG+UNKNOWN regime — risk_score=20. Направление шкалы везде одинаковое.

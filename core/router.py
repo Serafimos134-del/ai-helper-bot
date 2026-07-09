@@ -8,7 +8,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from core.keyboards import cancel_keyboard
-from core.container import get_consensus, get_ai_analyzer, get_db
+from core.container import get_orchestrator, get_ai_analyzer, get_db
 from utils.formatting import format_verdict
 
 logger = logging.getLogger(__name__)
@@ -196,8 +196,8 @@ async def generate_full_ai_analysis(query, trade_id):
         return
     await query.edit_message_text("🔄 Запускаю полный AI-анализ...")
     try:
-        consensus = get_consensus()
-        analysis = await consensus.analyze_closed_trade(trade)
+        orchestrator = get_orchestrator()
+        analysis = await orchestrator.review_closed_trade(trade)
         # Сохраняем все метрики, кроме setup_type (если уже был задан вручную, не перезаписываем)
         existing = db.find_trade_by_id(trade_id)
         setup = existing.get('setup_type') if existing else None

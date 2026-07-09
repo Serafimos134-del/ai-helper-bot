@@ -42,22 +42,24 @@ class PsychologyAgent:
         symbol = idea.get('symbol', '')
 
         patterns = []
-        discipline_score = 8
+        # Шкала 0-100 (выше = дисциплинированнее), как и у остальных агентов
+        # AI Trading Core — раньше здесь была шкала 0-10 (см. AUDIT.md).
+        discipline_score = 80
 
         # Анализ формулировки
         text_lower = notes.lower()
         if 'думаю' in text_lower:
             patterns.append("Неуверенность в формулировке — возможно, недостаток уверенности в сетапе.")
-            discipline_score -= 1
+            discipline_score -= 10
         if 'хочу' in text_lower:
             patterns.append("Эмоциональное желание вместо объективного анализа — риск FOMO.")
-            discipline_score -= 2
+            discipline_score -= 20
         if 'должен' in text_lower:
             patterns.append("Чувство обязательства — возможное давление или revenge trading.")
-            discipline_score -= 2
+            discipline_score -= 20
         if 'страшно' in text_lower or 'боюсь' in text_lower:
             patterns.append("Присутствует страх — может привести к hesitation или преждевременному выходу.")
-            discipline_score -= 2
+            discipline_score -= 20
 
         # Проверка на перекос направления
         if direction.upper() == 'LONG':
@@ -67,9 +69,9 @@ class PsychologyAgent:
 
         if not notes:
             patterns.append("Сетап без деталей — рекомендуется добавить конкретные критерии входа.")
-            discipline_score -= 1
+            discipline_score -= 10
 
-        discipline_score = max(0, min(10, discipline_score))
+        discipline_score = max(0, min(100, discipline_score))
 
         result = {
             "psychology_score": discipline_score,
@@ -85,30 +87,30 @@ class PsychologyAgent:
         size = pos.get('size', 0)
 
         patterns = []
-        discipline_score = 10
+        discipline_score = 100
 
         if sl and tp:
             patterns.append("Оба защитных ордера установлены — высокий уровень дисциплины.")
         elif sl and not tp:
             patterns.append("Установлен только стоп-лосс — недостаток планирования прибыли.")
-            discipline_score -= 2
+            discipline_score -= 20
         elif tp and not sl:
             patterns.append("Установлен только тейк-профит — отсутствие защиты от убытков, рискованный оптимизм.")
-            discipline_score -= 3
+            discipline_score -= 30
         else:
             patterns.append("Нет ни стоп-лосса, ни тейк-профита — отсутствие дисциплины и плана.")
-            discipline_score -= 5
+            discipline_score -= 50
 
         if leverage >= 10:
             patterns.append("Высокое плечо (10x+) указывает на склонность к риску или самоуверенность.")
-            discipline_score -= 2
+            discipline_score -= 20
         elif leverage >= 5:
             patterns.append("Умеренное плечо — приемлемый уровень риска.")
 
         if size > 0:
             patterns.append(f"Размер позиции: {size}.")
 
-        discipline_score = max(0, min(10, discipline_score))
+        discipline_score = max(0, min(100, discipline_score))
 
         result = {
             "psychology_score": discipline_score,
@@ -146,11 +148,11 @@ class PsychologyAgent:
         if comment:
             patterns.append(f"Комментарий трейдера: {comment}")
 
-        discipline_score = 10
-        if not sl: discipline_score -= 3
-        if not tp: discipline_score -= 2
-        if early_exit: discipline_score -= 2
-        discipline_score = max(0, min(10, discipline_score))
+        discipline_score = 100
+        if not sl: discipline_score -= 30
+        if not tp: discipline_score -= 20
+        if early_exit: discipline_score -= 20
+        discipline_score = max(0, min(100, discipline_score))
 
         result = {
             "psychology_score": discipline_score,

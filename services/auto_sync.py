@@ -12,8 +12,7 @@ from services.bingx_api import get_open_positions, get_kline
 from services.database import Database
 from services.behavior_engine import BehaviorEngine, format_alert
 from ai.trade_scorer import TradeScorer
-from ai.consensus_engine import ConsensusEngine
-from services.ai_trading import AITradingAnalyzer
+from core.container import get_orchestrator
 from utils.formatting import format_verdict
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -114,9 +113,8 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
     from ai.memory_engine import MemoryEngine
 
     try:
-        ai_provider = AITradingAnalyzer().provider
-        engine = ConsensusEngine(ai_provider)
-        analysis = await engine.analyze_closed_trade(closed_trade)
+        orchestrator = get_orchestrator()
+        analysis = await orchestrator.review_closed_trade(closed_trade)
         score = trade_scorer.score(closed_trade)
 
         await asyncio.to_thread(db.update_trade_metrics, trade_id,
