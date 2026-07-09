@@ -6,7 +6,7 @@ from services.bingx_api import (
     get_funding_rate, get_open_interest, get_kline,
     _calculate_atr, _detect_market_regime
 )
-from ai.trader_context import build_trader_context
+from ai.trader_context import build_trader_context, format_trader_context_summary
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +120,19 @@ class ContextBuilder:
         return context
 
     def _build_history_context(self) -> dict:
+        # Раньше здесь же считался revenge_score/fomo_score/overtrading_score/
+        # premature_exit_score/tilt_probability (_calculate_behavior_metrics) —
+        # четвёртая независимая реализация поведенческого скоринга поверх
+        # BehaviorEngine и PsychologyEngine.assess(), и при этом мёртвая: эти
+        # поля читались только в _rule_based_analysis(), которая не вызывается
+        # ни для одного из трёх реальных режимов консилиума (mode всегда один
+        # из open/post_trade/setup). Удалено при консолидации в TraderContext
+        # (см. TRADER_INTELLIGENCE_ARCHITECTURE.md, §1.3/§4, Этап 5) — та же
+        # личная история теперь доходит до Judge через TraderContext, причём
+        # реально, а не в недостижимую ветку.
         context = {
             "stats": None, "recent_trades": [],
             "losing_streak": 0, "winning_streak": 0,
-            "revenge_score": 0, "fomo_score": 0,
-            "overtrading_score": 0, "premature_exit_score": 0,
-            "tilt_probability": 0,
         }
 
         try:
@@ -160,88 +167,10 @@ class ContextBuilder:
                 else:
                     break
 
-            context.update(self._calculate_behavior_metrics(trades, context["losing_streak"]))
-
         except Exception as e:
             logger.error(f"Ошибка получения истории: {e}")
 
         return context
-
-    def _calculate_behavior_metrics(self, trades: list, losing_streak: int) -> dict:
-        result = {
-            "revenge_score": 0, "fomo_score": 0,
-            "overtrading_score": 0, "premature_exit_score": 0,
-            "tilt_probability": 0,
-        }
-
-        if not trades:
-            return result
-
-        recent = trades[:10]
-
-        if losing_streak >= 2:
-            result["revenge_score"] += min(losing_streak * 2, 6)
-            leverages = [float(t.get("leverage", 1)) for t in recent]
-            sizes = [abs(float(t.get("pnl", 0))) for t in recent]
-            if len(leverages) >= 2 and leverages[0] > leverages[-1]:
-                result["revenge_score"] += 2
-            if len(sizes) >= 2 and sizes[0] > sizes[-1]:
-                result["revenge_score"] += 2
-
-        if len(recent) >= 3:
-            try:
-                times = [t.get("close_time", "") for t in recent if t.get("close_time")]
-                if len(times) >= 3:
-                    from datetime import datetime
-                    parsed = []
-                    for ts in times:
-                        try:
-                            parsed.append(datetime.fromisoformat(ts.replace("Z", "+00:00")))
-                        except:
-                            pass
-                    if len(parsed) >= 3:
-                        time_range_hours = (parsed[0] - parsed[-1]).total_seconds() / 3600
-                        if time_range_hours > 0:
-                            trades_per_hour = len(parsed) / time_range_hours
-                            if trades_per_hour > 2:
-                                result["fomo_score"] += 4
-                            elif trades_per_hour > 1:
-                                result["fomo_score"] += 2
-            except:
-                pass
-
-        if len(recent) >= 5:
-            result["overtrading_score"] = min(len(recent), 10)
-
-        profitable = [t for t in recent if float(t.get("pnl", 0)) > 0]
-        if profitable:
-            premature_count = 0
-            for t in profitable:
-                pnl = float(t.get("pnl", 0))
-                entry = float(t.get("entry", 0))
-                exit_price = float(t.get("exit", 0))
-                if entry > 0 and exit_price > 0:
-                    profit_pct = abs(exit_price - entry) / entry * 100
-                    if profit_pct < 2 and pnl > 0:
-                        premature_count += 1
-            result["premature_exit_score"] = min(premature_count * 2, 8)
-
-        tilt = 0
-        if result["revenge_score"] >= 6:
-            tilt += 40
-        elif result["revenge_score"] >= 4:
-            tilt += 25
-        if result["fomo_score"] >= 4:
-            tilt += 30
-        elif result["fomo_score"] >= 2:
-            tilt += 15
-        if result["overtrading_score"] >= 7:
-            tilt += 20
-        if result["premature_exit_score"] >= 6:
-            tilt += 10
-        result["tilt_probability"] = min(tilt, 100)
-
-        return result
 
     async def build_for_open_position(self, position: dict) -> dict:
         ticker_info = None
@@ -255,7 +184,6 @@ class ContextBuilder:
             asyncio.to_thread(self._build_history_context),
             asyncio.to_thread(build_trader_context, self.db, symbol),
         )
-        memory_context = self._get_memory_context_sync()
 
         return {
             "position": {
@@ -272,13 +200,8 @@ class ContextBuilder:
             "market": market,
             "portfolio": portfolio,
             "history": history,
-            "memory": memory_context,
+            "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,
-            "trader_profile": {
-                "style": "trend/breakout",
-                "holding_period": "up to 2 weeks",
-                "risk_priority": "position size > leverage",
-            },
         }
 
     async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
@@ -293,7 +216,6 @@ class ContextBuilder:
             asyncio.to_thread(self._build_history_context),
             asyncio.to_thread(build_trader_context, self.db, symbol),
         )
-        memory_context = self._get_memory_context_sync()
 
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
 
@@ -303,13 +225,8 @@ class ContextBuilder:
             "market": market,
             "portfolio": portfolio,
             "history": history,
-            "memory": memory_context,
+            "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,
-            "trader_profile": {
-                "style": "trend/breakout",
-                "holding_period": "up to 2 weeks",
-                "risk_priority": "position size > leverage",
-            },
         }
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
@@ -319,7 +236,6 @@ class ContextBuilder:
             self._build_market_context(),
             asyncio.to_thread(build_trader_context, self.db, symbol),
         )
-        memory_context = self._get_memory_context_sync()
 
         return {
             "trade": {
@@ -340,13 +256,8 @@ class ContextBuilder:
             "score": score_result,
             "market": market,
             "history": history,
-            "memory": memory_context,
+            "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,
-            "trader_profile": {
-                "style": "trend/breakout",
-                "holding_period": "up to 2 weeks",
-                "risk_priority": "position size > leverage",
-            },
         }
 
     async def _build_ticker_info(self, symbol: str) -> dict:
@@ -390,57 +301,10 @@ class ContextBuilder:
 
         return info if info else None
 
-    def _get_memory_context_sync(self) -> str:
-        try:
-            db = Database()
-            total = int(db.memory_get('global', 'total_trades') or 0)
-            if total < 2:
-                return ""
-
-            wins = int(db.memory_get('global', 'winning_trades') or 0)
-            losses = int(db.memory_get('global', 'losing_trades') or 0)
-            avg_min = float(db.memory_get('holding', 'avg_minutes') or 0)
-
-            best_ticker = self._get_best_ticker(db)
-            best_direction = self._get_best_direction(db)
-
-            lines = ["ПРОФИЛЬ ТРЕЙДЕРА (на основе истории):"]
-            lines.append(f"- Всего сделок: {total} (побед: {wins}, поражений: {losses})")
-            if best_ticker:
-                lines.append(f"- Лучший тикер: {best_ticker}")
-            if best_direction:
-                lines.append(f"- Лучшее направление: {best_direction}")
-            if avg_min > 0:
-                lines.append(f"- Среднее удержание: {avg_min:.0f} мин")
-            return "\n".join(lines) + "\n\n"
-        except Exception as e:
-            logger.error(f"Ошибка получения memory_context: {e}")
-            return ""
-
-    def _get_best_ticker(self, db) -> str:
-        tickers = db.memory_get_all('ticker')
-        best_wr = -1
-        best = None
-        for key, value in tickers.items():
-            if key.endswith('_total'):
-                ticker = key.replace('_total', '')
-                wins = int(tickers.get(f'{ticker}_wins', 0))
-                total = int(value)
-                if total >= 2:
-                    wr = wins / total * 100
-                    if wr > best_wr:
-                        best_wr = wr
-                        best = f"{ticker} (WR: {wr:.0f}%, {total} сделок)"
-        return best
-
-    def _get_best_direction(self, db) -> str:
-        directions = db.memory_get_all('direction')
-        for key, value in directions.items():
-            if key.endswith('_total'):
-                direction = key.replace('_total', '')
-                wins = int(directions.get(f'{direction}_wins', 0))
-                total = int(value)
-                if total >= 2:
-                    wr = wins / total * 100
-                    return f"{direction} (WR: {wr:.0f}%, {total} сделок)"
-        return None
+    # _get_memory_context_sync()/_get_best_ticker()/_get_best_direction()
+    # удалены при консолидации в TraderContext (Этап 5, см.
+    # TRADER_INTELLIGENCE_ARCHITECTURE.md, §8) — дублировали PerformanceEngine
+    # через отдельные инкрементальные счётчики MemoryEngine в trader_memory.
+    # Футер "ПРОФИЛЬ ТРЕЙДЕРА" теперь строит
+    # ai/trader_context.py:format_trader_context_summary() из того же
+    # TraderContext, что видит JudgeAgent — один источник вместо двух.
