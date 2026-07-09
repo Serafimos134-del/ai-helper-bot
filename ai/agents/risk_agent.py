@@ -4,6 +4,7 @@ import json
 from ai.providers.base_provider import BaseProvider
 from ai.context_builder import ContextBuilder
 from ai.risk_engine import RiskRuleEngine
+from ai.engines.scoring_engine import ScoringEngine
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,10 @@ class RiskAgent:
     def __init__(self, provider: BaseProvider = None):
         self.provider = provider
         self.context_builder = ContextBuilder()
+        # Единый источник правды для risk_score (шкала 0-100, выше = безопаснее) —
+        # тот же ScoringEngine, который видит JudgeAgent. Раньше здесь была
+        # отдельная копия той же логики в шкале 0-10 (см. AUDIT.md).
+        self.scoring = ScoringEngine()
 
     async def analyze(self, context: dict = None) -> str:
         if context is None:
@@ -71,14 +76,18 @@ class RiskAgent:
             f"Рекомендуется ограничить размер позиции 1% от депозита."
         )
 
-        # Скор риска для сетапа (5 = нейтрально, без защитных ордеров)
-        risk_score = 5
+        # Скор безопасности сетапа, шкала 0-100 (выше = безопаснее) — та же
+        # ориентация, что и ScoringEngine.calc_risk для open/post_trade и
+        # JudgeAgent. Раньше здесь была отдельная шкала 0-10 с обратной
+        # ориентацией (выше = опаснее); значения ниже — те же самые числа
+        # (5→50, 3→70, 7→30, 8→20), только приведённые к общей конвенции.
+        risk_score = 50
         if regime in ("TRENDING_UP", "TRENDING_DOWN"):
-            risk_score = 3 if direction.lower() == "long" and regime == "TRENDING_UP" else 7
+            risk_score = 70 if direction.lower() == "long" and regime == "TRENDING_UP" else 30
         elif regime in ("RANGING", "SIDEWAYS"):
-            risk_score = 5
+            risk_score = 50
         elif regime == "UNKNOWN":
-            risk_score = 8
+            risk_score = 20
 
         result = {
             "risk_score": risk_score,
@@ -168,17 +177,10 @@ class RiskAgent:
         return json.dumps(result, ensure_ascii=False)
 
     def _calc_risk_score(self, obj: dict) -> int:
-        score = 5
-        if not obj.get('stop_loss'):
-            score -= 2
-        if not obj.get('take_profit'):
-            score -= 1
-        leverage = float(obj.get('leverage', 1))
-        if leverage >= 10:
-            score -= 2
-        elif leverage >= 5:
-            score -= 1
-        return max(0, min(10, score))
+        """Шкала 0-100 (выше = безопаснее), делегирует в ScoringEngine.calc_risk —
+        единственный источник этой логики в проекте (см. AUDIT.md). Раньше здесь
+        была отдельная копия той же проверки (SL/TP/leverage) в шкале 0-10."""
+        return int(self.scoring.calc_risk(obj))
 
     # ── Rule-based портфельный анализ (без изменений) ────────────
     async def _rule_based_analysis(self, ctx: dict) -> str:

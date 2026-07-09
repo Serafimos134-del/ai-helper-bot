@@ -26,9 +26,9 @@ class ScoringEngine:
             }
 
         # ── Стандартный расчёт для open/post_trade ──
-        risk_score = self._calc_risk(obj)
-        psych_score = self._calc_psychology(obj)
-        data_quality = self._calc_data_quality(obj)
+        risk_score = self.calc_risk(obj)
+        psych_score = self.calc_psychology(obj)
+        data_quality = self.calc_data_quality(obj)
 
         quality_factor = data_quality
         alignment_factor = 0.85
@@ -66,12 +66,14 @@ class ScoringEngine:
             "disagreement": round(disagreement, 2),
         }
 
-    def _calc_risk(self, obj: dict) -> float:
+    def calc_risk(self, obj: dict) -> float:
         """Скор безопасности позиции: ВЫШЕ = БЕЗОПАСНЕЕ (есть SL/TP, разумное плечо).
-        JudgeAgent и остальной код (RiskAgent, warnings-проверки) считают risk_score
-        именно в этой ориентации — выше значит лучше. Раньше здесь была обратная
-        шкала (выше = опаснее), из-за чего опасные позиции завышали итоговый score
-        вместо того, чтобы его понижать."""
+        Шкала 0-100 — канонична для всего AI Trading Core: JudgeAgent, warnings-проверки
+        и RiskAgent.analyze() (open/post_trade) используют именно эту функцию как единый
+        источник правды, чтобы не поддерживать копию той же логики в другой шкале
+        (см. AUDIT.md, находка про 0-10 vs 0-100). Раньше здесь была обратная шкала
+        (выше = опаснее), из-за чего опасные позиции завышали итоговый score вместо
+        того, чтобы его понижать."""
         score = 100.0
         if not obj.get("stop_loss"):
             score -= 25
@@ -86,7 +88,7 @@ class ScoringEngine:
             score -= 5
         return max(0, min(100, score))
 
-    def _calc_psychology(self, obj: dict) -> float:
+    def calc_psychology(self, obj: dict) -> float:
         score = 70.0
         if not obj.get("stop_loss"):
             score -= 25
@@ -99,7 +101,7 @@ class ScoringEngine:
             score -= 10
         return max(0, min(100, score))
 
-    def _calc_data_quality(self, obj: dict) -> float:
+    def calc_data_quality(self, obj: dict) -> float:
         score = 0.6
         if obj.get("entry_price"):
             score += 0.1
