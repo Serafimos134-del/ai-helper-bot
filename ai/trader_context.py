@@ -183,3 +183,26 @@ def compute_dna_adjustment(trader_context: Optional[dict]) -> dict:
         "reason": "; ".join(reasons) if reasons else None,
         "active": True,
     }
+
+
+def format_trader_context_summary(trader_context: Optional[dict]) -> str:
+    """Короткая текстовая сводка TraderContext для футера ответа пользователю.
+    Заменяет старый ContextBuilder._get_memory_context_sync() (основанный на
+    отдельных счётчиках MemoryEngine, см. TRADER_INTELLIGENCE_ARCHITECTURE.md,
+    §1.3/§8, Этап 5) — теперь источник один: тот же TraderContext, что видит
+    JudgeAgent, а не отдельный пересчёт из trader_memory."""
+    if not trader_context:
+        return ""
+    profile = trader_context.get("profile", {})
+    total = profile.get("total_trades", 0)
+    if total < 2:
+        return ""
+
+    edges = trader_context.get("edges", {})
+    lines = ["ПРОФИЛЬ ТРЕЙДЕРА (на основе истории):"]
+    lines.append(f"- Всего сделок: {total} (winrate: {profile.get('winrate', 0):.0f}%)")
+    if edges.get("best_symbol"):
+        lines.append(f"- Лучший символ: {edges['best_symbol']}")
+    if edges.get("worst_symbol") and edges.get("worst_symbol") != edges.get("best_symbol"):
+        lines.append(f"- Худший символ: {edges['worst_symbol']}")
+    return "\n".join(lines) + "\n\n"

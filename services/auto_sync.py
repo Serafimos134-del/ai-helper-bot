@@ -134,8 +134,6 @@ async def _analyze_new_trade(trade: dict):
 
 
 async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict):
-    from ai.memory_engine import MemoryEngine
-
     try:
         orchestrator = get_orchestrator()
         analysis = await orchestrator.review_closed_trade(closed_trade)
@@ -154,11 +152,11 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
                                 market_trend=analysis.get('market_trend'))
         logger.info(f"Сделка #{trade_id} проанализирована")
 
-        try:
-            mem = MemoryEngine()
-            await mem.update(closed_trade)
-        except Exception as mem_e:
-            logger.error(f"Ошибка Memory Engine для сделки #{trade_id}: {mem_e}")
+        # MemoryEngine.update() (инкрементальные счётчики в trader_memory)
+        # убран при консолидации в TraderContext (Этап 5, см.
+        # TRADER_INTELLIGENCE_ARCHITECTURE.md, §8) — дублировал
+        # PerformanceEngine, который TraderContext уже использует напрямую
+        # из closed_trades, всегда пересчитывая точно, без риска рассинхрона.
 
         # Trader Memory (Этап 8): closed_trades уже хранит финальный снимок
         # анализа закрытия (market_review/risk_review/...), но здесь ещё и
