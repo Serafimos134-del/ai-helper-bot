@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 from ai.providers.base_provider import BaseProvider
+from ai.trader_context import compute_dna_adjustment
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,8 @@ class JudgeAgent:
 
     async def synthesize(self, market_json: str, risk_json: str, psychology_json: str,
                          mode: str = None, trade_score: int = None,
-                         confidence: float = None, disagreement: float = None) -> str:
+                         confidence: float = None, disagreement: float = None,
+                         trader_context: dict = None) -> str:
         try:
             market = json.loads(market_json) if isinstance(market_json, str) else market_json
         except json.JSONDecodeError:
@@ -57,6 +59,7 @@ class JudgeAgent:
             final_trade_score * self.WEIGHTS["trade"]
         )
         final_score = int(max(0, min(100, final_score)))
+        base_score = final_score
 
         if confidence is None:
             scores = [market_score, risk_score, psychology_score]
@@ -65,6 +68,18 @@ class JudgeAgent:
         if disagreement is None:
             scores = [market_score, risk_score, psychology_score]
             disagreement = max(scores) - min(scores)
+
+        # TraderContext (advisory-only, см. TRADER_INTELLIGENCE_ARCHITECTURE.md,
+        # §7 и §9): ограниченная по модулю поправка на основе личной истории
+        # трейдера — активна только при достаточной выборке
+        # (compute_dna_adjustment сам это проверяет и возвращает active=False,
+        # если данных мало). Применяется here, ДО определения verdict, чтобы
+        # поправка реально могла сдвинуть решение, а не быть косметикой
+        # поверх уже готового ответа (см. §1.3/§5 архитектурного документа —
+        # именно так выглядела старая, нерабочая версия персонализации).
+        dna_adjustment = compute_dna_adjustment(trader_context)
+        if dna_adjustment["active"] and dna_adjustment["score_delta"] != 0:
+            final_score = int(max(0, min(100, final_score + dna_adjustment["score_delta"])))
 
         verdict = self._get_verdict(final_score, mode)
 
@@ -79,11 +94,17 @@ class JudgeAgent:
             warnings.append("Психологическая нестабильность")
         if disagreement > 40:
             warnings.append("Сильное расхождение мнений агентов")
+        if dna_adjustment["active"] and dna_adjustment["score_delta"] != 0:
+            warnings.append(
+                f"Персональная поправка {dna_adjustment['score_delta']:+d}: {dna_adjustment['reason']}"
+            )
 
         summary = self._generate_summary(final_score, verdict, confidence, disagreement, mode)
 
         result = {
             "final_score": final_score,
+            "base_score": base_score,
+            "dna_adjustment": dna_adjustment,
             "verdict": verdict,
             "confidence": confidence,
             "warnings": warnings,

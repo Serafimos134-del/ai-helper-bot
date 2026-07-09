@@ -6,6 +6,7 @@ from services.bingx_api import (
     get_funding_rate, get_open_interest, get_kline,
     _calculate_atr, _detect_market_regime
 )
+from ai.trader_context import build_trader_context
 
 logger = logging.getLogger(__name__)
 
@@ -248,10 +249,11 @@ class ContextBuilder:
         if symbol:
             ticker_info = await self._build_ticker_info(symbol)
 
-        market, portfolio, history = await asyncio.gather(
+        market, portfolio, history, trader_context = await asyncio.gather(
             self._build_market_context(),
             self._build_portfolio_context(),
-            asyncio.to_thread(self._build_history_context)
+            asyncio.to_thread(self._build_history_context),
+            asyncio.to_thread(build_trader_context, self.db, symbol),
         )
         memory_context = self._get_memory_context_sync()
 
@@ -271,6 +273,7 @@ class ContextBuilder:
             "portfolio": portfolio,
             "history": history,
             "memory": memory_context,
+            "trader_context": trader_context,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -284,10 +287,11 @@ class ContextBuilder:
             symbol = f"{ticker}-USDT"
 
         ticker_info = await self._build_ticker_info(symbol)
-        market, portfolio, history = await asyncio.gather(
+        market, portfolio, history, trader_context = await asyncio.gather(
             self._build_market_context(),
             self._build_portfolio_context(),
-            asyncio.to_thread(self._build_history_context)
+            asyncio.to_thread(self._build_history_context),
+            asyncio.to_thread(build_trader_context, self.db, symbol),
         )
         memory_context = self._get_memory_context_sync()
 
@@ -300,6 +304,7 @@ class ContextBuilder:
             "portfolio": portfolio,
             "history": history,
             "memory": memory_context,
+            "trader_context": trader_context,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
@@ -308,15 +313,17 @@ class ContextBuilder:
         }
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
-        history, market = await asyncio.gather(
+        symbol = trade.get("symbol", "")
+        history, market, trader_context = await asyncio.gather(
             asyncio.to_thread(self._build_history_context),
-            self._build_market_context()
+            self._build_market_context(),
+            asyncio.to_thread(build_trader_context, self.db, symbol),
         )
         memory_context = self._get_memory_context_sync()
 
         return {
             "trade": {
-                "symbol": trade.get("symbol", ""),
+                "symbol": symbol,
                 "side": trade.get("side", ""),
                 "entry_price": float(trade.get("entry_price", 0)),
                 "exit_price": float(trade.get("exit_price", 0)),
@@ -334,6 +341,7 @@ class ContextBuilder:
             "market": market,
             "history": history,
             "memory": memory_context,
+            "trader_context": trader_context,
             "trader_profile": {
                 "style": "trend/breakout",
                 "holding_period": "up to 2 weeks",
