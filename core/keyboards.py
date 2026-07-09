@@ -27,13 +27,14 @@ BTN_AI_MARKET = "🌐 Обзор рынка"
 BTN_AI_TRENDS = "📊 Тренды"
 BTN_AI_LEARN  = "📊 Анализ журнала"
 BTN_AI_COACH  = "🎯 AI Coach"
+BTN_TRADER_DNA = "🧬 Trader DNA"
 
 # Navigation buttons set
 NAV_BUTTONS = {
     BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
-    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN, BTN_AI_COACH,
+    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN, BTN_AI_COACH, BTN_TRADER_DNA,
     BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
 }
 
@@ -54,7 +55,8 @@ def trading_menu_keyboard():
 
 def ai_menu_keyboard():
     return ReplyKeyboardMarkup(
-        [[BTN_CONSILIUM], [BTN_AI_MARKET, BTN_AI_TRENDS], [BTN_AI_LEARN, BTN_AI_COACH], [BTN_BACK]],
+        [[BTN_CONSILIUM], [BTN_AI_MARKET, BTN_AI_TRENDS], [BTN_AI_LEARN, BTN_AI_COACH],
+         [BTN_TRADER_DNA], [BTN_BACK]],
         resize_keyboard=True
     )
 
