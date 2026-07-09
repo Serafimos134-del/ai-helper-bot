@@ -13,12 +13,12 @@ from core.keyboards import (
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
     BTN_CONSILIUM, CONSILIUM_OPEN, CONSILIUM_SETUP,
-    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN, BTN_AI_COACH,
+    BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN, BTN_AI_COACH, BTN_TRADER_DNA,
     NAV_BUTTONS,
 )
 from handlers.trading import show_balance, show_last_trades, show_stats, show_ai_analysis
 from handlers.ai import (
-    show_market_overview, show_trends, show_journal_analysis, show_coach,
+    show_market_overview, show_trends, show_journal_analysis, show_coach, show_trader_dna,
     consilium_menu, consilium_open_positions, consilium_analyze_position,
     consilium_new_setup, consilium_process_setup, consilium_keyboard,
 )
@@ -138,5 +138,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_journal_analysis(update)
     elif text == BTN_AI_COACH:
         await show_coach(update, context)
+    elif text == BTN_TRADER_DNA:
+        await show_trader_dna(update)
     else:
         await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())

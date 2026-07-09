@@ -171,6 +171,17 @@ async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_chunks(update.message, f"🎯 AI Coach\n\n{text}", reply_markup=ai_menu_keyboard())
 
 
+async def show_trader_dna(update: Update):
+    """Trader DNA v1 (TRADER_DNA_V1.md) — детерминированный каталог
+    паттернов + DNA Score поверх PerformanceEngine/behavior_events.
+    В отличие от AI Coach — не LLM-генерация, а прозрачный расчёт."""
+    from ai.trader_dna import format_dna_report
+    db = get_db()
+    msg = await update.message.reply_text("🧬 Считаю Trader DNA...")
+    text = format_dna_report(db, user_id='default')
+    await msg.edit_text(text)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # КОНСИЛИУМ
 # ══════════════════════════════════════════════════════════════════════════════
