@@ -139,7 +139,8 @@ class ConsensusEngine:
                     mode=mode,
                     trade_score=trade_score,
                     confidence=confidence,
-                    disagreement=disagreement
+                    disagreement=disagreement,
+                    trader_context=context.get('trader_context'),
                 ),
                 timeout=AGENT_TIMEOUT
             )
