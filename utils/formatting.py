@@ -54,3 +54,41 @@ def format_score_breakdown(score: dict) -> str:
         if key in details:
             lines.append(f"• {label}: {details[key]}/10")
     return "\n".join(lines)
+
+
+_DECISION_EMOJI = {
+    'HOLD': '✅', 'EXIT': '🚪', 'DCA': '➕',
+    'PARTIAL_TP': '💰', 'FULL_TP': '🏁',
+}
+
+
+def format_position_plan(plan: dict, header: str = None) -> str:
+    """Форматирует position_plan (ai_decision_engine.analyze_decision(), см.
+    ai/orchestrator.py:build_position_plan) в читаемый текст. Общая точка
+    для ответа /consilium (Этап 4) и проактивных уведомлений о сопровождении
+    сделки (Этап 7, core/scheduler.py:position_watch_job) — чтобы формат не
+    расходился между двумя местами использования."""
+    if not plan or not plan.get('decision') or plan['decision'] == 'UNKNOWN':
+        return ""
+
+    decision = plan['decision']
+    emoji = _DECISION_EMOJI.get(decision, '❔')
+    lines = [f"{header}" if header else None,
+             f"{emoji} Решение по позиции: {decision}",
+             plan.get('reason', '')]
+
+    details = plan.get('details', {})
+    stop = details.get('stop', {})
+    tp_data = details.get('tp', {})
+
+    if stop.get('hard_sl'):
+        lines.append(f"🛑 Hard SL (инвалидация): ${stop['hard_sl']:.4f}")
+    if stop.get('status') not in (None, 'keep', 'exit') and stop.get('recommended_sl'):
+        lines.append(f"🔧 Перенести стоп на: ${stop['recommended_sl']:.4f} ({stop.get('reason', '')})")
+    if tp_data.get('tp1'):
+        tp_line = f"🎯 TP1: ${tp_data['tp1']:.4f}"
+        if tp_data.get('tp2'):
+            tp_line += f" | TP2: ${tp_data['tp2']:.4f}"
+        lines.append(tp_line)
+
+    return "\n".join(l for l in lines if l)
