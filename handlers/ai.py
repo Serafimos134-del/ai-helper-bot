@@ -325,6 +325,27 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
                 tp_line += f" | TP2: ${tp_data['tp2']:.4f}"
             response += tp_line
 
+    trade_plan = result.get('trade_plan')
+    if trade_plan and trade_plan.get('entry_price'):
+        response += f"\n\n📋 Торговый план:\n💵 Вход: ${trade_plan['entry_price']:.4f}"
+        if trade_plan.get('stop_loss'):
+            response += f"\n🛑 SL: ${trade_plan['stop_loss']:.4f}"
+        tp_parts = [
+            f"TP{i} ${trade_plan[key]:.4f}"
+            for i, key in enumerate(('tp1', 'tp2', 'tp3'), start=1)
+            if trade_plan.get(key)
+        ]
+        if tp_parts:
+            response += "\n🎯 " + " | ".join(tp_parts)
+        if trade_plan.get('risk_reward'):
+            response += f"\n⚖️ Risk/Reward: 1:{trade_plan['risk_reward']}"
+        if trade_plan.get('position_size'):
+            base = trade_plan['symbol'].split('-')[0]
+            response += (
+                f"\n📊 Размер позиции: {trade_plan['position_size']} {base} "
+                f"(плечо {trade_plan['leverage']}x, маржа ${trade_plan['margin']:,.2f})"
+            )
+
     memory = result.get('memory')
     if memory:
         response += f"\n\n{memory}"

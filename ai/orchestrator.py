@@ -25,6 +25,11 @@ from ai.engines.normalizer import normalize_position
 from ai.trade_scorer import TradeScorer
 from services.market_data import get_market_snapshot
 from services.ai_decision_engine import analyze_decision
+from services.bingx_api import get_balance
+from services.calc_engine import calculate_position
+from services.stop_engine import analyze_stop
+from services.tp_engine import analyze_tp
+from utils.liquidation import get_volatility_class
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,14 @@ _AGENTS_BY_TYPE = {
     "closed_trade":  "Trade Reviewer + Risk Manager + Judge",
     "new_setup":     "Market Analyst + Strategy Advisor + Risk Manager + Judge",
 }
+
+# Правила размера позиции/плеча по умолчанию для торгового плана нового
+# сетапа (Этап 6) — те же, что уже показаны пользователю в закреплённом
+# статусе (core/scheduler.py:_build_status_text, раздел "Правила"): вход
+# 10% от депо, плечо x5 для BTC/ETH, x3 для остальных пар.
+SETUP_RISK_PERCENT = 10.0
+SETUP_LEVERAGE_LOW_VOL = 5
+SETUP_LEVERAGE_OTHER = 3
 
 
 class AIOrchestrator:
@@ -93,8 +106,72 @@ class AIOrchestrator:
         return result
 
     async def evaluate_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
+        """Полный торговый план по новому сетапу (Этап 6 плана AI Trading Core):
+        сценарий/аргументация/риск — от AI-консилиума (Market Analyst +
+        Strategy Advisor + Risk Manager + Judge); конкретные цифры (цена
+        входа, Stop Loss, TP1-3, Risk/Reward, размер позиции) — от
+        детерминированных structure/stop/tp/calc_engine на гипотетической
+        позиции по текущей рыночной цене."""
         self._log("new_setup")
-        return await self.consensus.analyze_new_setup(ticker, direction, extra_notes=extra_notes)
+        result = await self.consensus.analyze_new_setup(ticker, direction, extra_notes=extra_notes)
+        result["trade_plan"] = await self._build_setup_plan(ticker, direction)
+        return result
+
+    async def _build_setup_plan(self, ticker: str, direction: str) -> dict:
+        symbol = ticker if ticker.endswith("-USDT") else f"{ticker}-USDT"
+        side = "LONG" if direction.upper() in ("LONG", "BUY", "ЛОНГ") else "SHORT"
+        try:
+            snapshot = await get_market_snapshot(symbol)
+            entry_price = snapshot.get("price", 0)
+            if entry_price <= 0:
+                return {}
+
+            # Гипотетическая позиция "как если бы вошли прямо сейчас" — те же
+            # движки, что уже используются для сопровождения открытых позиций
+            # (Этап 4), дают структурные SL/TP и для ещё не открытой сделки.
+            hypothetical = {
+                "symbol": symbol, "side": side, "entry_price": entry_price,
+                "unrealized_pnl": 0, "quantity": 0, "leverage": 1,
+            }
+            stop = analyze_stop(snapshot, hypothetical)
+            tp = analyze_tp(snapshot, hypothetical)
+
+            stop_loss = stop.get("hard_sl")
+            tp1, tp2, tp3 = tp.get("tp1"), tp.get("tp2"), tp.get("runner")
+
+            risk_reward = None
+            if stop_loss and tp1 and stop_loss != entry_price:
+                risk_reward = round(abs(tp1 - entry_price) / abs(entry_price - stop_loss), 2)
+
+            leverage = SETUP_LEVERAGE_LOW_VOL if get_volatility_class(symbol) == "LOW" else SETUP_LEVERAGE_OTHER
+
+            position_calc = {}
+            try:
+                balance_result = await get_balance()
+                balance = balance_result.get("equity", 0) if balance_result.get("success") else 0
+                if balance > 0:
+                    position_calc = calculate_position(
+                        symbol, entry_price, leverage, balance,
+                        risk_percent=SETUP_RISK_PERCENT, margin_type="cross"
+                    )
+            except Exception as e:
+                logger.warning(f"AI Orchestrator: не удалось получить баланс для расчёта позиции {symbol}: {e}")
+
+            return {
+                "symbol": symbol,
+                "side": side,
+                "entry_price": entry_price,
+                "stop_loss": stop_loss,
+                "tp1": tp1, "tp2": tp2, "tp3": tp3,
+                "risk_reward": risk_reward,
+                "leverage": leverage,
+                "position_size": position_calc.get("position_size"),
+                "margin": position_calc.get("margin"),
+                "notional": position_calc.get("notional"),
+            }
+        except Exception as e:
+            logger.warning(f"AI Orchestrator: не удалось построить trade_plan для {ticker}: {e}")
+            return {}
 
     async def handle(self, request_type: str, **kwargs) -> dict:
         """Универсальный диспетчер по строковому типу запроса — для вызывающего
