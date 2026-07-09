@@ -110,6 +110,29 @@ async def _check_behavior_on_close(bot, chat_id: str, user_id: str, closed_trade
         logger.error(f"Ошибка Behavior Engine (close): {e}")
 
 
+async def _analyze_new_trade(trade: dict):
+    """Trader Memory (Этап 8): сохраняет AI-разбор позиции в момент открытия.
+    Не отправляет уведомление — /consilium (Этап 4) уже даёт разбор по
+    запросу, здесь только персистентность для будущего Trader DNA (Этап 9)."""
+    order_id = trade.get('orderId')
+    if not order_id:
+        return
+    try:
+        orchestrator = get_orchestrator()
+        analysis = await orchestrator.review_open_position(trade)
+        payload = {
+            'market_review':    analysis.get('market_review'),
+            'risk_review':      analysis.get('risk_review'),
+            'psychology_review': analysis.get('psychology_review'),
+            'judge_verdict':    analysis.get('judge_verdict'),
+            'position_plan':    analysis.get('position_plan'),
+        }
+        await asyncio.to_thread(db.add_trade_event, str(order_id), 'open_analysis', json.dumps(payload, ensure_ascii=False))
+        logger.info(f"Trader Memory: сохранён анализ открытия для {order_id}")
+    except Exception as e:
+        logger.error(f"Ошибка анализа открытия позиции {order_id}: {e}")
+
+
 async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict):
     from ai.memory_engine import MemoryEngine
 
@@ -136,6 +159,27 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
             await mem.update(closed_trade)
         except Exception as mem_e:
             logger.error(f"Ошибка Memory Engine для сделки #{trade_id}: {mem_e}")
+
+        # Trader Memory (Этап 8): closed_trades уже хранит финальный снимок
+        # анализа закрытия (market_review/risk_review/...), но здесь ещё и
+        # добавляем его в общий хронологический журнал сделки (order_id) —
+        # чтобы Trader DNA (Этап 9) мог читать last open_analysis -> N
+        # companion -> close_analysis одним запросом, а не собирать их из
+        # разных таблиц.
+        order_id = closed_trade.get('orderId')
+        if order_id:
+            try:
+                payload = {
+                    'market_review':    analysis.get('market_review'),
+                    'risk_review':      analysis.get('risk_review'),
+                    'psychology_review': analysis.get('psychology_review'),
+                    'judge_verdict':    analysis.get('judge_verdict'),
+                    'score_breakdown':  score,
+                }
+                await asyncio.to_thread(db.add_trade_event, str(order_id), 'close_analysis',
+                                         json.dumps(payload, ensure_ascii=False))
+            except Exception as event_e:
+                logger.error(f"Ошибка записи Trader Memory для сделки #{trade_id}: {event_e}")
 
         try:
             verdict_line = format_verdict(analysis.get('judge_verdict', '{}'))
@@ -268,6 +312,10 @@ async def _sync_trades_impl(bot, chat_id: str) -> dict:
     # Behavior Engine: проверка новых позиций (после release лока, чтобы не блокировать sync)
     for trade in new_trades_for_behavior_check:
         asyncio.create_task(_check_behavior_on_open(bot, chat_id, user_id, trade))
+        # Trader Memory (Этап 8): анализ открытия раньше нигде не сохранялся —
+        # AI-разбор позиции существовал только "по запросу" через /consilium
+        # и не оставлял следа в БД. Фоново, чтобы не блокировать sync.
+        asyncio.create_task(_analyze_new_trade(trade))
 
     for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored, user_id)
