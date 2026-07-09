@@ -7,6 +7,7 @@ and Trade Management Engine v2 display.
 
 import asyncio
 import logging
+import time
 from telegram.ext import ContextTypes
 from services.bingx_api import get_balance
 from services.database import Database
@@ -21,6 +22,15 @@ MEMORY_CATEGORY = "bot_state"
 KEY_PINNED_MSG_ID = "pinned_msg_id"
 KEY_LAST_STATE = "last_state_key"
 KEY_LAST_EQUITY = "last_equity"
+
+# Backoff при затяжных сбоях BingX API: без него auto_sync_job долбит
+# недоступный эндпоинт каждые 15 секунд бесконечно (см. AUDIT.md, Этап 1).
+# После серии неудач опрос приостанавливается на растущий интервал
+# (15s, 30s, 60s ... до BACKOFF_MAX_SECONDS), сбрасывается при первом успехе.
+_consecutive_failures = 0
+_next_attempt_at = 0.0
+BACKOFF_BASE_SECONDS = 15
+BACKOFF_MAX_SECONDS = 300
 
 
 def setup_scheduler(app, db: Database, chat_id: str) -> None:
@@ -38,11 +48,38 @@ def setup_scheduler(app, db: Database, chat_id: str) -> None:
 
 
 async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_id: str):
+    global _consecutive_failures, _next_attempt_at
+
     if not chat_id:
         logger.warning("TELEGRAM_CHAT_ID не задан, авто-синхронизация пропущена")
         return
+
+    now = time.monotonic()
+    if now < _next_attempt_at:
+        logger.debug(
+            f"Авто-синхронизация в backoff-паузе ещё {_next_attempt_at - now:.0f}s "
+            f"(сбоев подряд: {_consecutive_failures})"
+        )
+        return
+
     try:
         results = await sync_trades(context.bot, chat_id)
+
+        if not results.get('api_ok', True):
+            _consecutive_failures += 1
+            backoff = min(BACKOFF_BASE_SECONDS * (2 ** (_consecutive_failures - 1)), BACKOFF_MAX_SECONDS)
+            _next_attempt_at = now + backoff
+            logger.warning(
+                f"BingX API недоступен (сбоев подряд: {_consecutive_failures}), "
+                f"следующая попытка синхронизации через {backoff}s"
+            )
+            return
+
+        if _consecutive_failures:
+            logger.info(f"BingX API восстановился после {_consecutive_failures} сбоев подряд")
+        _consecutive_failures = 0
+        _next_attempt_at = 0.0
+
         new_closed = len(results.get('new_closed', []))
         new_open = len(results.get('new_open', []))
 
@@ -59,7 +96,10 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
                 )
                 await context.bot.send_message(chat_id=chat_id, text=alert, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Ошибка авто-синхронизации: {e}")
+        _consecutive_failures += 1
+        backoff = min(BACKOFF_BASE_SECONDS * (2 ** (_consecutive_failures - 1)), BACKOFF_MAX_SECONDS)
+        _next_attempt_at = now + backoff
+        logger.error(f"Ошибка авто-синхронизации: {e}, пауза {backoff}s")
 
 
 def _build_status_text(balance: dict, open_positions: list, db: Database) -> str:
