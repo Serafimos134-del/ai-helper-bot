@@ -21,6 +21,9 @@ RiskAgent/PsychologyAgent (ConsensusEngine) — они уже дают нужн�
 import logging
 
 from ai.consensus_engine import ConsensusEngine
+from ai.engines.normalizer import normalize_position
+from services.market_data import get_market_snapshot
+from services.ai_decision_engine import analyze_decision
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +43,38 @@ class AIOrchestrator:
         self.consensus = consensus
 
     async def review_open_position(self, position: dict) -> dict:
+        """Полный разбор открытой позиции (Этап 4 плана AI Trading Core):
+        качество входа и риск — от AI-консилиума (ConsensusEngine); актуальность
+        стопа, перенос стопа, частичная фиксация прибыли и решение
+        HOLD/EXIT/DCA/PARTIAL_TP/FULL_TP — от детерминированного
+        ai_decision_engine (structure/stop/tp), который раньше существовал
+        только за незарегистрированной командой /analyze."""
         self._log("open_position")
-        return await self.consensus.analyze_open_position(position)
+        result = await self.consensus.analyze_open_position(position)
+        result["position_plan"] = await self._build_position_plan(position)
+        return result
+
+    async def _build_position_plan(self, position: dict) -> dict:
+        symbol = position.get("symbol", "")
+        if not symbol:
+            return {}
+        try:
+            # ai_decision_engine/stop_engine/tp_engine ожидают нормализованные
+            # snake_case поля (entry_price, unrealized_pnl, ...), а не сырой
+            # ответ BingX API (entryPrice, unrealizedPnl, ...).
+            normalized = normalize_position(position)
+            # Trade Manager v2 поля (заданы через /setidea) не приходят из BingX
+            # API — пробрасываем их с исходного объекта, если они там были
+            # (например, позиция пришла из db.get_open_trades()).
+            normalized["dca_count"] = position.get("dca_count", 0)
+            normalized["invalidation_sl"] = position.get("invalidation_sl")
+            normalized["tp_zones"] = position.get("tp_zones")
+
+            snapshot = await get_market_snapshot(symbol)
+            return analyze_decision(snapshot, normalized)
+        except Exception as e:
+            logger.warning(f"AI Orchestrator: не удалось построить position_plan для {symbol}: {e}")
+            return {}
 
     async def review_closed_trade(self, trade: dict) -> dict:
         self._log("closed_trade")

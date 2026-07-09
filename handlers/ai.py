@@ -303,6 +303,28 @@ def _build_response(result: dict, ticker: str, direction: str) -> str:
     if tp:
         response += f"\n🎯 TP: ${float(tp):.4f}"
 
+    plan = result.get('position_plan')
+    if plan and plan.get('decision') and plan['decision'] != 'UNKNOWN':
+        decision_emoji = {
+            'HOLD': '✅', 'EXIT': '🚪', 'DCA': '➕',
+            'PARTIAL_TP': '💰', 'FULL_TP': '🏁',
+        }.get(plan['decision'], '❔')
+        response += f"\n\n{decision_emoji} Решение по позиции: {plan['decision']}\n{plan.get('reason', '')}"
+
+        details = plan.get('details', {})
+        stop = details.get('stop', {})
+        tp_data = details.get('tp', {})
+
+        if stop.get('hard_sl'):
+            response += f"\n🛑 Hard SL (инвалидация): ${stop['hard_sl']:.4f}"
+        if stop.get('status') not in (None, 'keep', 'exit') and stop.get('recommended_sl'):
+            response += f"\n🔧 Перенести стоп на: ${stop['recommended_sl']:.4f} ({stop.get('reason', '')})"
+        if tp_data.get('tp1'):
+            tp_line = f"\n🎯 TP1: ${tp_data['tp1']:.4f}"
+            if tp_data.get('tp2'):
+                tp_line += f" | TP2: ${tp_data['tp2']:.4f}"
+            response += tp_line
+
     memory = result.get('memory')
     if memory:
         response += f"\n\n{memory}"
