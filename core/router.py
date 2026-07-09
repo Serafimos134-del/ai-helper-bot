@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from datetime import datetime
@@ -9,7 +10,7 @@ from telegram.ext import (
 )
 from core.keyboards import cancel_keyboard
 from core.container import get_orchestrator, get_ai_analyzer, get_db
-from utils.formatting import format_verdict
+from utils.formatting import format_verdict, format_score_breakdown
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,11 @@ async def generate_full_ai_analysis(query, trade_id):
     try:
         orchestrator = get_orchestrator()
         analysis = await orchestrator.review_closed_trade(trade)
+        # score_breakdown считает сам AIOrchestrator (см. ai/orchestrator.py).
+        # Раньше здесь читался несуществующий ключ 'ai_score' из ответа
+        # консилиума (его там никогда не было) — при ручном перезапуске
+        # анализа оценка сделки в БД не обновлялась.
+        score = analysis['score_breakdown']
         # Сохраняем все метрики, кроме setup_type (если уже был задан вручную, не перезаписываем)
         existing = db.find_trade_by_id(trade_id)
         setup = existing.get('setup_type') if existing else None
@@ -209,7 +215,8 @@ async def generate_full_ai_analysis(query, trade_id):
             judge_verdict=analysis.get('judge_verdict', ''),
             market_trend=analysis.get('market_trend'),
             setup_type=setup,
-            ai_score=analysis.get('ai_score')
+            ai_score=score['total_score'],
+            score_breakdown=json.dumps(score, ensure_ascii=False)
         )
         # Формируем читаемый ответ для пользователя (без Markdown, чтобы избежать ошибок парсинга)
         verdict_line = format_verdict(analysis.get('judge_verdict', '{}'))
@@ -219,6 +226,7 @@ async def generate_full_ai_analysis(query, trade_id):
             f"⚠️ Риск:\n{analysis.get('risk_review', '—')}\n\n"
             f"🧘 Психология:\n{analysis.get('psychology_review', '—')}\n\n"
             f"⚖️ Вердикт: {verdict_line}\n\n"
+            f"{format_score_breakdown(score)}\n\n"
             f"📊 Тренд рынка: {analysis.get('market_trend', '—')}\n"
             f"Данные сохранены. Обновите детали сделки, чтобы увидеть изменения."
         )

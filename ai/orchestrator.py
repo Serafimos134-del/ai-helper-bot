@@ -22,6 +22,7 @@ import logging
 
 from ai.consensus_engine import ConsensusEngine
 from ai.engines.normalizer import normalize_position
+from ai.trade_scorer import TradeScorer
 from services.market_data import get_market_snapshot
 from services.ai_decision_engine import analyze_decision
 
@@ -77,8 +78,19 @@ class AIOrchestrator:
             return {}
 
     async def review_closed_trade(self, trade: dict) -> dict:
+        """Полный разбор закрытой сделки (Этап 5 плана AI Trading Core):
+        качество входа/сопровождения/стопа/тейка и вердикт — от AI-консилиума
+        (Trade Reviewer + Risk Manager + Judge); структурированная детальная
+        оценка (RR, плечо, риск на сделку, дисциплина, психология,
+        итоговый score/verdict) — от TradeScorer, единого источника для
+        всех вызывающих мест (раньше auto_sync.py и core/router.py считали
+        и/или сохраняли это независимо и по-разному — router.py вообще
+        ссылался на несуществующий ключ 'ai_score' в ответе консилиума и
+        никогда не сохранял оценку при ручном перезапуске анализа)."""
         self._log("closed_trade")
-        return await self.consensus.analyze_closed_trade(trade)
+        result = await self.consensus.analyze_closed_trade(trade)
+        result["score_breakdown"] = TradeScorer.score(trade)
+        return result
 
     async def evaluate_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
         self._log("new_setup")

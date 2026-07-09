@@ -26,3 +26,31 @@ def format_verdict(verdict_raw) -> str:
         return result
     except Exception:
         return str(verdict_raw)
+
+
+# Русские подписи для компонентов TradeScorer.score()['details'] — сопоставлены
+# с пунктами Этапа 5 плана AI Trading Core ("качество входа", "соблюдение
+# риск-менеджмента" и т.п.), чтобы разбор закрытой сделки был понятен без
+# знания внутренних имён полей.
+_SCORE_LABELS = {
+    'rr_ratio': 'Вход (Risk/Reward)',
+    'leverage': 'Плечо',
+    'risk_per_trade': 'Риск на сделку',
+    'discipline': 'Дисциплина (стоп/тейк)',
+    'psychology': 'Сопровождение/психология',
+}
+
+
+def format_score_breakdown(score: dict) -> str:
+    """Форматирует детальную оценку TradeScorer.score()/score_open_position()
+    (итоговый score 0-10 + разбор по компонентам) в читаемый текст."""
+    if not score:
+        return ""
+    total = score.get('total_score', '—')
+    verdict = score.get('verdict', '')
+    lines = [f"📊 Оценка сделки: {total}/10 — {verdict}"]
+    details = score.get('details', {})
+    for key, label in _SCORE_LABELS.items():
+        if key in details:
+            lines.append(f"• {label}: {details[key]}/10")
+    return "\n".join(lines)

@@ -195,7 +195,8 @@ class Database:
                     ('market_review', 'TEXT'),
                     ('risk_review', 'TEXT'),
                     ('psychology_review', 'TEXT'),
-                    ('judge_verdict', 'TEXT')
+                    ('judge_verdict', 'TEXT'),
+                    ('score_breakdown', 'TEXT'),
                 ],
                 'users': [
                     ('subscription_tier', "TEXT NOT NULL DEFAULT 'free'"),
@@ -577,7 +578,8 @@ class Database:
                    'entry_comment', 'exit_comment', 'ai_review',
                    'holding_minutes', 'btc_price', 'eth_price', 'market_trend',
                    'setup_type', 'mistakes', 'ai_score',
-                   'market_review', 'risk_review', 'psychology_review', 'judge_verdict']
+                   'market_review', 'risk_review', 'psychology_review', 'judge_verdict',
+                   'score_breakdown']
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
