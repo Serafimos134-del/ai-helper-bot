@@ -167,17 +167,21 @@ async def sync_trades(bot, chat_id: str) -> dict:
 async def _sync_trades_impl(bot, chat_id: str) -> dict:
     global _missing_cycles
     user_id = 'default'
-    results = {'new_open': [], 'new_closed': []}
+    # api_ok сообщает вызывающему коду (core/scheduler.py), удался ли реальный
+    # запрос к BingX — используется для backoff при затяжных сбоях API.
+    results = {'new_open': [], 'new_closed': [], 'api_ok': True}
     logger.info("=== Синхронизация начата ===")
 
     try:
         open_result = await get_open_positions()
     except Exception as e:
         logger.error(f"Ошибка вызова API позиций: {e}")
+        results['api_ok'] = False
         return results
 
     if not open_result.get('success'):
         logger.warning(f"Ошибка получения открытых позиций: {open_result.get('error')}")
+        results['api_ok'] = False
         return results
 
     api_trades = [t for t in open_result.get('trades', []) if t.get('orderId')]

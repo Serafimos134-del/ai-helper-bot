@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')
+BINGX_API_KEY    = os.getenv('BINGX_API_KEY', '')
+BINGX_SECRET_KEY = os.getenv('BINGX_SECRET_KEY', '')
 
 
 async def error_handler(update: object, context) -> None:
@@ -96,6 +98,12 @@ async def restore_history_command(update: Update, context):
 def main():
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан! Проверь .env файл.")
+    if not BINGX_API_KEY or not BINGX_SECRET_KEY:
+        raise ValueError(
+            "BINGX_API_KEY/BINGX_SECRET_KEY не заданы! Без них запросы к BingX "
+            "уйдут с пустым секретом и будут молча возвращать ошибки авторизации. "
+            "Проверь .env файл."
+        )
     init_db()
     db  = get_db()
     app = Application.builder().token(BOT_TOKEN).build()
