@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from core.container import get_db
 from core.keyboards import (
-    main_menu_keyboard, trading_menu_keyboard, ai_menu_keyboard, cancel_keyboard,
+    main_menu_keyboard, trading_menu_keyboard, ai_menu_keyboard,
     BTN_TRADING, BTN_AI, BTN_JOURNAL, BTN_HELP,
     BTN_BALANCE, BTN_LAST_TRADES, BTN_STATS, BTN_AI_ANALYSIS,
     BTN_BACK, BTN_CANCEL,
@@ -20,7 +20,7 @@ from handlers.trading import show_balance, show_last_trades, show_stats, show_ai
 from handlers.ai import (
     show_market_overview, show_trends, show_journal_analysis, show_coach,
     consilium_menu, consilium_open_positions, consilium_analyze_position,
-    consilium_new_setup, consilium_process_setup,
+    consilium_new_setup, consilium_process_setup, consilium_keyboard,
 )
 from handlers.journal import show_journal
 from handlers.system import show_help
@@ -36,7 +36,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
     db    = get_db()
 
-    if text == BTN_CANCEL:
+    # Промпты entering_comment_inline/entering_exit_reason/entering_entry_reason
+    # теперь используют ForceReply (см. core/router.py) вместо кнопки "Отмена"
+    # на клавиатуре — её больше не видно на экране, поэтому отмену принимаем
+    # и по обычному набранному тексту "отмена"/"cancel".
+    if text == BTN_CANCEL or text.strip().lower() in ('отмена', 'cancel'):
         if state == 'consilium_setup_input':
             context.user_data['state'] = None
             await update.message.reply_text("Отменено.", reply_markup=ai_menu_keyboard())
@@ -51,8 +55,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
         if text in NAV_BUTTONS or text.startswith("🏠 *"):
             await update.message.reply_text(
-                "⚠️ Это навигационная кнопка, а не комментарий. Пожалуйста, введите текст комментария.",
-                reply_markup=cancel_keyboard()
+                "⚠️ Сейчас жду текст комментария. Напишите его, или напишите 'отмена'."
             )
             return
 
@@ -86,6 +89,17 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == 'consilium_choose_position':
+        # Раньше кнопка "Назад" на клавиатуре выбора позиции (см.
+        # consilium_open_positions) уходила прямиком в
+        # consilium_analyze_position как будто это название позиции — та не
+        # находила совпадения и просила выбрать позицию заново, не сбрасывая
+        # state, так что кнопка "Назад" переставала работать насовсем.
+        if text == BTN_BACK:
+            context.user_data['state'] = None
+            await update.message.reply_text(
+                "🧠 Консилиум\nВыбери режим:", reply_markup=consilium_keyboard()
+            )
+            return
         await consilium_analyze_position(update, context)
         return
     if state == 'consilium_setup_input':

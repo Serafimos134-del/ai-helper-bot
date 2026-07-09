@@ -2,15 +2,15 @@ import json
 import logging
 import re
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     ContextTypes,
 )
-from core.keyboards import cancel_keyboard
 from core.container import get_orchestrator, get_ai_analyzer, get_db
 from utils.formatting import format_verdict, format_score_breakdown
+from utils.telegram_text import clean_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    try:
+        await _dispatch_callback(data, query, context)
+    except Exception as e:
+        # Раньше исключение здесь (например, Telegram отказывался парсить
+        # Markdown из-за непарного */_ в пользовательском комментарии)
+        # уходило только в глобальный error_handler (bot.py), который лишь
+        # логирует — пользователь не получал вообще никакого ответа, и
+        # кнопка выглядела так, будто она "не нажимается".
+        logger.error(f"Ошибка обработки callback '{data}': {e}", exc_info=True)
+        try:
+            await query.edit_message_text(f"❌ Ошибка: {e}")
+        except Exception as inner_e:
+            logger.error(f"Не удалось сообщить об ошибке callback '{data}': {inner_e}")
+
+
+async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data.startswith("comment_"):
         parts = data.split("_", 1)
         if len(parts) < 2:
@@ -59,10 +75,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(parts[1])
         context.user_data['comment_order_id'] = trade_id
         context.user_data['state'] = 'entering_comment_inline'
-        await query.edit_message_text(
-            f"✏️ *Напишите комментарий* к сделке #{trade_id}:",
-            parse_mode='Markdown',
-            reply_markup=cancel_keyboard()
+        # editMessageText принимает только InlineKeyboardMarkup — попытка
+        # прикрепить сюда ReplyKeyboardMarkup (cancel_keyboard()) роняла весь
+        # вызов ошибкой Telegram API, и промпт для ввода комментария вообще
+        # не показывался (см. try/except в handle_callback). ForceReply
+        # можно отправить только новым сообщением, поэтому редактируем
+        # исходный текст отдельно, а поле ввода открываем новым сообщением.
+        await query.edit_message_text(f"✏️ Комментарий к сделке #{trade_id}")
+        await query.message.reply_text(
+            "Напишите комментарий (или 'отмена'):",
+            reply_markup=ForceReply(input_field_placeholder="Комментарий к сделке")
         )
     elif data.startswith("detail_"):
         parts = data.split("_", 1)
@@ -76,8 +98,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sl_line = f"\n🛑 Стоп: {_fmt_price(trade.get('stop_loss'))}" if trade.get('stop_loss') else ""
             tp_line = f"\n🎯 Тейк: {_fmt_price(trade.get('take_profit'))}" if trade.get('take_profit') else ""
             close_time = _fmt_date(trade.get('close_time') or trade.get('closed_at'))
+            # Без parse_mode: exit_comment/comment — свободный пользовательский
+            # текст, непарный */_ в нём ломает Markdown-парсинг Telegram, и
+            # edit_message_text падает с BadRequest (см. try/except в
+            # handle_callback — кнопка "детали сделки" именно из-за этого
+            # выглядела так, будто не реагирует на нажатие).
             detail_text = (
-                f"📊 *Детали сделки #{trade_id}*\n\n"
+                f"📊 Детали сделки #{trade_id}\n\n"
                 f"Символ: {trade['symbol']}\n"
                 f"Сторона: {trade['side']}\n"
                 f"Вход: ${trade['entry_price']:.4f}\n"
@@ -96,7 +123,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✏️ Добавить комментарий", callback_data=f"comment_{trade_id}"),
                  InlineKeyboardButton("🤖 AI-оценка", callback_data=f"ai_full_{trade_id}")]
             ])
-            await query.edit_message_text(detail_text, parse_mode='Markdown', reply_markup=detail_keyboard)
+            await query.edit_message_text(detail_text, reply_markup=detail_keyboard)
         else:
             await query.edit_message_text("❌ Сделка не найдена.")
     elif data.startswith("ai_full_"):
@@ -119,9 +146,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = parts[2]
         context.user_data['entry_order_id'] = order_id
         context.user_data['state'] = 'entering_entry_reason'
-        await query.edit_message_text(
-            "✏️ Напишите причину входа:",
-            reply_markup=cancel_keyboard()
+        # См. комментарий у ветки "comment_" — ReplyKeyboardMarkup/ForceReply
+        # нельзя передать в edit_message_text, только в новом сообщении.
+        await query.edit_message_text("✏️ Причина входа")
+        await query.message.reply_text(
+            "Напишите причину входа (или 'отмена'):",
+            reply_markup=ForceReply(input_field_placeholder="Причина входа")
         )
     elif data == "skip_entry_reason":
         await query.edit_message_text("Причина входа пропущена.")
@@ -132,9 +162,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trade_id = int(parts[2])
         context.user_data['comment_order_id'] = trade_id
         context.user_data['state'] = 'entering_exit_reason'
-        await query.edit_message_text(
-            "✏️ Напишите вывод по сделке (что поняли):",
-            reply_markup=cancel_keyboard()
+        await query.edit_message_text("✏️ Вывод по сделке")
+        await query.message.reply_text(
+            "Напишите вывод по сделке — что поняли (или 'отмена'):",
+            reply_markup=ForceReply(input_field_placeholder="Вывод по сделке")
         )
     elif data.startswith("ai_review_"):
         parts = data.split("_", 2)
@@ -187,7 +218,12 @@ async def generate_ai_review(query, trade_id):
     )
     review = await ai_analyzer.analyze_raw(prompt)
     db.update_trade_metrics(trade_id, ai_review=review)
-    await query.edit_message_text(f"🤖 *AI-оценка сделки #{trade_id}:*\n\n{review}", parse_mode='Markdown')
+    # clean_markdown() убирает **bold**/__underline__/`code` из LLM-ответа —
+    # тот же паттерн, что уже используется для AI-текста в handlers/ai.py,
+    # handlers/system.py, handlers/trading.py. Без него непарные */_ в
+    # ответе модели ломают parse_mode='Markdown' и роняют edit_message_text
+    # без видимой реакции для пользователя (см. try/except в handle_callback).
+    await query.edit_message_text(f"🤖 AI-оценка сделки #{trade_id}:\n\n{clean_markdown(review)}")
 
 
 async def generate_full_ai_analysis(query, trade_id):
