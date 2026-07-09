@@ -13,6 +13,9 @@ from services.bingx_api import get_balance
 from services.database import Database
 from services.auto_sync import sync_trades
 from services.trade_manager import TradeManager
+from core.container import get_orchestrator
+from utils.liquidation import get_volatility_class
+from utils.formatting import format_position_plan
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,21 @@ _next_attempt_at = 0.0
 BACKOFF_BASE_SECONDS = 15
 BACKOFF_MAX_SECONDS = 300
 
+# Этап 7 плана AI Trading Core: проактивное сопровождение сделки — бот сам
+# уведомляет о смене рекомендации (перенос стопа/безубыток/частичная
+# фиксация/добор/полное закрытие), а не только отвечает по явному запросу
+# /consilium (Этап 4). Интервал цикла — 300s, как у update_pinned_status,
+# чтобы не перегружать BingX klines-запросами. Частота проверки конкретного
+# символа масштабируется по volatility-классу (см. TRADE_MANAGEMENT_V3.md,
+# п.1 Trade Classification: волатильные активы нуждаются в более частом
+# контроле) через "раз в N тиков" вместо реальных разных интервалов —
+# job_queue не поддерживает per-symbol расписания, а плодить по job на
+# символ нецелесообразно для типичного числа открытых позиций.
+POSITION_WATCH_INTERVAL = 300
+VOLATILITY_CHECK_EVERY = {"LOW": 3, "MEDIUM": 2, "HIGH": 1}
+MEMORY_CATEGORY_POSITION_WATCH = "position_watch"
+_watch_tick = 0
+
 
 def setup_scheduler(app, db: Database, chat_id: str) -> None:
     """Register auto-sync and status update jobs."""
@@ -45,6 +63,78 @@ def setup_scheduler(app, db: Database, chat_id: str) -> None:
         interval=300,
         first=30
     )
+    app.job_queue.run_repeating(
+        lambda c: position_watch_job(c, db, chat_id),
+        interval=POSITION_WATCH_INTERVAL,
+        first=60
+    )
+
+
+async def position_watch_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_id: str):
+    """Проактивное сопровождение открытых позиций (Этап 7). Пересчитывает
+    position_plan (см. ai/orchestrator.py:build_position_plan) для каждой
+    открытой позиции и уведомляет пользователя, только если рекомендация
+    (decision + статус стопа) изменилась с прошлой проверки — иначе бот
+    писал бы одно и то же на каждом тике."""
+    global _watch_tick
+    if not chat_id:
+        return
+    _watch_tick += 1
+
+    try:
+        open_trades = await asyncio.to_thread(db.get_open_trades)
+    except Exception as e:
+        logger.error(f"position_watch_job: не удалось получить открытые позиции: {e}")
+        return
+
+    if not open_trades:
+        return
+
+    orchestrator = get_orchestrator()
+
+    for trade in open_trades:
+        symbol = trade.get('symbol')
+        order_id = trade.get('orderId')
+        if not symbol or not order_id:
+            continue
+
+        every = VOLATILITY_CHECK_EVERY.get(get_volatility_class(symbol), 2)
+        if _watch_tick % every != 0:
+            continue
+
+        try:
+            plan = await orchestrator.build_position_plan(trade)
+        except Exception as e:
+            logger.warning(f"position_watch_job: ошибка построения плана для {symbol}: {e}")
+            continue
+
+        decision = plan.get('decision')
+        if not decision or decision == 'UNKNOWN':
+            continue
+
+        stop_status = plan.get('details', {}).get('stop', {}).get('status')
+        state_key = f"{decision}:{stop_status}"
+
+        last_state = await asyncio.to_thread(db.memory_get, MEMORY_CATEGORY_POSITION_WATCH, order_id)
+        if last_state == state_key:
+            continue
+
+        await asyncio.to_thread(db.memory_set, MEMORY_CATEGORY_POSITION_WATCH, order_id, state_key)
+
+        # Первая проверка новой позиции с нейтральным состоянием (держим,
+        # стоп на уровне инвалидации) — не повод сразу писать пользователю;
+        # уведомляем только когда состояние реально куда-то поменялось.
+        if last_state is None and decision == 'HOLD' and stop_status == 'keep':
+            continue
+
+        side = trade.get('side', '')
+        text = format_position_plan(plan, header=f"🔔 {symbol} {side} — сопровождение сделки")
+        if not text:
+            continue
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text)
+        except Exception as e:
+            logger.error(f"position_watch_job: не удалось отправить уведомление для {symbol}: {e}")
 
 
 async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_id: str):

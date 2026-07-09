@@ -65,10 +65,15 @@ class AIOrchestrator:
         только за незарегистрированной командой /analyze."""
         self._log("open_position")
         result = await self.consensus.analyze_open_position(position)
-        result["position_plan"] = await self._build_position_plan(position)
+        result["position_plan"] = await self.build_position_plan(position)
         return result
 
-    async def _build_position_plan(self, position: dict) -> dict:
+    async def build_position_plan(self, position: dict) -> dict:
+        """Публичный метод (не только для review_open_position) — используется
+        также core/scheduler.py:position_watch_job для проактивного
+        сопровождения сделки (Этап 7): периодической проверки открытых
+        позиций и уведомления при смене рекомендации, без явного запроса
+        пользователя через /consilium."""
         symbol = position.get("symbol", "")
         if not symbol:
             return {}
