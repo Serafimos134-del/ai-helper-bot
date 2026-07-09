@@ -5,6 +5,7 @@ and Behavior Alerts Engine hooks.
 """
 
 import asyncio
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from services.database import Database
 from services.behavior_engine import BehaviorEngine, format_alert
 from ai.trade_scorer import TradeScorer
 from core.container import get_orchestrator
-from utils.formatting import format_verdict
+from utils.formatting import format_verdict, format_score_breakdown
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
@@ -115,10 +116,14 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
     try:
         orchestrator = get_orchestrator()
         analysis = await orchestrator.review_closed_trade(closed_trade)
-        score = trade_scorer.score(closed_trade)
+        # score_breakdown теперь считает сам AIOrchestrator (единый источник —
+        # раньше auto_sync.py и core/router.py независимо решали, вызывать
+        # TradeScorer или нет, и router.py вообще не сохранял оценку).
+        score = analysis['score_breakdown']
 
         await asyncio.to_thread(db.update_trade_metrics, trade_id,
                                 ai_score=score['total_score'],
+                                score_breakdown=json.dumps(score, ensure_ascii=False),
                                 market_review=analysis['market_review'],
                                 risk_review=analysis['risk_review'],
                                 psychology_review=analysis['psychology_review'],
@@ -139,7 +144,8 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
                 f"📈 Рынок:\n{analysis.get('market_review', '—')}\n\n"
                 f"⚠️ Риск:\n{analysis.get('risk_review', '—')}\n\n"
                 f"🧘 Психология:\n{analysis.get('psychology_review', '—')}\n\n"
-                f"⚖️ Вердикт: {verdict_line}"
+                f"⚖️ Вердикт: {verdict_line}\n\n"
+                f"{format_score_breakdown(score)}"
             )
             await bot.send_message(chat_id=chat_id, text=text)
         except Exception as notify_e:
