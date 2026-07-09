@@ -151,12 +151,21 @@ class Database:
                     metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS trade_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT DEFAULT 'default',
+                    order_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
                 CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
                 CREATE INDEX IF NOT EXISTS idx_closed_user_id ON closed_trades(user_id);
                 CREATE INDEX IF NOT EXISTS idx_open_user_id ON open_trades(user_id);
                 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
                 CREATE INDEX IF NOT EXISTS idx_behavior_user_id ON behavior_events(user_id);
+                CREATE INDEX IF NOT EXISTS idx_trade_events_order_id ON trade_events(order_id);
             """)
 
             # Add missing columns (safe migration)
@@ -347,6 +356,26 @@ class Database:
                 "SELECT * FROM behavior_events WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
                 (user_id, limit)
             ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ==================== trader memory (Этап 8 плана AI Trading Core) ====
+    # Хронологический журнал по каждой сделке (order_id): анализ открытия,
+    # события сопровождения (перенос стопа/безубыток/частичная фиксация/DCA/
+    # закрытие), анализ закрытия. Основа для будущего Trader DNA (Этап 9) —
+    # там понадобится не только итоговый снимок сделки (он уже есть в
+    # closed_trades), а последовательность решений внутри её жизни.
+    def add_trade_event(self, order_id: str, event_type: str, payload: str, user_id: str = 'default'):
+        with self.transaction():
+            self._execute(
+                "INSERT INTO trade_events (user_id, order_id, event_type, payload) VALUES (?, ?, ?, ?)",
+                (user_id, order_id, event_type, payload)
+            )
+
+    def get_trade_events(self, order_id: str, user_id: str = 'default'):
+        rows = self._execute(
+            "SELECT * FROM trade_events WHERE user_id = ? AND order_id = ? ORDER BY created_at ASC",
+            (user_id, order_id)
+        ).fetchall()
         return [dict(row) for row in rows]
 
     # ==================== atomic trade closing ====================

@@ -6,6 +6,7 @@ and Trade Management Engine v2 display.
 """
 
 import asyncio
+import json
 import logging
 import time
 from telegram.ext import ContextTypes
@@ -120,6 +121,17 @@ async def position_watch_job(context: ContextTypes.DEFAULT_TYPE, db: Database, c
             continue
 
         await asyncio.to_thread(db.memory_set, MEMORY_CATEGORY_POSITION_WATCH, order_id, state_key)
+
+        # Trader Memory (Этап 8): фиксируем каждое изменение состояния
+        # сопровождения в хронологическом журнале сделки, даже если в этот
+        # раз пользователю не отправляется уведомление (см. ниже) — иначе
+        # первое "решение" по сделке просто нигде не остаётся.
+        try:
+            await asyncio.to_thread(db.add_trade_event, order_id, 'companion', json.dumps({
+                'decision': decision, 'reason': plan.get('reason'), 'stop_status': stop_status,
+            }, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"position_watch_job: не удалось записать Trader Memory для {symbol}: {e}")
 
         # Первая проверка новой позиции с нейтральным состоянием (держим,
         # стоп на уровне инвалидации) — не повод сразу писать пользователю;
