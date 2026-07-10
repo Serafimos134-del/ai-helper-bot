@@ -5,6 +5,7 @@ from ai.providers.base_provider import BaseProvider
 from ai.context_builder import ContextBuilder
 from ai.risk_engine import RiskRuleEngine
 from ai.engines.scoring_engine import ScoringEngine
+from ai.engines.structure_arbiter import format_sl_tp_block
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,12 @@ class RiskAgent:
         trade = ctx.get('trade')
         position = ctx.get('position')
         idea = ctx.get('idea') or {}
+        position_plan = ctx.get('position_plan')
 
         if mode == 'post_trade' and trade:
             return self._analyze_post_trade(trade)
         if mode == 'open' and position:
-            return self._analyze_open_position(position)
+            return self._analyze_open_position(position, position_plan)
         # --- новый блок для сетапов ---
         if mode == 'setup' and idea:
             return self._analyze_setup(idea, ctx.get('ticker', {}))
@@ -131,7 +133,7 @@ class RiskAgent:
         }
         return json.dumps(result, ensure_ascii=False)
 
-    def _analyze_open_position(self, pos: dict) -> str:
+    def _analyze_open_position(self, pos: dict, position_plan: dict = None) -> str:
         entry = float(pos.get('entry_price', 0))
         sl = pos.get('stop_loss')
         tp = pos.get('take_profit')
@@ -155,12 +157,27 @@ class RiskAgent:
         else:
             loss_str = "неизвестен"
 
+        # Recommended SL — расчётный уровень AI Core (structure_engine), не
+        # факт того, что на бирже стоит защитный ордер. Используется только
+        # чтобы честно объяснить пользователю разницу между "риск не
+        # контролируется вовсе" и "риск не контролируется на бирже, но
+        # AI Core предложил уровень" — risk_score (см. _calc_risk_score
+        # ниже) НЕ меняется, продолжает штрафовать отсутствие реального
+        # SL/TP как раньше (см. аудит источников данных Risk Agent —
+        # Recommended SL/TP не является фактом защиты позиции).
+        recommended_sl = (position_plan or {}).get('details', {}).get('stop', {}).get('hard_sl')
+
         if sl and tp:
             adequacy = "Защитные ордера установлены, риск контролируется."
         elif sl and not tp:
             adequacy = "Стоп-лосс установлен, но отсутствует тейк-профит."
         elif tp and not sl:
             adequacy = "Тейк-профит установлен, но стоп-лосс отсутствует – высокий риск."
+        elif recommended_sl:
+            adequacy = (
+                "Стоп-лосс и тейк-профит не установлены на бирже – неконтролируемый риск. "
+                "AI Core рассчитал рекомендуемый уровень (см. ниже), но это не факт защиты позиции."
+            )
         else:
             adequacy = "Стоп-лосс и тейк-профит не установлены – неконтролируемый риск."
 
@@ -168,7 +185,8 @@ class RiskAgent:
             f"SL: {sl_pct} от входа, TP: {tp_pct}, RR = {rr}. "
             f"Потенциальный убыток при SL: {loss_str}. "
             f"{adequacy} "
-            f"Плечо: {leverage}x, размер позиции: {size}."
+            f"Плечо: {leverage}x, размер позиции: {size}.\n\n"
+            f"{format_sl_tp_block(pos, position_plan)}"
         )
         result = {
             "risk_score": self._calc_risk_score(pos),

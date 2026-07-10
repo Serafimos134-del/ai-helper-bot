@@ -124,3 +124,32 @@ def structure_score(plan: Optional[dict]) -> Optional[float]:
         score += _DCA_OPPORTUNITY_BONUS
 
     return max(0.0, min(100.0, score))
+
+
+def format_sl_tp_block(pos: dict, position_plan: Optional[dict]) -> str:
+    """Exchange SL/TP (факт биржи) vs Recommended SL/TP (расчётные уровни
+    AI Core от structure_engine) — явное разделение для текстов Risk/
+    Psychology-агентов (см. аудит источников данных Risk Agent). Только
+    для объяснения: НЕ используется для risk_score/psychology_score —
+    наличие рекомендации не является фактом защиты позиции на бирже,
+    числовые скора продолжают штрафовать отсутствие реального SL/TP как
+    раньше."""
+    exchange_sl = pos.get('stop_loss')
+    exchange_tp = pos.get('take_profit')
+
+    recommended_sl = None
+    recommended_tp1 = None
+    if position_plan:
+        details = position_plan.get('details', {})
+        recommended_sl = details.get('stop', {}).get('hard_sl')
+        recommended_tp1 = details.get('tp', {}).get('tp1')
+
+    lines = [f"Exchange SL: {f'{float(exchange_sl):.4f}' if exchange_sl else 'отсутствует'}"]
+    if recommended_sl:
+        lines.append(f"Recommended SL: {recommended_sl:.4f}")
+    lines.append("")
+    lines.append(f"Exchange TP: {f'{float(exchange_tp):.4f}' if exchange_tp else 'отсутствует'}")
+    if recommended_tp1:
+        lines.append(f"Recommended TP1: {recommended_tp1:.4f}")
+
+    return "\n".join(lines)
