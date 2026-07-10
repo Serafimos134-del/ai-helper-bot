@@ -481,3 +481,30 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"💬 *Причина:* {decision.get('reason', '—')}"
 
     await msg.edit_text(text, parse_mode='Markdown')
+
+
+async def debug_positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ diagnostic-команда (см. AUDIT.md, "SOL-USDT — TP/SL с
+    BingX не подтягивается несмотря на фикс One-Way Mode") — сырой,
+    необработанный ответ /user/positions и /trade/openOrders прямо в
+    Telegram, без прохождения через get_open_positions()/маппинг SL/TP.
+    Нужна, чтобы увидеть реальные raw-поля (type/positionSide/closePosition)
+    вместо догадок по документации — два предыдущих фикса были основаны на
+    документации/community-репортах, не на реальном ответе для этого
+    аккаунта. Убрать команду после того, как кейс будет закрыт."""
+    if not _check_chat(update):
+        return
+    from services.bingx_api import _request_with_retry
+
+    msg = await update.message.reply_text("🔍 Забираю сырой ответ BingX...")
+
+    positions_raw = await _request_with_retry('GET', '/openApi/swap/v2/user/positions')
+    orders_raw = await _request_with_retry('GET', '/openApi/swap/v2/trade/openOrders')
+
+    text = (
+        "🔍 RAW /user/positions:\n"
+        f"{json.dumps(positions_raw, ensure_ascii=False, indent=2)}\n\n"
+        "🔍 RAW /trade/openOrders:\n"
+        f"{json.dumps(orders_raw, ensure_ascii=False, indent=2)}"
+    )
+    await _send_long(msg, text)

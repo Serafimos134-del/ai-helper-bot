@@ -18,7 +18,8 @@ from core.scheduler import setup_scheduler
 from handlers.system import (
     start, health_command, sync_command, status_command,
     ai_fix_command, test_behavior_command,
-    setidea_command                       # internal/admin
+    setidea_command,                      # internal/admin
+    debug_positions_command,              # временная diagnostic-команда, см. handlers/system.py
 )
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
@@ -123,6 +124,7 @@ def main():
     app.add_handler(CommandHandler('test_behavior',   test_behavior_command))
     app.add_handler(CommandHandler('setidea',         setidea_command))
     app.add_handler(CommandHandler('restore_history', restore_history_command))
+    app.add_handler(CommandHandler('debug_positions', debug_positions_command))
 
     # Основное меню
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
