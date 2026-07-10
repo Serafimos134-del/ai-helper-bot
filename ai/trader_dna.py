@@ -181,6 +181,26 @@ def quality_after_loss_streak_pattern(trades: list, streak_threshold: int = 2) -
     }
 
 
+def dca_pattern(trades: list) -> Optional[dict]:
+    """Усреднение (DCA) и его исход — closed_trades.dca_count начал
+    заполняться только с DNA v2 (см. TRADER_DNA_V1.md §1.3/Roadmap DNA v2),
+    поэтому исторических сделок с этим полем поначалу мало: None, пока
+    выборка не наберётся."""
+    with_dca = [t for t in trades if int(t.get('dca_count') or 0) > 0]
+    if len(with_dca) < MIN_PATTERN_EVENTS:
+        return None
+    without_dca = [t for t in trades if int(t.get('dca_count') or 0) == 0]
+    negative_dca = sum(1 for t in with_dca if float(t.get('realized_pnl', 0)) < 0)
+    return {
+        'trades_with_dca': len(with_dca),
+        'negative_rate_with_dca': round(negative_dca / len(with_dca) * 100, 1),
+        'negative_rate_without_dca': (
+            round(sum(1 for t in without_dca if float(t.get('realized_pnl', 0)) < 0) / len(without_dca) * 100, 1)
+            if without_dca else None
+        ),
+    }
+
+
 def sl_tp_discipline(trades: list) -> Optional[dict]:
     """Доля сделок, где выставлены и SL, и TP."""
     if not trades:
@@ -194,10 +214,15 @@ def sl_tp_discipline(trades: list) -> Optional[dict]:
 
 
 def behavior_symbol_pattern(db, symbol: str, event_type: str, user_id: str = 'default') -> Optional[dict]:
-    """Приближённый джойн: конкретный поведенческий флаг на конкретном
-    символе → как часто после него сделка закрывалась в минус. При >1
-    совпадении по времени событие не засчитывается вместо угадывания
-    (см. докстринг модуля, риски в TRADER_DNA_V1.md §Roadmap DNA v1)."""
+    """Джойн конкретного поведенческого флага на конкретном символе к
+    сделкам → как часто после него сделка закрывалась в минус.
+
+    С DNA v2 behavior_events хранит order_id (см. TRADER_DNA_V1.md §1.1,
+    роадмап DNA v2) — события, записанные после этого изменения, джойнятся
+    точно по order_id. Более старые события (или overtrading, у которого
+    нет одной конкретной сделки) order_id не имеют — для них остаётся
+    приближённый джойн по ближайшему времени; при >1 совпадении событие не
+    засчитывается вместо угадывания."""
     events = db.get_recent_behavior_events(user_id, event_type=event_type, limit=200)
     if not events:
         return None
@@ -206,6 +231,7 @@ def behavior_symbol_pattern(db, symbol: str, event_type: str, user_id: str = 'de
     if not trades:
         return None
 
+    trades_by_order_id = {str(t['orderId']): t for t in trades if t.get('orderId')}
     window = timedelta(minutes=BEHAVIOR_JOIN_WINDOW_MINUTES)
     # revenge_trading/fomo/overtrading пишутся на открытии позиции, поэтому
     # сравниваем с open_time; panic_close пишется на закрытии — с close_time.
@@ -213,6 +239,15 @@ def behavior_symbol_pattern(db, symbol: str, event_type: str, user_id: str = 'de
 
     matched = []
     for ev in events:
+        order_id = ev.get('order_id')
+        if order_id and str(order_id) in trades_by_order_id:
+            matched.append(trades_by_order_id[str(order_id)])
+            continue
+        if order_id:
+            # order_id есть, но не среди сделок по этому символу — событие
+            # определённо не относится к symbol, приближение не нужно.
+            continue
+
         meta_raw = ev.get('metadata')
         try:
             meta = json.loads(meta_raw) if meta_raw else {}
@@ -285,6 +320,7 @@ def analyze_patterns(db, user_id: str = 'default') -> dict:
         'stop_width': stop_width_pattern(trades),
         'quality_after_loss_streak': quality_after_loss_streak_pattern(trades),
         'sl_tp_discipline': sl_tp_discipline(trades),
+        'dca': dca_pattern(trades),
     }
 
 
@@ -426,6 +462,13 @@ def format_dna_report(db, user_id: str = 'default') -> str:
     discipline = patterns.get('sl_tp_discipline')
     if discipline:
         lines.append(f"📐 SL и TP выставлены вместе в {discipline['rate']:.0f}% сделок")
+
+    dca = patterns.get('dca')
+    if dca and dca['negative_rate_without_dca'] is not None and dca['negative_rate_with_dca'] > dca['negative_rate_without_dca'] + 15:
+        lines.append(
+            f"⚠️ Усреднение в минус: сделки с DCA закрываются в убыток в {dca['negative_rate_with_dca']:.0f}% "
+            f"случаев против {dca['negative_rate_without_dca']:.0f}% без усреднения"
+        )
 
     regime = patterns.get('market_regime')
     if regime:

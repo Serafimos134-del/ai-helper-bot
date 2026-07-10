@@ -231,9 +231,16 @@ class ContextBuilder:
 
     async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
         symbol = trade.get("symbol", "")
-        history, market, trader_context = await asyncio.gather(
-            asyncio.to_thread(self._build_history_context),
+        # portfolio (баланс) раньше здесь не собирался вообще — в отличие от
+        # build_for_open_position/build_for_new_setup. Из-за этого
+        # TradeScorer.score() у закрытой сделки не мог получить реальный
+        # balance даже если бы вызывающий код его передавал (см.
+        # TRADER_DNA_V1.md §1.1, DNA v2) — context.get("balance") всегда был
+        # 0 просто потому, что баланс никогда не запрашивался для этого пути.
+        market, portfolio, history, trader_context = await asyncio.gather(
             self._build_market_context(),
+            self._build_portfolio_context(),
+            asyncio.to_thread(self._build_history_context),
             asyncio.to_thread(build_trader_context, self.db, symbol),
         )
 
@@ -255,6 +262,7 @@ class ContextBuilder:
             },
             "score": score_result,
             "market": market,
+            "portfolio": portfolio,
             "history": history,
             "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,

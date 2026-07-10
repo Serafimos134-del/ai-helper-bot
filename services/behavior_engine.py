@@ -161,13 +161,14 @@ class BehaviorEngine:
             }
         return None
 
-    def save_event(self, user_id: str, event: dict):
+    def save_event(self, user_id: str, event: dict, order_id: str = None):
         try:
             self.db.add_behavior_event(
                 user_id,
                 event['event_type'],
                 event['severity'],
-                json.dumps(event['metadata'], ensure_ascii=False)
+                json.dumps(event['metadata'], ensure_ascii=False),
+                order_id=str(order_id) if order_id else None,
             )
         except Exception as e:
             logger.error(f"Не удалось сохранить behavior_event: {e}")

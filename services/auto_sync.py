@@ -77,13 +77,17 @@ def _calculate_exit_price(trade: dict) -> float:
 async def _check_behavior_on_open(bot, chat_id: str, user_id: str, trade: dict):
     """Запускает Behavior Engine при открытии новой позиции."""
     try:
+        order_id = trade.get('orderId')
+
         revenge = behavior_engine.detect_revenge_trading(user_id, trade)
         if revenge:
-            behavior_engine.save_event(user_id, revenge)
+            behavior_engine.save_event(user_id, revenge, order_id=order_id)
             await bot.send_message(chat_id=chat_id, text=format_alert(revenge))
 
         overtrading = behavior_engine.detect_overtrading(user_id)
         if overtrading:
+            # Не привязано к одной сделке (речь о частоте входов за окно) —
+            # order_id намеренно не передаётся.
             behavior_engine.save_event(user_id, overtrading)
             await bot.send_message(chat_id=chat_id, text=format_alert(overtrading))
 
@@ -93,7 +97,7 @@ async def _check_behavior_on_open(bot, chat_id: str, user_id: str, trade: dict):
             if kline_result.get('success'):
                 fomo = behavior_engine.detect_fomo(trade, kline_result.get('klines', []))
                 if fomo:
-                    behavior_engine.save_event(user_id, fomo)
+                    behavior_engine.save_event(user_id, fomo, order_id=order_id)
                     await bot.send_message(chat_id=chat_id, text=format_alert(fomo))
     except Exception as e:
         logger.error(f"Ошибка Behavior Engine (open): {e}")
@@ -104,7 +108,7 @@ async def _check_behavior_on_close(bot, chat_id: str, user_id: str, closed_trade
     try:
         panic = behavior_engine.detect_panic_close(closed_trade)
         if panic:
-            behavior_engine.save_event(user_id, panic)
+            behavior_engine.save_event(user_id, panic, order_id=closed_trade.get('orderId'))
             await bot.send_message(chat_id=chat_id, text=format_alert(panic))
     except Exception as e:
         logger.error(f"Ошибка Behavior Engine (close): {e}")
@@ -378,7 +382,11 @@ def _build_closed_trade(stored_open: dict, user_id: str = 'default') -> dict:
         'market_trend':  None,
         'setup_type':    None,
         'mistakes':      None,
-        'ai_score':      None
+        'ai_score':      None,
+        # Раньше терялось при закрытии — dca_count жил в open_trades, но
+        # closed_trades не хранила эту колонку вообще (TRADER_DNA_V1.md
+        # §1.1/§1.3, DNA v2).
+        'dca_count':     stored_open.get('dca_count', 0),
     }
 
 
