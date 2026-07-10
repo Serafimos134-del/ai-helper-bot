@@ -153,18 +153,34 @@ async def get_open_positions() -> dict:
         orders_result = await _request_with_retry('GET', '/openApi/swap/v2/trade/openOrders')
         if orders_result.get('code') == 0:
             open_orders = orders_result.get('data', {}).get('orders', [])
-            # Словарь для быстрого поиска: key = "SYMBOL_LONG" или "SYMBOL_SHORT"
+            # Словарь для быстрого поиска. Ключ зависит от режима аккаунта
+            # (см. ниже) — либо "SYMBOL_LONG"/"SYMBOL_SHORT" (Hedge Mode),
+            # либо просто "SYMBOL" (One-Way Mode).
             tp_sl_map = {}
             for order in open_orders:
                 sym = order.get('symbol', '')
-                pos_side = order.get('positionSide', '')  # LONG или SHORT
+                pos_side = order.get('positionSide', '')  # LONG/SHORT (Hedge) или BOTH (One-Way)
                 stop_price = float(order.get('stopPrice', 0))
                 order_type = order.get('type', '')
 
                 if not sym or not pos_side or stop_price <= 0:
                     continue
 
-                key = f"{sym}_{pos_side}"
+                # BingX в One-Way Mode (сейчас default-режим для новых
+                # аккаунтов) всегда возвращает positionSide="BOTH" для
+                # ордеров, независимо от реальной стороны позиции — тогда
+                # как сторона самой позиции (ниже, side) считается из
+                # знака positionAmt и всегда LONG/SHORT. Раньше ключ
+                # ордера строился напрямую из positionSide ("SYMBOL_BOTH"),
+                # который никогда не совпадал с ключом позиции
+                # ("SYMBOL_LONG"/"SYMBOL_SHORT") — SL/TP реально
+                # существовал на бирже, но терялся при сопоставлении. В
+                # One-Way Mode на символ бывает только одна позиция, поэтому
+                # сопоставление по одному символу однозначно; в Hedge Mode
+                # positionSide ордера — реальная сторона, сопоставляем как
+                # раньше (по символу+стороне, чтобы не перепутать
+                # одновременные LONG и SHORT на одном символе).
+                key = sym if pos_side == 'BOTH' else f"{sym}_{pos_side}"
                 if key not in tp_sl_map:
                     tp_sl_map[key] = {'takeProfit': None, 'stopLoss': None}
 
@@ -180,12 +196,16 @@ async def get_open_positions() -> dict:
                 elif order_type in ('STOP_MARKET', 'STOP'):
                     tp_sl_map[key]['stopLoss'] = stop_price
 
-            # Применяем к trades
+            # Применяем к trades. Заранее не знаем режим аккаунта (API это
+            # явно не отдаёт) — проверяем оба варианта ключа; реально
+            # заполнен будет только один из них, так как ордер приходит
+            # либо с positionSide="BOTH" (One-Way), либо с реальной
+            # стороной (Hedge), не с обоими вариантами одновременно.
             for t in trades:
-                key = f"{t['symbol']}_{t['side']}"
-                if key in tp_sl_map:
-                    t['stopLoss'] = tp_sl_map[key].get('stopLoss')
-                    t['takeProfit'] = tp_sl_map[key].get('takeProfit')
+                match = tp_sl_map.get(f"{t['symbol']}_{t['side']}") or tp_sl_map.get(t['symbol'])
+                if match:
+                    t['stopLoss'] = match.get('stopLoss')
+                    t['takeProfit'] = match.get('takeProfit')
 
     except Exception as e:
         # Если не удалось получить ордера – оставляем null (SL/TP будут None)
