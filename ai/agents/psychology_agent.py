@@ -3,6 +3,7 @@ import logging
 import json
 from ai.context_builder import ContextBuilder
 from ai.psychology_engine import PsychologyEngine
+from ai.engines.structure_arbiter import format_sl_tp_block
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,13 @@ class PsychologyAgent:
         trade = ctx.get('trade')
         position = ctx.get('position')
         idea = ctx.get('idea') or {}
+        position_plan = ctx.get('position_plan')
 
         # ── Жёсткая маршрутизация по режимам ──
         if mode == 'setup' and idea:
             return self._analyze_setup(idea)
         if mode == 'open' and position:
-            return self._analyze_open_position(position)
+            return self._analyze_open_position(position, position_plan)
         if mode == 'post_trade' and trade:
             return self._analyze_post_trade(trade)
 
@@ -80,11 +82,18 @@ class PsychologyAgent:
         return json.dumps(result, ensure_ascii=False)
 
     # ── OPEN_POSITION: дисциплина исполнения ──────────────────────
-    def _analyze_open_position(self, pos: dict) -> str:
+    def _analyze_open_position(self, pos: dict, position_plan: dict = None) -> str:
         sl = pos.get('stop_loss')
         tp = pos.get('take_profit')
         leverage = pos.get('leverage', 1)
         size = pos.get('size', 0)
+
+        # Recommended SL — расчётный уровень AI Core, не факт того, что
+        # трейдер сам выставил защиту на бирже. Используется только для
+        # текста; discipline_score (psychology_score) НЕ меняется — та же
+        # логика "не менять числовой риск/штрафы", что и в RiskAgent (см.
+        # аудит источников данных Risk Agent, согласовано с пользователем).
+        recommended_sl = (position_plan or {}).get('details', {}).get('stop', {}).get('hard_sl')
 
         patterns = []
         discipline_score = 100
@@ -97,6 +106,12 @@ class PsychologyAgent:
         elif tp and not sl:
             patterns.append("Установлен только тейк-профит — отсутствие защиты от убытков, рискованный оптимизм.")
             discipline_score -= 30
+        elif recommended_sl:
+            patterns.append(
+                "Нет ни стоп-лосса, ни тейк-профита на бирже — отсутствие дисциплины и плана. "
+                "AI Core рассчитал рекомендуемый уровень (см. ниже), но трейдер его не выставил."
+            )
+            discipline_score -= 50
         else:
             patterns.append("Нет ни стоп-лосса, ни тейк-профита — отсутствие дисциплины и плана.")
             discipline_score -= 50
@@ -112,9 +127,11 @@ class PsychologyAgent:
 
         discipline_score = max(0, min(100, discipline_score))
 
+        summary = " ".join(patterns) + "\n\n" + format_sl_tp_block(pos, position_plan)
+
         result = {
             "psychology_score": discipline_score,
-            "summary": " ".join(patterns)
+            "summary": summary
         }
         return json.dumps(result, ensure_ascii=False)
 
