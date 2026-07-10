@@ -17,6 +17,7 @@ from services.trade_manager import TradeManager
 from core.container import get_orchestrator
 from utils.liquidation import get_volatility_class
 from utils.formatting import format_position_plan
+from ai.engines.structure_arbiter import get_structure_override
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,29 @@ async def position_watch_job(context: ContextTypes.DEFAULT_TYPE, db: Database, c
             continue
 
         side = trade.get('side', '')
-        text = format_position_plan(plan, header=f"🔔 {symbol} {side} — сопровождение сделки")
+
+        # DECISION_FLOW_AUDIT.md, Вариант C, требование 5: этот путь не
+        # должен выдавать вердикт, отличный от того, что дал бы ручной
+        # /consilium в тот же момент. get_structure_override() — та же
+        # функция, что использует JudgeAgent.synthesize(), поэтому для
+        # override-случаев (пробой инвалидации/полный TP) расхождение
+        # структурно невозможно. Для остального (DCA/PARTIAL_TP/смена
+        # статуса стопа) сообщение явно помечено как информационное, не
+        # как финальное решение — сам вердикт даёт только Judge, по
+        # запросу через /consilium.
+        override = get_structure_override(plan)
+        if override:
+            text = (
+                f"🔔 {symbol} {side} — сопровождение сделки\n"
+                f"⚡ {override['verdict']}: {override['reason']}\n"
+                f"Тот же вердикт, что покажет /consilium — рекомендуется закрыть позицию."
+            )
+        else:
+            text = format_position_plan(
+                plan, header=f"ℹ️ {symbol} {side} — изменение по позиции (не финальное решение)"
+            )
+            if text:
+                text += "\n\nЗа финальным вердиктом — /consilium."
         if not text:
             continue
         try:

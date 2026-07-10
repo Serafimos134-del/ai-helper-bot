@@ -168,9 +168,16 @@ async def get_open_positions() -> dict:
                 if key not in tp_sl_map:
                     tp_sl_map[key] = {'takeProfit': None, 'stopLoss': None}
 
-                if order_type == 'TAKE_PROFIT_MARKET':
+                # BingX поддерживает и market-, и limit-триггерные варианты
+                # TP/SL (TAKE_PROFIT_MARKET/TAKE_PROFIT, STOP_MARKET/STOP) —
+                # раньше проверялись только _MARKET-варианты, из-за чего
+                # реально выставленный лимитный TP/SL (например, через
+                # "частичный TP/SL" в приложении BingX) не подтягивался, и
+                # Risk/Psychology-агенты видели позицию как незащищённую,
+                # хотя стоп/тейк на бирже стоял.
+                if order_type in ('TAKE_PROFIT_MARKET', 'TAKE_PROFIT'):
                     tp_sl_map[key]['takeProfit'] = stop_price
-                elif order_type == 'STOP_MARKET':
+                elif order_type in ('STOP_MARKET', 'STOP'):
                     tp_sl_map[key]['stopLoss'] = stop_price
 
             # Применяем к trades

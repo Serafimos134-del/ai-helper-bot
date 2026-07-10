@@ -3,6 +3,7 @@ import logging
 import json
 from ai.providers.base_provider import BaseProvider
 from ai.trader_context import compute_dna_adjustment
+from ai.engines.structure_arbiter import get_structure_override, structure_score
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,20 @@ class JudgeAgent:
         "trade": 0.15,
     }
 
+    # Веса для mode='open' с доступным position_plan (см.
+    # DECISION_FLOW_AUDIT.md, Вариант C, требование 4) — structure перестаёт
+    # быть отдельным вердиктом и становится компонентом общего скора.
+    # Используется только когда structure_score(position_plan) вернул не
+    # None; иначе (post_trade/setup/нет данных структуры) поведение не
+    # меняется — применяется обычный WEIGHTS.
+    OPEN_WEIGHTS_WITH_STRUCTURE = {
+        "market": 0.30,
+        "risk": 0.30,
+        "psychology": 0.15,
+        "trade": 0.10,
+        "structure": 0.15,
+    }
+
     THRESHOLDS = {
         "STRONG_ENTER": 85,
         "ENTER": 70,
@@ -29,7 +44,7 @@ class JudgeAgent:
     async def synthesize(self, market_json: str, risk_json: str, psychology_json: str,
                          mode: str = None, trade_score: int = None,
                          confidence: float = None, disagreement: float = None,
-                         trader_context: dict = None) -> str:
+                         trader_context: dict = None, position_plan: dict = None) -> str:
         try:
             market = json.loads(market_json) if isinstance(market_json, str) else market_json
         except json.JSONDecodeError:
@@ -52,12 +67,22 @@ class JudgeAgent:
         else:
             final_trade_score = self._extract_score(market, "market_score", default=50) * 0.5
 
+        # Position Analyst / Trade Management (ai_decision_engine) как
+        # специализированный аналитик внутри Judge, а не отдельный вердикт
+        # (см. DECISION_FLOW_AUDIT.md, Вариант C, требование 4). struct_score
+        # — None, если структура недоступна (mode != 'open' или нет данных) —
+        # тогда веса не меняются, поведение идентично прежнему.
+        struct_score = structure_score(position_plan) if mode == 'open' else None
+        weights = self.OPEN_WEIGHTS_WITH_STRUCTURE if struct_score is not None else self.WEIGHTS
+
         final_score = (
-            market_score * self.WEIGHTS["market"] +
-            risk_score * self.WEIGHTS["risk"] +
-            psychology_score * self.WEIGHTS["psychology"] +
-            final_trade_score * self.WEIGHTS["trade"]
+            market_score * weights["market"] +
+            risk_score * weights["risk"] +
+            psychology_score * weights["psychology"] +
+            final_trade_score * weights["trade"]
         )
+        if struct_score is not None:
+            final_score += struct_score * weights["structure"]
         final_score = int(max(0, min(100, final_score)))
         base_score = final_score
 
@@ -81,7 +106,18 @@ class JudgeAgent:
         if dna_adjustment["active"] and dna_adjustment["score_delta"] != 0:
             final_score = int(max(0, min(100, final_score + dna_adjustment["score_delta"])))
 
-        verdict = self._get_verdict(final_score, mode)
+        # Жёсткий override (DECISION_FLOW_AUDIT.md, Вариант C, требование 3):
+        # пробой инвалидации или достижение полного TP — объективный факт
+        # рынка, не мнение, которое можно перевесить скором. Форсирует
+        # verdict независимо от final_score. Та же функция
+        # (get_structure_override) используется в core/scheduler.py:
+        # position_watch_job(), поэтому ручной запрос и проактивное
+        # сопровождение не могут разойтись в этих случаях.
+        structure_override = get_structure_override(position_plan) if mode == 'open' else None
+        if structure_override:
+            verdict = structure_override["verdict"]
+        else:
+            verdict = self._get_verdict(final_score, mode)
 
         warnings = []
         # ScoringEngine.calc_risk отдаёт скор безопасности в диапазоне ~50-100
@@ -98,13 +134,17 @@ class JudgeAgent:
             warnings.append(
                 f"Персональная поправка {dna_adjustment['score_delta']:+d}: {dna_adjustment['reason']}"
             )
+        if structure_override:
+            warnings.insert(0, f"⚡ Принудительное решение: {structure_override['reason']}")
 
-        summary = self._generate_summary(final_score, verdict, confidence, disagreement, mode)
+        summary = self._generate_summary(final_score, verdict, confidence, disagreement, mode, structure_override)
 
         result = {
             "final_score": final_score,
             "base_score": base_score,
             "dna_adjustment": dna_adjustment,
+            "structure_score": struct_score,
+            "structure_override": structure_override,
             "verdict": verdict,
             "confidence": confidence,
             "warnings": warnings,
@@ -135,8 +175,15 @@ class JudgeAgent:
 
     @classmethod
     def _generate_summary(cls, score: int, verdict: str, confidence: float, disagreement: float,
-                          mode: str = None) -> str:
-        if mode == 'open':
+                          mode: str = None, structure_override: dict = None) -> str:
+        if structure_override:
+            if structure_override["decision"] == "EXIT":
+                base = f"Позицию необходимо закрыть — {structure_override['reason']}."
+            elif structure_override["decision"] == "FULL_TP":
+                base = f"Цель по позиции достигнута — {structure_override['reason']}. Рекомендуется зафиксировать прибыль."
+            else:
+                base = f"Позицию рекомендуется закрыть — {structure_override['reason']}."
+        elif mode == 'open':
             if verdict == 'HOLD':
                 base = "Позицию рекомендуется удерживать."
             elif verdict == 'CLOSE':

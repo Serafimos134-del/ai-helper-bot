@@ -149,6 +149,7 @@ class Database:
                     event_type TEXT NOT NULL,
                     severity TEXT,
                     metadata TEXT,
+                    order_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS trade_events (
@@ -206,6 +207,7 @@ class Database:
                     ('psychology_review', 'TEXT'),
                     ('judge_verdict', 'TEXT'),
                     ('score_breakdown', 'TEXT'),
+                    ('dca_count', 'INTEGER DEFAULT 0'),
                 ],
                 'users': [
                     ('subscription_tier', "TEXT NOT NULL DEFAULT 'free'"),
@@ -213,7 +215,10 @@ class Database:
                     ('bingx_api_key', 'TEXT'),
                     ('bingx_secret_key', 'TEXT'),
                     ('last_active_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-                ]
+                ],
+                'behavior_events': [
+                    ('order_id', 'TEXT'),
+                ],
             }.items():
                 for col, col_def in cols:
                     try:
@@ -231,6 +236,13 @@ class Database:
             self.conn.execute("DELETE FROM open_trades WHERE orderId IS NULL OR orderId = ''")
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_orderId ON open_trades(orderId)")
             self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
+            # order_id добавлен в behavior_events через ALTER TABLE выше (для
+            # существующих БД) — индекс создаётся здесь, после того как
+            # колонка гарантированно есть, а не в executescript() наверху
+            # (там CREATE TABLE IF NOT EXISTS — no-op для старых БД, и
+            # CREATE INDEX на ещё не добавленную колонку падает с
+            # "no such column").
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_behavior_order_id ON behavior_events(order_id)")
 
             default_telegram_id = os.getenv('TELEGRAM_CHAT_ID', 'default')
             self.conn.execute(
@@ -338,11 +350,11 @@ class Database:
         return users
 
     # ==================== behavior alerts engine ====================
-    def add_behavior_event(self, user_id: str, event_type: str, severity: str, metadata: str):
+    def add_behavior_event(self, user_id: str, event_type: str, severity: str, metadata: str, order_id: str = None):
         with self.transaction():
             self._execute(
-                "INSERT INTO behavior_events (user_id, event_type, severity, metadata) VALUES (?, ?, ?, ?)",
-                (user_id, event_type, severity, metadata)
+                "INSERT INTO behavior_events (user_id, event_type, severity, metadata, order_id) VALUES (?, ?, ?, ?, ?)",
+                (user_id, event_type, severity, metadata, order_id)
             )
 
     def get_recent_behavior_events(self, user_id: str, event_type: str = None, limit: int = 20):
@@ -387,12 +399,13 @@ class Database:
                 raise ValueError(f"Open trade with orderId {order_id} not found")
 
             insert_sql = """
-                INSERT INTO closed_trades 
+                INSERT INTO closed_trades
                 (user_id, orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
                  risk_percent, leverage, stop_loss, take_profit, risk_reward,
                  open_time, close_time, entry_comment, exit_comment, ai_review,
-                 holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score,
+                 dca_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (
                 closed_trade_data.get('user_id', 'default'),
@@ -420,7 +433,8 @@ class Database:
                 closed_trade_data.get('market_trend'),
                 closed_trade_data.get('setup_type'),
                 closed_trade_data.get('mistakes'),
-                closed_trade_data.get('ai_score')
+                closed_trade_data.get('ai_score'),
+                closed_trade_data.get('dca_count', 0)
             )
             self._execute(insert_sql, params)
             new_id = self._execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -500,12 +514,13 @@ class Database:
         if not trade.get('orderId'):
             raise ValueError("orderId is required for closed trade")
         sql = """
-            INSERT INTO closed_trades 
+            INSERT INTO closed_trades
             (user_id, orderId, symbol, side, entry_price, exit_price, quantity, realized_pnl, comment,
              risk_percent, leverage, stop_loss, take_profit, risk_reward,
              open_time, close_time, entry_comment, exit_comment, ai_review,
-             holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             holding_minutes, btc_price, eth_price, market_trend, setup_type, mistakes, ai_score,
+             dca_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             trade.get('user_id', 'default'),
@@ -519,7 +534,8 @@ class Database:
             trade.get('ai_review', ''),
             trade.get('holding_minutes'), trade.get('btc_price'), trade.get('eth_price'),
             trade.get('market_trend'), trade.get('setup_type'), trade.get('mistakes'),
-            trade.get('ai_score')
+            trade.get('ai_score'),
+            trade.get('dca_count', 0)
         )
         with self.transaction():
             self._execute(sql, params)

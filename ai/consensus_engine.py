@@ -16,6 +16,7 @@ from ai.context_builder import ContextBuilder
 from ai.trade_scorer import TradeScorer
 from ai.engines.normalizer import normalize_position, normalize_trade
 from ai.engines.scoring_engine import ScoringEngine
+from ai.engines.structure_arbiter import build_structure_plan
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,20 @@ class ConsensusEngine:
         self.deterministic_scorer = ScoringEngine()
 
     async def analyze_open_position(self, position: dict) -> dict:
+        raw_position = position
         position = normalize_position(position)
-        context  = await self.context_builder.build_for_open_position(position)
+        # position_plan (Position Analyst / Trade Management, см.
+        # DECISION_FLOW_AUDIT.md, Вариант C) теперь строится здесь, а не
+        # отдельным путём в AIOrchestrator.review_open_position() — чтобы
+        # его сигналы дошли до JudgeAgent (override и/или структурный
+        # компонент скора), а не были вторым независимым вердиктом.
+        context, position_plan = await asyncio.gather(
+            self.context_builder.build_for_open_position(position),
+            build_structure_plan(raw_position),
+        )
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
+        context['position_plan'] = position_plan
         logger.info(f"CONSENSUS ENGINE: analyzing position {position.get('symbol')}")
         return await self._run_agents_parallel(context, 'open')
 
@@ -50,11 +61,19 @@ class ConsensusEngine:
         return await self._run_agents_parallel(context, 'setup')
 
     async def analyze_closed_trade(self, trade: dict) -> dict:
-        trade        = normalize_trade(trade)
-        score_result = self.scorer.score(trade)
-        context      = await self.context_builder.build_for_closed_trade(trade, score_result)
+        trade   = normalize_trade(trade)
+        context = await self.context_builder.build_for_closed_trade(trade, None)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
+        # Реальный balance/losing_streak из уже собранного контекста — раньше
+        # TradeScorer.score(trade) вызывался вообще без context (баланс
+        # неоткуда было взять до сборки контекста), поэтому компонент
+        # risk_per_trade всегда уходил в нейтральный дефолт (см.
+        # TRADER_DNA_V1.md §1.1, DNA v2).
+        context['score'] = self.scorer.score(trade, context={
+            'balance': (context.get('portfolio') or {}).get('balance') or 0,
+            'losing_streak': (context.get('history') or {}).get('losing_streak', 0),
+        })
         logger.info(f"CONSENSUS ENGINE: analyzing closed trade {trade.get('symbol')}")
         return await self._run_agents_parallel(context, 'post_trade')
 
@@ -126,7 +145,11 @@ class ConsensusEngine:
                 pass
         elif trade:
             try:
-                trade_score = self.scorer.score(trade).get('total_score', 5) * 10
+                # context['score'] уже посчитан с реальным balance в
+                # analyze_closed_trade() — переиспользуем вместо слепого
+                # пересчёта без context.
+                score_result = context.get('score') or self.scorer.score(trade)
+                trade_score = score_result.get('total_score', 5) * 10
             except Exception:
                 pass
 
@@ -141,6 +164,7 @@ class ConsensusEngine:
                     confidence=confidence,
                     disagreement=disagreement,
                     trader_context=context.get('trader_context'),
+                    position_plan=context.get('position_plan'),
                 ),
                 timeout=AGENT_TIMEOUT
             )
@@ -168,7 +192,9 @@ class ConsensusEngine:
             'disagreement':     disagreement,
             'data_quality':     data_quality,
             'degraded':         degraded,
-            'memory':           memory
+            'memory':           memory,
+            'score_breakdown':  context.get('score'),
+            'position_plan':    context.get('position_plan'),
         }
 
     # ─── helpers ────────────────────────────────────────────────
