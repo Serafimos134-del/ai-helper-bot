@@ -160,8 +160,28 @@ async def get_open_positions() -> dict:
             for order in open_orders:
                 sym = order.get('symbol', '')
                 pos_side = order.get('positionSide', '')  # LONG/SHORT (Hedge) или BOTH (One-Way)
-                stop_price = float(order.get('stopPrice', 0))
                 order_type = order.get('type', '')
+
+                # order.get('stopPrice', 0) отдаёт дефолт только если ключа
+                # нет вовсе — если ключ есть, но значение "" (пустая
+                # строка, реальный случай для некоторых ордеров, например
+                # "Т-п/с-л Вся позиция"), float('') кидает ValueError.
+                # Раньше это исключение ловилось ВНЕШНИМ try/except вокруг
+                # всего цикла — из-за одного такого ордера обрывалась
+                # обработка вообще всех ордеров (и уже обработанные до него
+                # результаты не терялись, но все последующие — не
+                # обрабатывались никогда), поэтому TP/SL не подтягивался
+                # вообще ни для одной позиции, на каждом синке, независимо
+                # от типа ордера или режима аккаунта (см. AUDIT.md, SOL-USDT).
+                try:
+                    stop_price = float(order.get('stopPrice') or 0)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"get_open_positions: некорректный stopPrice у ордера "
+                        f"{sym} type={order_type} positionSide={pos_side}: "
+                        f"{order.get('stopPrice')!r}. Полный ордер: {order}"
+                    )
+                    continue
 
                 if not sym or not pos_side or stop_price <= 0:
                     continue
