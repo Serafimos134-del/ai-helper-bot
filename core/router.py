@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 from core.container import get_orchestrator, get_ai_analyzer, get_db
 from utils.formatting import format_verdict, format_score_breakdown
-from utils.telegram_text import clean_markdown
+from utils.telegram_text import clean_markdown, strip_llm_self_correction
 
 logger = logging.getLogger(__name__)
 
@@ -214,9 +214,11 @@ async def generate_ai_review(query, trade_id):
         f"Дай краткую оценку сделке (2-3 предложения): что хорошо, что плохо, оценка от 1 до 10.\n"
         f"Символ: {trade['symbol']}, сторона: {trade['side']}, вход: {trade['entry_price']}, "
         f"выход: {trade['exit_price']}, плечо: {trade.get('leverage', 1)}, PNL: {trade['realized_pnl']:.2f}.\n"
-        f"Причина входа: {trade.get('entry_comment', 'не указана')}."
+        f"Причина входа: {trade.get('entry_comment', 'не указана')}.\n"
+        f"Дай сразу финальный вариант — не пиши в ответе черновые мысли, самокоррекции "
+        f"или пометки вроде «ошибся»/«на самом деле»/«заменю на»."
     )
-    review = await ai_analyzer.analyze_raw(prompt)
+    review = strip_llm_self_correction(await ai_analyzer.analyze_raw(prompt))
     db.update_trade_metrics(trade_id, ai_review=review)
     # clean_markdown() убирает **bold**/__underline__/`code` из LLM-ответа —
     # тот же паттерн, что уже используется для AI-текста в handlers/ai.py,

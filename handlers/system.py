@@ -14,7 +14,7 @@ from services.bingx_api import get_balance
 from services.auto_sync import sync_trades
 from core.scheduler import update_pinned_status
 from services.trade_manager import TradeManager
-from utils.telegram_text import clean_markdown as _clean, send_long as _send_long
+from utils.telegram_text import clean_markdown as _clean, send_long as _send_long, strip_llm_self_correction
 
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
@@ -167,10 +167,12 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ЧТО СДЕЛАТЬ ПРЯМО СЕЙЧАС (максимум 2 пункта):\n"
         "1. ...\n"
         "2. ...\n\n"
-        "Без вступления, без воды, только факты из данных ниже.\n"
+        "Без вступления, без воды, только факты из данных ниже. "
+        "Дай сразу финальный вариант — не пиши в ответе черновые мысли, самокоррекции "
+        "или пометки вроде «ошибся»/«на самом деле»/«заменю на».\n"
         f"Сделки:\n{trades_text}"
     )
-    answer = _clean(await ai_analyzer.analyze_raw(prompt, max_tokens=1500))
+    answer = strip_llm_self_correction(_clean(await ai_analyzer.analyze_raw(prompt, max_tokens=1500)))
     await _send_long(msg, f"🧠 AI-разбор убытков:\n\n{answer}")
 
 

@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_orchestrator, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
-from utils.telegram_text import clean_markdown as _clean
+from utils.telegram_text import clean_markdown as _clean, strip_llm_self_correction
 from utils.formatting import format_position_plan
 
 
@@ -43,11 +43,14 @@ async def show_market_overview(update: Update):
         + "\n\nТвой ответ должен содержать строго:\n"
         + "1. ОБЩИЙ НАСТРОЙ: (бычий/медвежий/нейтральный) — одним предложением\n"
         + "2. ТОП-3 МОНЕТЫ С СИЛЬНЕЙШИМ ДВИЖЕНИЕМ (рост и падение) — назови и возможные причины\n"
-        + "3. ВОЗМОЖНЫЕ ТОЧКИ ВХОДА: любые две монеты из списка с кратким обоснованием\n\n"
-        + "Будь конкретен, используй цифры из данных выше. Без философии и общих фраз."
+        + "3. ВОЗМОЖНЫЕ ТОЧКИ ВХОДА: любые две монеты СТРОГО из списка выше, дословно как они написаны "
+        + "(не придумывай и не путай тикеры) — с кратким обоснованием\n\n"
+        + "Будь конкретен, используй цифры из данных выше. Без философии и общих фраз. "
+        + "Проверь тикеры перед ответом и дай сразу финальный вариант — не пиши в ответе черновые "
+        + "мысли, самокоррекции или пометки вроде «ошибся»/«на самом деле»/«заменю на»."
     )
     try:
-        analysis = _clean(await ai_analyzer.analyze_raw(prompt))
+        analysis = strip_llm_self_correction(_clean(await ai_analyzer.analyze_raw(prompt)))
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
     try:
@@ -95,10 +98,11 @@ async def show_trends(update: Update):
         + "1. BTC: тренд (восходящий/нисходящий/боковик), ключевые уровни поддержки и сопротивления на сегодня\n"
         + "2. ETH: аналогично\n"
         + "3. СИГНАЛ: если видишь явную точку входа по любой из монет — укажи направление, цену входа и стоп-лосс. Если явного сигнала нет — напиши «явного сигнала нет»\n\n"
-        + "Кратко, без воды, используй цифры из данных выше."
+        + "Кратко, без воды, используй цифры из данных выше. Дай сразу финальный вариант — не пиши "
+        + "в ответе черновые мысли, самокоррекции или пометки вроде «ошибся»/«на самом деле»/«заменю на»."
     )
     try:
-        analysis = _clean(await ai_analyzer.analyze_raw(prompt))
+        analysis = strip_llm_self_correction(_clean(await ai_analyzer.analyze_raw(prompt)))
     except Exception as e:
         analysis = f"Ошибка AI: {e}"
     try:
@@ -136,10 +140,12 @@ async def show_journal_analysis(update: Update):
         "Выдели повторяющиеся паттерны, главные ошибки в риск-менеджменте, "
         "психологические ловушки и сильные стороны. "
         "Дай конкретные рекомендации по улучшению стратегии и дисциплины. "
-        "Пиши без markdown-форматирования — только чистый текст.\n\n"
+        "Пиши без markdown-форматирования — только чистый текст. "
+        "Дай сразу финальный вариант — не пиши в ответе черновые мысли, самокоррекции "
+        "или пометки вроде «ошибся»/«на самом деле»/«заменю на».\n\n"
         f"Журнал сделок:\n{trades_text}"
     )
-    answer = _clean(await ai_analyzer.analyze_raw(prompt, max_tokens=1500))
+    answer = strip_llm_self_correction(_clean(await ai_analyzer.analyze_raw(prompt, max_tokens=1500)))
     try:
         await msg.delete()
     except Exception:
