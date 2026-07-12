@@ -605,17 +605,32 @@ class Database:
             'open_positions': open_count
         }
 
-    def add_comment(self, trade_id: int, comment: str):
+    def add_comment(self, trade_id: int, comment: str, user_id: str = None):
+        # user_id=None сохраняет старое поведение (без изоляции) для
+        # внутренних/legacy вызовов; хендлеры, обрабатывающие
+        # пользовательский callback_data (trade_id приходит от клиента,
+        # потенциально можно подставить чужой id), обязаны передавать
+        # user_id текущего пользователя — иначе один подписчик сможет
+        # прочитать/изменить чужую сделку, просто подобрав числовой id
+        # (см. MULTITENANCY_MIGRATION_PLAN.md, "разграничение данных").
+        if user_id is not None:
+            sql = "UPDATE closed_trades SET exit_comment = ? WHERE id = ? AND user_id = ?"
+            params = (comment, trade_id, user_id)
+        else:
+            sql = "UPDATE closed_trades SET exit_comment = ? WHERE id = ?"
+            params = (comment, trade_id)
         with self.transaction():
-            cursor = self._execute(
-                "UPDATE closed_trades SET exit_comment = ? WHERE id = ?",
-                (comment, trade_id)
-            )
+            cursor = self._execute(sql, params)
             if cursor.rowcount == 0:
-                logger.warning(f"add_comment: trade_id {trade_id} not found")
+                logger.warning(f"add_comment: trade_id {trade_id} not found (user_id={user_id})")
 
-    def find_trade_by_id(self, trade_id: int):
-        row = self._execute("SELECT * FROM closed_trades WHERE id = ?", (trade_id,)).fetchone()
+    def find_trade_by_id(self, trade_id: int, user_id: str = None):
+        if user_id is not None:
+            row = self._execute(
+                "SELECT * FROM closed_trades WHERE id = ? AND user_id = ?", (trade_id, user_id)
+            ).fetchone()
+        else:
+            row = self._execute("SELECT * FROM closed_trades WHERE id = ?", (trade_id,)).fetchone()
         return dict(row) if row else None
 
     def update_trade_metrics(self, trade_id: int, **kwargs):
@@ -697,11 +712,11 @@ def get_closed_trades(limit=50, symbol=None, user_id='default'):
 def get_stats(user_id='default'):
     return _default_db.get_stats(user_id)
 
-def add_comment(trade_id, comment):
-    _default_db.add_comment(trade_id, comment)
+def add_comment(trade_id, comment, user_id=None):
+    _default_db.add_comment(trade_id, comment, user_id)
 
-def find_trade_by_id(trade_id):
-    return _default_db.find_trade_by_id(trade_id)
+def find_trade_by_id(trade_id, user_id=None):
+    return _default_db.find_trade_by_id(trade_id, user_id)
 
 def update_trade_metrics(trade_id, **kwargs):
     _default_db.update_trade_metrics(trade_id, **kwargs)

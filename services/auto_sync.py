@@ -206,17 +206,24 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
             logger.error(f"Ошибка fallback-оценки для сделки #{trade_id}: {fallback_e}")
 
 
-async def sync_trades(bot, chat_id: str) -> dict:
+async def sync_trades(bot, chat_id: str, user_id: str = 'default') -> dict:
+    # user_id — параметр, не хардкод (см. MULTITENANCY_MIGRATION_PLAN.md,
+    # Этап 3): ручной /sync передаёт реального вызывающего пользователя,
+    # фоновый auto_sync_job — пока 'default' (полноценный per-user фон —
+    # Этап 6, отдельно). _sync_lock общий на все вызовы (не per-user) —
+    # известное ограничение: конкурентные /sync разных пользователей не
+    # выполняются параллельно, один будет пропущен ("уже выполняется").
+    # Не критично для корректности данных, только для скорости — не
+    # исправлено в этом проходе, чтобы не расширять и без того большой diff.
     if _sync_lock.locked():
         logger.debug("Синхронизация пропущена (уже выполняется)")
         return {'new_open': [], 'new_closed': []}
     async with _sync_lock:
-        return await _sync_trades_impl(bot, chat_id)
+        return await _sync_trades_impl(bot, chat_id, user_id)
 
 
-async def _sync_trades_impl(bot, chat_id: str) -> dict:
+async def _sync_trades_impl(bot, chat_id: str, user_id: str = 'default') -> dict:
     global _missing_cycles
-    user_id = 'default'
     # api_ok сообщает вызывающему коду (core/scheduler.py), удался ли реальный
     # запрос к BingX — используется для backoff при затяжных сбоях API.
     results = {'new_open': [], 'new_closed': [], 'api_ok': True}

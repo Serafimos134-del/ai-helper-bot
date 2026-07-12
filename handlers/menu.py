@@ -3,7 +3,6 @@ handlers/menu.py
 Main menu handler — routes button presses to appropriate handlers.
 """
 
-import os
 from telegram import Update
 from telegram.ext import ContextTypes
 from core.container import get_db
@@ -16,6 +15,7 @@ from core.keyboards import (
     BTN_AI_MARKET, BTN_AI_TRENDS, BTN_AI_LEARN, BTN_AI_COACH, BTN_TRADER_DNA,
     NAV_BUTTONS,
 )
+from core.user_context import require_auth, get_current_user_id
 from handlers.trading import show_balance, show_last_trades, show_stats, show_ai_analysis
 from handlers.ai import (
     show_market_overview, show_trends, show_journal_analysis, show_coach, show_trader_dna,
@@ -26,11 +26,9 @@ from handlers.journal import show_journal
 from handlers.system import show_help
 from services.comment_manager import save_comment
 
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_chat.id) != CHAT_ID:
+    if not await require_auth(update, context):
         return
     text  = update.message.text.strip()
     state = context.user_data.get('state')
@@ -62,7 +60,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'entering_comment_inline':
         order_id = context.user_data.get('comment_order_id')
         if order_id:
-            success = save_comment(order_id, text)
+            success = save_comment(order_id, text, user_id=get_current_user_id(context))
             if success:
                 await update.message.reply_text(f"✅ Комментарий сохранён для сделки #{order_id}!", reply_markup=trading_menu_keyboard())
             else:
@@ -119,11 +117,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_BALANCE:
         await show_balance(update)
     elif text == BTN_LAST_TRADES:
-        await show_last_trades(update)
+        await show_last_trades(update, context)
     elif text == BTN_STATS:
-        await show_stats(update)
+        await show_stats(update, context)
     elif text == BTN_AI_ANALYSIS:
-        await show_ai_analysis(update)
+        await show_ai_analysis(update, context)
     elif text == BTN_CONSILIUM:
         await consilium_menu(update)
     elif text == CONSILIUM_OPEN:
@@ -135,10 +133,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_AI_TRENDS:
         await show_trends(update)
     elif text == BTN_AI_LEARN:
-        await show_journal_analysis(update)
+        await show_journal_analysis(update, context)
     elif text == BTN_AI_COACH:
         await show_coach(update, context)
     elif text == BTN_TRADER_DNA:
-        await show_trader_dna(update)
+        await show_trader_dna(update, context)
     else:
         await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_keyboard())

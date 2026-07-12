@@ -15,6 +15,7 @@ BingX-ключи один раз на апдейт, до всех остальн
 докстринг там же.
 """
 
+import os
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -23,6 +24,13 @@ from core.container import get_db
 from services.bingx_api import set_bingx_credentials, clear_bingx_credentials
 
 logger = logging.getLogger(__name__)
+
+# Владелец бота — временный admin-доступ на переходный период миграции
+# (Crypto Pay ещё не подключён, Этап 4). Владелец всегда авторизован,
+# независимо от подписки — не должен сам себя заблокировать, пока оплата
+# не готова. После полного перехода на подписки это можно убрать или
+# оставить как aдминский bypass для поддержки.
+_OWNER_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
 
 async def resolve_user_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -40,6 +48,7 @@ async def resolve_user_context(update: Update, context: ContextTypes.DEFAULT_TYP
 
     user = update.effective_user
     if not user:
+        context.user_data['is_authorized'] = False
         return
 
     db = get_db()
@@ -48,9 +57,19 @@ async def resolve_user_context(update: Update, context: ContextTypes.DEFAULT_TYP
         db_user = db.get_or_create_user(telegram_id, user.username)
     except Exception as e:
         logger.error(f"resolve_user_context: не удалось получить/создать пользователя {telegram_id}: {e}")
+        context.user_data['is_authorized'] = False
         return
 
     context.user_data['user'] = db_user
+
+    is_owner = bool(_OWNER_CHAT_ID) and telegram_id == _OWNER_CHAT_ID
+    try:
+        is_subscribed = db.is_premium(db_user['user_id'])
+    except Exception as e:
+        logger.error(f"resolve_user_context: не удалось проверить подписку {db_user['user_id']}: {e}")
+        is_subscribed = False
+    context.user_data['is_owner'] = is_owner
+    context.user_data['is_authorized'] = bool(is_owner or is_subscribed)
 
     try:
         api_key, secret_key = db.get_bingx_keys(db_user['user_id'])
@@ -73,3 +92,20 @@ def get_current_user_id(context: ContextTypes.DEFAULT_TYPE, default: str = 'defa
     'default' для путей, куда мидлварь ещё не докатилась (фоновые джобы)."""
     user = context.user_data.get('user') if context and context.user_data else None
     return user['user_id'] if user else default
+
+
+async def require_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """True, если пользователь авторизован (владелец или активная
+    подписка — см. resolve_user_context). Если нет — отвечает
+    пользователю и возвращает False. Заменяет старую проверку
+    `str(update.effective_chat.id) != CHAT_ID` во всех хендлерах —
+    единая точка того, "кто имеет право пользоваться ботом" (см.
+    MULTITENANCY_MIGRATION_PLAN.md, Этап 3)."""
+    if context.user_data.get('is_authorized'):
+        return True
+    text = "🔒 Нужна активная подписка. Наберите /start, чтобы узнать подробности."
+    if update.callback_query:
+        await update.callback_query.answer(text, show_alert=True)
+    elif update.message:
+        await update.message.reply_text(text)
+    return False

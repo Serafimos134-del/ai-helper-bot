@@ -4,8 +4,10 @@ Trading-related handlers: balance, last trades, stats, AI analysis.
 """
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
 from core.container import get_db, get_ai_analyzer
 from core.keyboards import trading_menu_keyboard
+from core.user_context import get_current_user_id
 from services.bingx_api import get_balance
 from services.trading_stats import format_stats_message
 from utils.telegram_text import clean_markdown as _clean, send_long as _send_long
@@ -27,11 +29,12 @@ async def show_balance(update: Update):
         await msg.edit_text(f"❌ Ошибка получения баланса: {result.get('error', 'Неизвестная ошибка')}")
 
 
-async def show_last_trades(update: Update):
+async def show_last_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
+    user_id = get_current_user_id(context)
     msg = await update.message.reply_text("⏳ Загружаю сделки...")
-    open_trades   = db.get_open_trades()
-    closed_trades = db.get_closed_trades(limit=15)
+    open_trades   = db.get_open_trades(user_id=user_id)
+    closed_trades = db.get_closed_trades(limit=15, user_id=user_id)
     lines = ["📋 *Последние сделки*\n"]
 
     if open_trades:
@@ -67,15 +70,15 @@ async def show_last_trades(update: Update):
     await msg.edit_text("\n".join(lines), parse_mode='Markdown', reply_markup=reply_markup)
 
 
-async def show_stats(update: Update):
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     msg  = await update.message.reply_text("⏳ Считаю статистику...")
-    text = format_stats_message({}, db=db)
+    text = format_stats_message({}, db=db, user_id=get_current_user_id(context))
     await _send_long(msg, text)
 
 
-async def show_ai_analysis(update: Update):
+async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ai_analyzer = get_ai_analyzer()
     msg  = await update.message.reply_text("🤖 Анализирую...")
-    text = _clean(ai_analyzer.analyze())
+    text = _clean(ai_analyzer.analyze(user_id=get_current_user_id(context)))
     await _send_long(msg, text)
