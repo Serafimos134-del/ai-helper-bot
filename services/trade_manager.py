@@ -20,9 +20,9 @@ class TradeManager:
             updates['tp_zones'] = json.dumps(tp_zones)
         self.db.update_open_trade_by_order_id(order_id, **updates)
 
-    def is_invalidated(self, order_id: str, current_price: float) -> bool:
+    def is_invalidated(self, order_id: str, current_price: float, user_id: str = 'default') -> bool:
         """Проверить, сломана ли идея по цене."""
-        trade = self._get_open_by_order(order_id)
+        trade = self._get_open_by_order(order_id, user_id)
         if not trade or not trade.get('invalidation_sl'):
             return False
         sl = float(trade['invalidation_sl'])
@@ -32,9 +32,9 @@ class TradeManager:
         else:
             return current_price >= sl
 
-    def get_tp_zones(self, order_id: str) -> list:
+    def get_tp_zones(self, order_id: str, user_id: str = 'default') -> list:
         """Вернуть список TP-зон."""
-        trade = self._get_open_by_order(order_id)
+        trade = self._get_open_by_order(order_id, user_id)
         if not trade or not trade.get('tp_zones'):
             return []
         try:
@@ -42,23 +42,27 @@ class TradeManager:
         except json.JSONDecodeError:
             return []
 
-    def can_dca(self, order_id: str, max_dca: int = 2) -> bool:
+    def can_dca(self, order_id: str, max_dca: int = 2, user_id: str = 'default') -> bool:
         """Проверить, можно ли сделать добор."""
-        trade = self._get_open_by_order(order_id)
+        trade = self._get_open_by_order(order_id, user_id)
         if not trade:
             return False
         return int(trade.get('dca_count', 0)) < max_dca
 
-    def add_dca(self, order_id: str):
+    def add_dca(self, order_id: str, user_id: str = 'default'):
         """Зафиксировать добор."""
-        trade = self._get_open_by_order(order_id)
+        trade = self._get_open_by_order(order_id, user_id)
         if trade:
             new_count = int(trade.get('dca_count', 0)) + 1
             self.db.update_open_trade_by_order_id(order_id, dca_count=new_count)
 
-    def _get_open_by_order(self, order_id: str) -> dict:
-        """Внутренний метод для получения открытой сделки по orderId."""
-        trades = self.db.get_open_trades()
+    def _get_open_by_order(self, order_id: str, user_id: str = 'default') -> dict:
+        """Внутренний метод для получения открытой сделки по orderId. user_id
+        обязателен для не-владельца — иначе поиск шёл только по 'default'
+        (сделкам владельца) и молча не находил сделки остальных
+        пользователей: TP-зоны/DCA-лимит просто не работали для всех, кроме
+        владельца (найдено при аудите /status, см. handlers/system.py)."""
+        trades = self.db.get_open_trades(user_id=user_id)
         for t in trades:
             if t.get('orderId') == order_id:
                 return t
