@@ -6,16 +6,16 @@ and Trade Management Engine v2 display.
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import time
 from telegram.ext import ContextTypes
-from services.bingx_api import get_balance
+from services.bingx_api import get_balance, set_bingx_credentials, clear_bingx_credentials
 from services.database import Database
 from services.auto_sync import sync_trades
 from services.trade_manager import TradeManager
 from services.crypto_pay import get_invoice_statuses
-from core.billing import SUBSCRIPTION_PERIOD_DAYS
 from core.container import get_orchestrator
 from utils.liquidation import get_volatility_class
 from utils.formatting import format_position_plan
@@ -60,6 +60,21 @@ _watch_tick = 0
 # требует мгновенного отклика, в отличие от синхронизации сделок.
 CRYPTO_PAY_POLL_INTERVAL = 60
 
+# Этап 6 плана миграции: синхронизация сделок для подписчиков с
+# собственными BingX-ключами (не владелец — тот синкается отдельным
+# auto_sync_job с фиксированным chat_id/глобальными .env-ключами, см.
+# get_users_for_background_jobs). Реже, чем owner-джоба (15s) — цикл
+# последовательно опрашивает N пользователей и делит общий _sync_lock
+# (services/auto_sync.py) с owner-джобой, слишком частый тик просто
+# приводил бы к пропускам из-за занятой блокировки.
+MULTI_USER_SYNC_INTERVAL = 60
+
+# Этап 7: ежедневный отчёт. Час — UTC (сервер обычно в UTC); единое время
+# для всех подписчиков — простая заготовка на MVP, персональный часовой
+# пояс/время отчёта — TODO после запуска (не входит в критичный набор).
+DAILY_REPORT_HOUR_UTC = 8
+DAILY_REPORT_NOTIF_TYPE = "daily_report"
+
 
 def setup_scheduler(app, db: Database, chat_id: str) -> None:
     """Register auto-sync and status update jobs."""
@@ -83,6 +98,83 @@ def setup_scheduler(app, db: Database, chat_id: str) -> None:
         interval=CRYPTO_PAY_POLL_INTERVAL,
         first=20
     )
+    app.job_queue.run_repeating(
+        lambda c: multi_user_sync_job(c, db),
+        interval=MULTI_USER_SYNC_INTERVAL,
+        first=45
+    )
+    app.job_queue.run_daily(
+        lambda c: daily_report_job(c, db),
+        time=datetime.time(hour=DAILY_REPORT_HOUR_UTC, minute=0)
+    )
+
+
+async def multi_user_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
+    """Синхронизация сделок для всех подписчиков с собственными BingX-
+    ключами (владелец обслуживается отдельно, см. auto_sync_job выше)."""
+    try:
+        users = await asyncio.to_thread(db.get_users_for_background_jobs)
+    except Exception as e:
+        logger.error(f"multi_user_sync_job: не удалось получить список пользователей: {e}")
+        return
+
+    for user in users:
+        api_key = user.get('bingx_api_key')
+        secret_key = user.get('bingx_secret_key')
+        telegram_id = user.get('telegram_id')
+        if not api_key or not secret_key or not telegram_id:
+            continue
+        set_bingx_credentials(api_key, secret_key)
+        try:
+            await sync_trades(context.bot, telegram_id, user['user_id'])
+        except Exception as e:
+            logger.error(f"multi_user_sync_job: ошибка синхронизации для {user['user_id']}: {e}")
+        finally:
+            clear_bingx_credentials()
+
+
+async def daily_report_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
+    """Ежедневный отчёт подписчикам с привязанными BingX-ключами и
+    включёнными уведомлениями. try_log_notification — защита от дублей
+    (см. services/database.py) на случай рестарта сервиса рядом с временем
+    отправки."""
+    try:
+        users = await asyncio.to_thread(db.get_users_for_background_jobs)
+    except Exception as e:
+        logger.error(f"daily_report_job: не удалось получить список пользователей: {e}")
+        return
+
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+
+    for user in users:
+        if not user.get('notifications_enabled', 1):
+            continue
+        api_key = user.get('bingx_api_key')
+        secret_key = user.get('bingx_secret_key')
+        telegram_id = user.get('telegram_id')
+        if not api_key or not secret_key or not telegram_id:
+            continue
+
+        can_send = await asyncio.to_thread(
+            db.try_log_notification, user['user_id'], DAILY_REPORT_NOTIF_TYPE, today
+        )
+        if not can_send:
+            continue
+
+        set_bingx_credentials(api_key, secret_key)
+        try:
+            balance = await get_balance()
+            open_positions = await asyncio.to_thread(db.get_open_trades, user['user_id'])
+            text, _ = _build_status_text(balance, open_positions, db)
+            await context.bot.send_message(
+                chat_id=int(telegram_id),
+                text=f"📅 *Ежедневный отчёт*\n\n{text}",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"daily_report_job: ошибка отчёта для {user['user_id']}: {e}")
+        finally:
+            clear_bingx_credentials()
 
 
 async def crypto_pay_poll_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
@@ -110,7 +202,7 @@ async def crypto_pay_poll_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
 
         try:
             new_expiry = await asyncio.to_thread(
-                db.extend_subscription, payment['user_id'], SUBSCRIPTION_PERIOD_DAYS
+                db.extend_subscription, payment['user_id'], credited['days']
             )
         except Exception as e:
             logger.error(f"crypto_pay_poll_job: не удалось продлить подписку {payment['user_id']}: {e}")

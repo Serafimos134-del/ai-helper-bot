@@ -165,6 +165,7 @@ class Database:
                     user_id TEXT NOT NULL,
                     amount REAL NOT NULL,
                     asset TEXT NOT NULL DEFAULT 'USDT',
+                    days INTEGER NOT NULL DEFAULT 14,
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     paid_at TIMESTAMP
@@ -176,6 +177,14 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
                 CREATE INDEX IF NOT EXISTS idx_behavior_user_id ON behavior_events(user_id);
                 CREATE INDEX IF NOT EXISTS idx_trade_events_order_id ON trade_events(order_id);
+                CREATE TABLE IF NOT EXISTS notification_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    notif_type TEXT NOT NULL,
+                    sent_date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, notif_type, sent_date)
+                );
                 CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
                 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
             """)
@@ -225,10 +234,14 @@ class Database:
                     ('subscription_expires_at', 'TIMESTAMP'),
                     ('bingx_api_key', 'TEXT'),
                     ('bingx_secret_key', 'TEXT'),
-                    ('last_active_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+                    ('last_active_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
+                    ('notifications_enabled', 'INTEGER NOT NULL DEFAULT 1'),
                 ],
                 'behavior_events': [
                     ('order_id', 'TEXT'),
+                ],
+                'payments': [
+                    ('days', 'INTEGER NOT NULL DEFAULT 14'),
                 ],
             }.items():
                 for col, col_def in cols:
@@ -366,11 +379,11 @@ class Database:
         return new_expiry
 
     # ==================== payments (Crypto Pay) ====================
-    def create_payment(self, invoice_id, user_id: str, amount: float, asset: str = 'USDT'):
+    def create_payment(self, invoice_id, user_id: str, amount: float, asset: str = 'USDT', days: int = 14):
         with self.transaction():
             self._execute(
-                "INSERT INTO payments (invoice_id, user_id, amount, asset, status) VALUES (?, ?, ?, ?, 'active')",
-                (str(invoice_id), user_id, amount, asset)
+                "INSERT INTO payments (invoice_id, user_id, amount, asset, days, status) VALUES (?, ?, ?, ?, ?, 'active')",
+                (str(invoice_id), user_id, amount, asset, days)
             )
 
     def get_pending_payments(self) -> list:
@@ -416,6 +429,38 @@ class Database:
             u['bingx_api_key'] = decrypt(u.get('bingx_api_key'))
             u['bingx_secret_key'] = decrypt(u.get('bingx_secret_key'))
         return users
+
+    def get_users_for_background_jobs(self) -> list:
+        """Подписчики (триал или оплата) с привязанными собственными
+        BingX-ключами — только для них возможны пер-пользовательская
+        синхронизация/сопровождение/отчёты (core/scheduler.py). Владелец
+        (глобальные ключи из .env, без записи в users.bingx_api_key) сюда
+        не попадает — обслуживается отдельными owner-джобами с
+        фиксированным chat_id, как раньше. Иначе пользователь без своих
+        ключей получил бы в отчёте баланс владельца (contextvar-фолбэк
+        на .env в services/bingx_api.py) — утечка чужих данных."""
+        return [u for u in self.get_all_active_users() if self.is_premium(u['user_id'])]
+
+    def set_notifications_enabled(self, user_id: str, enabled: bool):
+        with self.transaction():
+            self._execute(
+                "UPDATE users SET notifications_enabled = ? WHERE user_id = ?",
+                (1 if enabled else 0, user_id)
+            )
+
+    def try_log_notification(self, user_id: str, notif_type: str, sent_date: str) -> bool:
+        """Атомарно резервирует отправку (user_id, notif_type, sent_date).
+        True — можно отправлять (первый раз за эту дату), False — уже
+        отправляли (защита от дублей при рестарте/повторном тике job_queue)."""
+        try:
+            with self.transaction():
+                self._execute(
+                    "INSERT INTO notification_log (user_id, notif_type, sent_date) VALUES (?, ?, ?)",
+                    (user_id, notif_type, sent_date)
+                )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
     # ==================== behavior alerts engine ====================
     def add_behavior_event(self, user_id: str, event_type: str, severity: str, metadata: str, order_id: str = None):

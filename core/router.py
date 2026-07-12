@@ -213,6 +213,10 @@ async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(f"✅ Сетап сохранён: {setup}")
     elif data == "cancel_setup":
         await query.edit_message_text("Выбор сетапа отменён.")
+    elif data.startswith("sub_"):
+        from handlers.subscription import handle_plan_selected
+        plan_id = data[len("sub_"):]
+        await handle_plan_selected(query, context, plan_id)
 
 
 async def generate_ai_review(query, trade_id, user_id: str = 'default'):
