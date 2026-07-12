@@ -35,7 +35,7 @@ class ConsensusEngine:
         self.scorer               = TradeScorer()
         self.deterministic_scorer = ScoringEngine()
 
-    async def analyze_open_position(self, position: dict) -> dict:
+    async def analyze_open_position(self, position: dict, user_id: str = 'default') -> dict:
         raw_position = position
         position = normalize_position(position)
         # position_plan (Position Analyst / Trade Management, см.
@@ -44,7 +44,7 @@ class ConsensusEngine:
         # его сигналы дошли до JudgeAgent (override и/или структурный
         # компонент скора), а не были вторым независимым вердиктом.
         context, position_plan = await asyncio.gather(
-            self.context_builder.build_for_open_position(position),
+            self.context_builder.build_for_open_position(position, user_id=user_id),
             build_structure_plan(raw_position),
         )
         if not self._is_market_data_valid(context):
@@ -53,16 +53,16 @@ class ConsensusEngine:
         logger.info(f"CONSENSUS ENGINE: analyzing position {position.get('symbol')}")
         return await self._run_agents_parallel(context, 'open')
 
-    async def analyze_new_setup(self, ticker: str, direction: str, extra_notes: str = '') -> dict:
-        context = await self.context_builder.build_for_new_setup(ticker, direction, extra_notes)
+    async def analyze_new_setup(self, ticker: str, direction: str, extra_notes: str = '', user_id: str = 'default') -> dict:
+        context = await self.context_builder.build_for_new_setup(ticker, direction, extra_notes, user_id=user_id)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
         logger.info(f"CONSENSUS ENGINE: analyzing setup {ticker} {direction}")
         return await self._run_agents_parallel(context, 'setup')
 
-    async def analyze_closed_trade(self, trade: dict) -> dict:
+    async def analyze_closed_trade(self, trade: dict, user_id: str = 'default') -> dict:
         trade   = normalize_trade(trade)
-        context = await self.context_builder.build_for_closed_trade(trade, None)
+        context = await self.context_builder.build_for_closed_trade(trade, None, user_id=user_id)
         if not self._is_market_data_valid(context):
             return self._error_response("Данные рынка недоступны.")
         # Реальный balance/losing_streak из уже собранного контекста — раньше
@@ -165,6 +165,7 @@ class ConsensusEngine:
                     disagreement=disagreement,
                     trader_context=context.get('trader_context'),
                     position_plan=context.get('position_plan'),
+                    risk_profile=context.get('risk_profile'),
                 ),
                 timeout=AGENT_TIMEOUT
             )

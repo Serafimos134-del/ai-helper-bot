@@ -248,7 +248,7 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
         return
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую позицию...")
-    result = await orchestrator.review_open_position(chosen)
+    result = await orchestrator.review_open_position(chosen, user_id=get_current_user_id(context))
     # Добавляем SL/TP из выбранной позиции в результат для отображения
     result['stop_loss'] = chosen.get('stopLoss') or chosen.get('stop_loss')
     result['take_profit'] = chosen.get('takeProfit') or chosen.get('take_profit')
@@ -278,7 +278,7 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
         return
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую сетап...")
-    result = await orchestrator.evaluate_new_setup(ticker, direction, extra_notes=text)
+    result = await orchestrator.evaluate_new_setup(ticker, direction, extra_notes=text, user_id=get_current_user_id(context))
     response = _build_response(result, ticker, direction)
     await msg.edit_text(response[:4096])
     await update.message.reply_text("Что дальше?", reply_markup=consilium_keyboard())

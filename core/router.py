@@ -250,7 +250,7 @@ async def generate_full_ai_analysis(query, trade_id, user_id: str = 'default'):
     await query.edit_message_text("🔄 Запускаю полный AI-анализ...")
     try:
         orchestrator = get_orchestrator()
-        analysis = await orchestrator.review_closed_trade(trade)
+        analysis = await orchestrator.review_closed_trade(trade, user_id=user_id)
         # score_breakdown считает сам AIOrchestrator (см. ai/orchestrator.py).
         # Раньше здесь читался несуществующий ключ 'ai_score' из ответа
         # консилиума (его там никогда не было) — при ручном перезапуске

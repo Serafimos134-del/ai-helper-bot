@@ -27,6 +27,7 @@ from handlers.ai import show_coach
 from handlers.menu import menu_handler
 from handlers.onboarding import setkeys_command
 from handlers.subscription import subscribe_command
+from handlers.risk_profile import riskprofile_command, riskscore_command
 
 load_dotenv()
 
@@ -130,6 +131,8 @@ def main():
     app.add_handler(CommandHandler('setkeys',         setkeys_command))
     app.add_handler(CommandHandler('subscribe',       subscribe_command))
     app.add_handler(CommandHandler('notifications',   notifications_command))
+    app.add_handler(CommandHandler('riskprofile',     riskprofile_command))
+    app.add_handler(CommandHandler('riskscore',       riskscore_command))
 
     # Debug / admin (можно оставить для тестов)
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))

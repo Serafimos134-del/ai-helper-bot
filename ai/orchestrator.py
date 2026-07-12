@@ -55,7 +55,7 @@ class AIOrchestrator:
     def __init__(self, consensus: ConsensusEngine):
         self.consensus = consensus
 
-    async def review_open_position(self, position: dict) -> dict:
+    async def review_open_position(self, position: dict, user_id: str = "default") -> dict:
         """Полный разбор открытой позиции (Этап 4 плана AI Trading Core):
         качество входа и риск — от AI-консилиума (ConsensusEngine).
         Position Analyst / Trade Management (structure/stop/tp) больше не
@@ -68,7 +68,7 @@ class AIOrchestrator:
         разойтись, если рыночные данные успели измениться между двумя
         вызовами)."""
         self._log("open_position")
-        return await self.consensus.analyze_open_position(position)
+        return await self.consensus.analyze_open_position(position, user_id=user_id)
 
     async def build_position_plan(self, position: dict) -> dict:
         """Публичный метод — используется core/scheduler.py:position_watch_job
@@ -80,7 +80,7 @@ class AIOrchestrator:
         Вариант C, требование 5)."""
         return await build_structure_plan(position)
 
-    async def review_closed_trade(self, trade: dict) -> dict:
+    async def review_closed_trade(self, trade: dict, user_id: str = "default") -> dict:
         """Полный разбор закрытой сделки (Этап 5 плана AI Trading Core):
         качество входа/сопровождения/стопа/тейка и вердикт — от AI-консилиума
         (Trade Reviewer + Risk Manager + Judge); структурированная детальная
@@ -91,7 +91,7 @@ class AIOrchestrator:
         ссылался на несуществующий ключ 'ai_score' в ответе консилиума и
         никогда не сохранял оценку при ручном перезапуске анализа)."""
         self._log("closed_trade")
-        result = await self.consensus.analyze_closed_trade(trade)
+        result = await self.consensus.analyze_closed_trade(trade, user_id=user_id)
         # score_breakdown теперь считается один раз внутри ConsensusEngine —
         # с реальным balance из уже собранного контекста (TRADER_DNA_V1.md
         # §1.1, DNA v2). Раньше здесь заново вызывался TradeScorer.score(trade)
@@ -102,7 +102,7 @@ class AIOrchestrator:
         result["score_breakdown"] = result.get("score_breakdown") or TradeScorer.score(trade)
         return result
 
-    async def evaluate_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
+    async def evaluate_new_setup(self, ticker: str, direction: str, extra_notes: str = "", user_id: str = "default") -> dict:
         """Полный торговый план по новому сетапу (Этап 6 плана AI Trading Core):
         сценарий/аргументация/риск — от AI-консилиума (Market Analyst +
         Strategy Advisor + Risk Manager + Judge); конкретные цифры (цена
@@ -110,7 +110,7 @@ class AIOrchestrator:
         детерминированных structure/stop/tp/calc_engine на гипотетической
         позиции по текущей рыночной цене."""
         self._log("new_setup")
-        result = await self.consensus.analyze_new_setup(ticker, direction, extra_notes=extra_notes)
+        result = await self.consensus.analyze_new_setup(ticker, direction, extra_notes=extra_notes, user_id=user_id)
         result["trade_plan"] = await self._build_setup_plan(ticker, direction)
         return result
 
@@ -174,13 +174,14 @@ class AIOrchestrator:
         """Универсальный диспетчер по строковому типу запроса — для вызывающего
         кода, который сам не знает заранее, какой метод вызывать (например,
         будущий парсер свободного текста)."""
+        user_id = kwargs.get("user_id", "default")
         if request_type == "open_position":
-            return await self.review_open_position(kwargs["position"])
+            return await self.review_open_position(kwargs["position"], user_id=user_id)
         if request_type == "closed_trade":
-            return await self.review_closed_trade(kwargs["trade"])
+            return await self.review_closed_trade(kwargs["trade"], user_id=user_id)
         if request_type == "new_setup":
             return await self.evaluate_new_setup(
-                kwargs["ticker"], kwargs["direction"], extra_notes=kwargs.get("extra_notes", "")
+                kwargs["ticker"], kwargs["direction"], extra_notes=kwargs.get("extra_notes", ""), user_id=user_id
             )
         raise ValueError(f"AIOrchestrator: неизвестный тип запроса '{request_type}', ожидается один из {REQUEST_TYPES}")
 

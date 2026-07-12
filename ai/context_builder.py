@@ -7,6 +7,7 @@ from services.bingx_api import (
     _calculate_atr, _detect_market_regime
 )
 from ai.trader_context import build_trader_context, format_trader_context_summary
+from ai.risk_profile import build_risk_profile_context
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class ContextBuilder:
 
         return context
 
-    def _build_history_context(self) -> dict:
+    def _build_history_context(self, user_id: str = 'default') -> dict:
         # Раньше здесь же считался revenge_score/fomo_score/overtrading_score/
         # premature_exit_score/tilt_probability (_calculate_behavior_metrics) —
         # четвёртая независимая реализация поведенческого скоринга поверх
@@ -136,13 +137,13 @@ class ContextBuilder:
         }
 
         try:
-            stats = self.db.get_stats()
+            stats = self.db.get_stats(user_id=user_id)
             context["stats"] = stats
         except Exception as e:
             logger.error(f"Ошибка получения статистики: {e}")
 
         try:
-            trades = self.db.get_closed_trades(limit=50)
+            trades = self.db.get_closed_trades(limit=50, user_id=user_id)
             for t in trades:
                 context["recent_trades"].append({
                     "symbol": t.get("symbol", ""),
@@ -172,17 +173,18 @@ class ContextBuilder:
 
         return context
 
-    async def build_for_open_position(self, position: dict) -> dict:
+    async def build_for_open_position(self, position: dict, user_id: str = "default") -> dict:
         ticker_info = None
         symbol = position.get("symbol", "")
         if symbol:
             ticker_info = await self._build_ticker_info(symbol)
 
-        market, portfolio, history, trader_context = await asyncio.gather(
+        market, portfolio, history, trader_context, risk_profile = await asyncio.gather(
             self._build_market_context(),
             self._build_portfolio_context(),
-            asyncio.to_thread(self._build_history_context),
-            asyncio.to_thread(build_trader_context, self.db, symbol),
+            asyncio.to_thread(self._build_history_context, user_id),
+            asyncio.to_thread(build_trader_context, self.db, symbol, user_id),
+            asyncio.to_thread(build_risk_profile_context, self.db, user_id),
         )
 
         return {
@@ -202,19 +204,21 @@ class ContextBuilder:
             "history": history,
             "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,
+            "risk_profile": risk_profile,
         }
 
-    async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "") -> dict:
+    async def build_for_new_setup(self, ticker: str, direction: str, extra_notes: str = "", user_id: str = "default") -> dict:
         symbol = ticker
         if not symbol.endswith("-USDT"):
             symbol = f"{ticker}-USDT"
 
         ticker_info = await self._build_ticker_info(symbol)
-        market, portfolio, history, trader_context = await asyncio.gather(
+        market, portfolio, history, trader_context, risk_profile = await asyncio.gather(
             self._build_market_context(),
             self._build_portfolio_context(),
-            asyncio.to_thread(self._build_history_context),
-            asyncio.to_thread(build_trader_context, self.db, symbol),
+            asyncio.to_thread(self._build_history_context, user_id),
+            asyncio.to_thread(build_trader_context, self.db, symbol, user_id),
+            asyncio.to_thread(build_risk_profile_context, self.db, user_id),
         )
 
         logger.info(f"CONTEXT BUILDER (setup): ticker_info={ticker_info}, market_trend={market.get('trend')}")
@@ -227,9 +231,10 @@ class ContextBuilder:
             "history": history,
             "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,
+            "risk_profile": risk_profile,
         }
 
-    async def build_for_closed_trade(self, trade: dict, score_result: dict = None) -> dict:
+    async def build_for_closed_trade(self, trade: dict, score_result: dict = None, user_id: str = "default") -> dict:
         symbol = trade.get("symbol", "")
         # portfolio (баланс) раньше здесь не собирался вообще — в отличие от
         # build_for_open_position/build_for_new_setup. Из-за этого
@@ -237,11 +242,12 @@ class ContextBuilder:
         # balance даже если бы вызывающий код его передавал (см.
         # TRADER_DNA_V1.md §1.1, DNA v2) — context.get("balance") всегда был
         # 0 просто потому, что баланс никогда не запрашивался для этого пути.
-        market, portfolio, history, trader_context = await asyncio.gather(
+        market, portfolio, history, trader_context, risk_profile = await asyncio.gather(
             self._build_market_context(),
             self._build_portfolio_context(),
-            asyncio.to_thread(self._build_history_context),
-            asyncio.to_thread(build_trader_context, self.db, symbol),
+            asyncio.to_thread(self._build_history_context, user_id),
+            asyncio.to_thread(build_trader_context, self.db, symbol, user_id),
+            asyncio.to_thread(build_risk_profile_context, self.db, user_id),
         )
 
         return {
@@ -266,6 +272,7 @@ class ContextBuilder:
             "history": history,
             "memory": format_trader_context_summary(trader_context),
             "trader_context": trader_context,
+            "risk_profile": risk_profile,
         }
 
     async def _build_ticker_info(self, symbol: str) -> dict:
