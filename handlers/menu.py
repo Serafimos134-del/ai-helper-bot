@@ -24,6 +24,10 @@ from handlers.ai import (
 )
 from handlers.journal import show_journal
 from handlers.onboarding import handle_awaiting_bingx_key, handle_awaiting_bingx_secret
+from handlers.risk_profile import (
+    RISK_ONBOARDING_STATES, handle_awaiting_risk_level, handle_awaiting_trading_style,
+    handle_awaiting_experience_level, handle_awaiting_risk_goal,
+)
 from handlers.system import show_help
 from services.comment_manager import save_comment
 
@@ -65,6 +69,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('comment_order_id', None)
             context.user_data.pop('entry_order_id', None)
             await update.message.reply_text("Отменено.", reply_markup=trading_menu_keyboard())
+            return
+        if state in RISK_ONBOARDING_STATES:
+            context.user_data['state'] = None
+            context.user_data.pop('risk_profile_draft', None)
+            await update.message.reply_text("Отменено.", reply_markup=main_menu_keyboard())
             return
 
     if state in ('entering_comment_inline', 'entering_exit_reason', 'entering_entry_reason'):
@@ -119,6 +128,18 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if state == 'consilium_setup_input':
         await consilium_process_setup(update, context)
+        return
+    if state == 'awaiting_risk_level':
+        await handle_awaiting_risk_level(update, context)
+        return
+    if state == 'awaiting_trading_style':
+        await handle_awaiting_trading_style(update, context)
+        return
+    if state == 'awaiting_experience_level':
+        await handle_awaiting_experience_level(update, context)
+        return
+    if state == 'awaiting_risk_goal':
+        await handle_awaiting_risk_goal(update, context)
         return
 
     if text == BTN_TRADING:

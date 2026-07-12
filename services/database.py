@@ -185,6 +185,17 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, notif_type, sent_date)
                 );
+                CREATE TABLE IF NOT EXISTS user_risk_profile (
+                    user_id TEXT PRIMARY KEY,
+                    risk_level TEXT,
+                    trading_style TEXT,
+                    experience_level TEXT,
+                    risk_goal TEXT,
+                    risk_score INTEGER,
+                    risk_score_components TEXT,
+                    onboarding_completed INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
                 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
             """)
@@ -461,6 +472,66 @@ class Database:
             return True
         except sqlite3.IntegrityError:
             return False
+
+    # ==================== risk profile ====================
+    def _ensure_risk_profile_row(self, user_id: str):
+        with self.transaction():
+            self._execute(
+                "INSERT OR IGNORE INTO user_risk_profile (user_id) VALUES (?)",
+                (user_id,)
+            )
+
+    def get_risk_profile(self, user_id: str) -> dict:
+        row = self._execute(
+            "SELECT * FROM user_risk_profile WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_risk_profile(self, user_id: str, risk_level: str = None, trading_style: str = None,
+                          experience_level: str = None, risk_goal: str = None):
+        """Заявленный пользователем профиль (п.1 ТЗ) — не путать с
+        фактическим Risk Score (см. save_risk_score), тот считается
+        отдельно из реальных сделок (ai/risk_profile.py)."""
+        self._ensure_risk_profile_row(user_id)
+        fields, params = [], []
+        for col, val in (
+            ('risk_level', risk_level), ('trading_style', trading_style),
+            ('experience_level', experience_level), ('risk_goal', risk_goal),
+        ):
+            if val is not None:
+                fields.append(f"{col} = ?")
+                params.append(val)
+        if not fields:
+            return
+        params.append(user_id)
+        with self.transaction():
+            self._execute(
+                f"UPDATE user_risk_profile SET {', '.join(fields)}, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                tuple(params)
+            )
+
+    def complete_risk_onboarding(self, user_id: str):
+        self._ensure_risk_profile_row(user_id)
+        with self.transaction():
+            self._execute(
+                "UPDATE user_risk_profile SET onboarding_completed = 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (user_id,)
+            )
+
+    def save_risk_score(self, user_id: str, risk_score: int, components: dict):
+        """Персистит последний посчитанный Risk Score (ai/risk_profile.py:
+        compute_risk_score) — AI Core (ai/context_builder.py) читает этот
+        снимок синхронно из БД, не пересчитывает заново на каждый вызов
+        консилиума (это требовало бы лишнего live-запроса баланса на
+        каждый /consilium)."""
+        import json as _json
+        self._ensure_risk_profile_row(user_id)
+        with self.transaction():
+            self._execute(
+                "UPDATE user_risk_profile SET risk_score = ?, risk_score_components = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (risk_score, _json.dumps(components, ensure_ascii=False), user_id)
+            )
 
     # ==================== behavior alerts engine ====================
     def add_behavior_event(self, user_id: str, event_type: str, severity: str, metadata: str, order_id: str = None):

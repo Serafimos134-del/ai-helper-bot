@@ -91,6 +91,8 @@ async def show_help(update: Update):
         "/setkeys — привязать/обновить BingX API-ключи (только чтение)\n"
         "/subscribe — оплатить/продлить подписку\n"
         "/notifications — вкл/выкл ежедневный отчёт\n"
+        "/riskprofile — заполнить риск-профиль\n"
+        "/riskscore — фактический Risk Score по твоим сделкам\n"
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/calc — калькулятор позиции\n"

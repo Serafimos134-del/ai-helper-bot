@@ -3,6 +3,7 @@ import logging
 import json
 from ai.providers.base_provider import BaseProvider
 from ai.trader_context import compute_dna_adjustment
+from ai.risk_profile import compute_risk_profile_adjustment
 from ai.engines.structure_arbiter import get_structure_override, structure_score
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,8 @@ class JudgeAgent:
     async def synthesize(self, market_json: str, risk_json: str, psychology_json: str,
                          mode: str = None, trade_score: int = None,
                          confidence: float = None, disagreement: float = None,
-                         trader_context: dict = None, position_plan: dict = None) -> str:
+                         trader_context: dict = None, position_plan: dict = None,
+                         risk_profile: dict = None) -> str:
         try:
             market = json.loads(market_json) if isinstance(market_json, str) else market_json
         except json.JSONDecodeError:
@@ -106,6 +108,15 @@ class JudgeAgent:
         if dna_adjustment["active"] and dna_adjustment["score_delta"] != 0:
             final_score = int(max(0, min(100, final_score + dna_adjustment["score_delta"])))
 
+        # Персональная модель риска (задача от 12.07.2026, ai/risk_profile.py)
+        # — тот же advisory-паттерн, что и dna_adjustment выше: ограниченная
+        # поправка на основе фактического Risk Score пользователя (не
+        # заявленного профиля — тот используется только для сравнения
+        # заявленный/фактический в handlers/risk_profile.py, не здесь).
+        risk_profile_adjustment = compute_risk_profile_adjustment(risk_profile)
+        if risk_profile_adjustment["active"] and risk_profile_adjustment["score_delta"] != 0:
+            final_score = int(max(0, min(100, final_score + risk_profile_adjustment["score_delta"])))
+
         # Жёсткий override (DECISION_FLOW_AUDIT.md, Вариант C, требование 3):
         # пробой инвалидации или достижение полного TP — объективный факт
         # рынка, не мнение, которое можно перевесить скором. Форсирует
@@ -134,6 +145,10 @@ class JudgeAgent:
             warnings.append(
                 f"Персональная поправка {dna_adjustment['score_delta']:+d}: {dna_adjustment['reason']}"
             )
+        if risk_profile_adjustment["active"] and risk_profile_adjustment["score_delta"] != 0:
+            warnings.append(
+                f"Риск-профиль {risk_profile_adjustment['score_delta']:+d}: {risk_profile_adjustment['reason']}"
+            )
         if structure_override:
             warnings.insert(0, f"⚡ Принудительное решение: {structure_override['reason']}")
 
@@ -143,6 +158,7 @@ class JudgeAgent:
             "final_score": final_score,
             "base_score": base_score,
             "dna_adjustment": dna_adjustment,
+            "risk_profile_adjustment": risk_profile_adjustment,
             "structure_score": struct_score,
             "structure_override": structure_override,
             "verdict": verdict,

@@ -114,7 +114,7 @@ async def _check_behavior_on_close(bot, chat_id: str, user_id: str, closed_trade
         logger.error(f"Ошибка Behavior Engine (close): {e}")
 
 
-async def _analyze_new_trade(trade: dict):
+async def _analyze_new_trade(trade: dict, user_id: str = 'default'):
     """Trader Memory (Этап 8): сохраняет AI-разбор позиции в момент открытия.
     Не отправляет уведомление — /consilium (Этап 4) уже даёт разбор по
     запросу, здесь только персистентность для будущего Trader DNA (Этап 9)."""
@@ -123,7 +123,7 @@ async def _analyze_new_trade(trade: dict):
         return
     try:
         orchestrator = get_orchestrator()
-        analysis = await orchestrator.review_open_position(trade)
+        analysis = await orchestrator.review_open_position(trade, user_id=user_id)
         payload = {
             'market_review':    analysis.get('market_review'),
             'risk_review':      analysis.get('risk_review'),
@@ -137,10 +137,10 @@ async def _analyze_new_trade(trade: dict):
         logger.error(f"Ошибка анализа открытия позиции {order_id}: {e}")
 
 
-async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict):
+async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: dict, stored: dict, user_id: str = 'default'):
     try:
         orchestrator = get_orchestrator()
-        analysis = await orchestrator.review_closed_trade(closed_trade)
+        analysis = await orchestrator.review_closed_trade(closed_trade, user_id=user_id)
         # score_breakdown теперь считает сам AIOrchestrator (единый источник —
         # раньше auto_sync.py и core/router.py независимо решали, вызывать
         # TradeScorer или нет, и router.py вообще не сохранял оценку).
@@ -324,7 +324,7 @@ async def _sync_trades_impl(bot, chat_id: str, user_id: str = 'default') -> dict
         # Trader Memory (Этап 8): анализ открытия раньше нигде не сохранялся —
         # AI-разбор позиции существовал только "по запросу" через /consilium
         # и не оставлял следа в БД. Фоново, чтобы не блокировать sync.
-        asyncio.create_task(_analyze_new_trade(trade))
+        asyncio.create_task(_analyze_new_trade(trade, user_id))
 
     for oid, stored in truly_closed.items():
         closed_trade = _build_closed_trade(stored, user_id)
@@ -333,7 +333,7 @@ async def _sync_trades_impl(bot, chat_id: str, user_id: str = 'default') -> dict
             results['new_closed'].append(stored)
             await _notify_closed_trade(bot, chat_id, closed_trade, closed_trade['realized_pnl'], new_id)
             asyncio.create_task(_check_behavior_on_close(bot, chat_id, user_id, closed_trade))
-            asyncio.create_task(_analyze_and_notify(bot, chat_id, new_id, closed_trade, stored))
+            asyncio.create_task(_analyze_and_notify(bot, chat_id, new_id, closed_trade, stored, user_id))
         except sqlite3.IntegrityError:
             logger.warning(f"Закрытие {oid}: дубликат в closed_trades, принудительно удаляю из open_trades")
             await asyncio.to_thread(db.delete_open_trade_by_order_id, oid)
