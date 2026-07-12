@@ -11,6 +11,7 @@ handlers/risk_profile.py
 через require_auth(), как большинство фич.
 """
 
+import asyncio
 import logging
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -144,7 +145,12 @@ async def riskscore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_current_user_id(context)
     msg = await update.message.reply_text("📊 Считаю Risk Score по твоим сделкам...")
 
-    result = await compute_risk_score(db, user_id)
+    try:
+        result = await asyncio.wait_for(compute_risk_score(db, user_id), timeout=25)
+    except asyncio.TimeoutError:
+        await msg.edit_text("❌ Не дождался ответа от биржи/БД. Попробуй ещё раз чуть позже: /riskscore")
+        return
+
     if result['score'] is None:
         await msg.edit_text(
             f"Недостаточно данных для расчёта — нужно минимум 5 закрытых сделок "
