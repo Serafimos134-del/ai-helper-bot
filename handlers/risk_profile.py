@@ -195,4 +195,10 @@ async def riskscore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("\n💡 Заполни риск-профиль (/riskprofile), чтобы сравнить заявленный и фактический риск.")
 
-    await msg.edit_text("\n".join(lines), parse_mode='Markdown', reply_markup=main_menu_keyboard())
+    # editMessageText (msg.edit_text) в Telegram Bot API принимает только
+    # InlineKeyboardMarkup или None в reply_markup — ReplyKeyboardMarkup
+    # (main_menu_keyboard()) можно приложить только к НОВОМУ сообщению, не
+    # к редактированию существующего (иначе telegram.error.BadRequest:
+    # "Inline keyboard expected"). Обычная клавиатура и так остаётся
+    # видимой с прошлых сообщений — повторно прикреплять не нужно.
+    await msg.edit_text("\n".join(lines), parse_mode='Markdown')
