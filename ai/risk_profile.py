@@ -32,6 +32,7 @@ Risk Score не персистится на каждый вызов AI Core — 
 на каждый /consilium.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -189,10 +190,17 @@ async def compute_risk_score(db, user_id: str) -> dict:
     """Живой пересчёт (нужен текущий баланс с биржи) — вызывать явно
     (/riskscore), не на каждый AI-запрос. Требует, чтобы BingX-ключи
     пользователя уже были установлены в contextvar (services/bingx_api.py)
-    вызывающим кодом — как любой другой authenticated-вызов."""
+    вызывающим кодом — как любой другой authenticated-вызов.
+
+    Все синхронные вызовы БД — через asyncio.to_thread (тот же паттерн,
+    что везде в core/scheduler.py): без этого они блокируют event loop
+    целиком на время выполнения, включая await get_balance() ниже и
+    обработку ВСЕХ остальных апдейтов бота, пока идёт запрос — при
+    случайной коллизии с фоновой джобой, держащей self.lock БД
+    (core/scheduler.py), это ощущается как зависание бота."""
     from services.bingx_api import get_balance
 
-    closed_trades = db.get_closed_trades(limit=100, user_id=user_id)
+    closed_trades = await asyncio.to_thread(db.get_closed_trades, limit=100, user_id=user_id)
     if len(closed_trades) < MIN_TRADES_FOR_SCORE:
         return {
             'score': None, 'label': None, 'confidence': 'insufficient_data',
@@ -200,17 +208,25 @@ async def compute_risk_score(db, user_id: str) -> dict:
         }
 
     perf = PerformanceEngine(db)
-    report = perf.get_full_report(user_id=user_id)
-    open_trades = db.get_open_trades(user_id=user_id)
+    report = await asyncio.to_thread(perf.get_full_report, user_id=user_id)
+    open_trades = await asyncio.to_thread(db.get_open_trades, user_id=user_id)
 
-    balance_result = await get_balance()
+    # get_balance() уже сам ограничен по времени (httpx timeout=10s x до
+    # 3 попыток внутри _request_with_retry, см. services/bingx_api.py) —
+    # но это до ~30 секунд суммарно без обратной связи пользователю, что
+    # на практике воспринимается как "подвис". Явный внешний таймаут даёт
+    # быстрый и понятный ответ вместо тишины.
+    try:
+        balance_result = await asyncio.wait_for(get_balance(), timeout=15)
+    except asyncio.TimeoutError:
+        balance_result = {'success': False, 'error': 'таймаут запроса баланса к бирже'}
     balance = balance_result.get('equity', 0) if balance_result.get('success') else 0
 
     leverage_score = _leverage_component(report['leverage']['avg_leverage'])
     position_score, position_detail = _position_size_component(open_trades, balance)
     drawdown_score, drawdown_detail = _drawdown_component(closed_trades, balance)
     discipline_score, discipline_detail = _stop_discipline_component(closed_trades)
-    overtrading_score, overtrading_detail = _overtrading_component(db, user_id)
+    overtrading_score, overtrading_detail = await asyncio.to_thread(_overtrading_component, db, user_id)
     dca_score, dca_detail = _dca_component(closed_trades)
 
     components = {
