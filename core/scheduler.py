@@ -14,7 +14,6 @@ from telegram.ext import ContextTypes
 from services.bingx_api import get_balance, set_bingx_credentials, clear_bingx_credentials
 from services.database import Database
 from services.auto_sync import sync_trades
-from services.trade_manager import TradeManager
 from services.crypto_pay import get_invoice_statuses
 from core.container import get_orchestrator
 from utils.liquidation import get_volatility_class
@@ -402,7 +401,6 @@ def _build_status_text(balance: dict, open_positions: list, db: Database) -> str
         text += "❌ Не удалось получить баланс\n\n"
 
     if open_positions:
-        tm = TradeManager(db)
         text += "*Открытые позиции:*\n"
         for pos in open_positions:
             symbol = pos.get('symbol', '?')
@@ -421,10 +419,20 @@ def _build_status_text(balance: dict, open_positions: list, db: Database) -> str
             inval = pos.get('invalidation_sl')
             if inval:
                 text += f"   🛑 Invalidation SL: ${float(inval):.4f}\n"
-            tp_zones = tm.get_tp_zones(pos.get('orderId', ''))
-            if tp_zones:
-                zones_str = ', '.join([f"${z:.4f}" for z in tp_zones])
-                text += f"   🎯 TP Zones: {zones_str}\n"
+            # pos уже содержит tp_zones напрямую из уже корректно
+            # отфильтрованного по user_id open_positions — раньше здесь был
+            # повторный поиск через TradeManager.get_tp_zones(order_id) без
+            # user_id (искал только среди сделок владельца, для остальных
+            # пользователей молча ничего не находил, см. services/
+            # trade_manager.py).
+            if pos.get('tp_zones'):
+                try:
+                    tp_zones = json.loads(pos['tp_zones'])
+                except (ValueError, TypeError):
+                    tp_zones = []
+                if tp_zones:
+                    zones_str = ', '.join([f"${float(z):.4f}" for z in tp_zones])
+                    text += f"   🎯 TP Zones: {zones_str}\n"
 
         text += f"\n🔒 *Всего позиций:* {len(open_positions)}/2\n"
     else:

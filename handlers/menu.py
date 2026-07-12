@@ -147,7 +147,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_AI:
         await update.message.reply_text("🤖 *AI-Ассистент*\nВыбери, что хочешь проанализировать:", parse_mode='Markdown', reply_markup=ai_menu_keyboard())
     elif text == BTN_JOURNAL:
-        await show_journal(update)
+        await show_journal(update, context)
     elif text == BTN_HELP:
         await show_help(update)
     elif text == BTN_BACK:

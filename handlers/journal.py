@@ -4,7 +4,9 @@ Journal handler — displays closed trades history.
 """
 
 from telegram import Update
+from telegram.ext import ContextTypes
 from core.container import get_db
+from core.user_context import get_current_user_id
 
 
 def _format_duration(holding_minutes) -> str:
@@ -26,10 +28,10 @@ def _escape(text: str) -> str:
     return text
 
 
-async def show_journal(update: Update):
+async def show_journal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     msg = await update.message.reply_text("📓 Загружаю журнал...")
-    trades = db.get_closed_trades(limit=500)
+    trades = db.get_closed_trades(limit=500, user_id=get_current_user_id(context))
     if not trades:
         await msg.edit_text("Нет закрытых сделок для журнала.")
         return

@@ -14,7 +14,7 @@ from core.billing import SUBSCRIPTION_PLANS, SUBSCRIPTION_ASSET
 from core.user_context import require_auth, get_current_user_id
 from services.bingx_api import get_balance
 from services.auto_sync import sync_trades
-from core.scheduler import update_pinned_status
+from core.scheduler import update_pinned_status, _build_status_text
 from services.trade_manager import TradeManager
 from utils.telegram_text import clean_markdown as _clean, send_long as _send_long, strip_llm_self_correction
 
@@ -96,9 +96,7 @@ async def show_help(update: Update):
         "/riskscore — фактический Risk Score по твоим сделкам\n"
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
-        "/calc — калькулятор позиции\n"
         "/setidea — установить торговую идею и уровни\n"
-        "/analyze — AI-анализ позиции (стопы, тейки, решение)\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
         "/test\\_behavior — тест детекторов поведения\n"
         "/health — состояние систем"
@@ -161,18 +159,39 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Пока owner-only (не общий require_auth): закреплённый статус —
-    # общее состояние ('bot_state', см. core/scheduler.py), не per-user —
-    # открывать его всем подписчикам сейчас означало бы показывать чужой
-    # баланс/позиции. Полноценный per-user статус — Этап 6/7 миграции.
-    if not context.user_data.get('is_owner'):
+    # Владелец — закреплённое сообщение с общим состоянием ('bot_state',
+    # core/scheduler.py) — исторический путь с pinned-сообщением, менять
+    # не стал. Остальные подписчики (Этап 6/7 миграции — уже реализован,
+    # см. core/scheduler.py:daily_report_job) получают одноразовый снимок
+    # своего баланса/позиций — той же функцией форматирования, что и
+    # ежедневный отчёт, просто не закреплённым и по запросу. Раньше эта
+    # ветка была owner-only без обратной связи остальным — /status был
+    # в /help у всех, но молча ничего не отвечал не-владельцу.
+    if context.user_data.get('is_owner'):
+        db = get_db()
+        await update_pinned_status(context, db, CHAT_ID, force=True)
+        await update.message.reply_text(
+            "📌 Статус обновлён. Смотри закреплённое сообщение.",
+            reply_markup=main_menu_keyboard()
+        )
         return
+
+    if not await require_auth(update, context):
+        return
+
     db = get_db()
-    await update_pinned_status(context, db, CHAT_ID, force=True)
-    await update.message.reply_text(
-        "📌 Статус обновлён. Смотри закреплённое сообщение.",
-        reply_markup=main_menu_keyboard()
-    )
+    user_id = get_current_user_id(context)
+    user = db.get_user(user_id)
+    if not user or not user.get('bingx_api_key'):
+        await update.message.reply_text(
+            "Сначала привяжи BingX-ключи: /setkeys", reply_markup=main_menu_keyboard()
+        )
+        return
+
+    balance = await get_balance()
+    open_positions = db.get_open_trades(user_id=user_id)
+    text, _ = _build_status_text(balance, open_positions, db)
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
 
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
