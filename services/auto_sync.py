@@ -9,7 +9,8 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from services.bingx_api import get_open_positions, get_kline
+from services.exchange_api import get_open_positions
+from services.bingx_api import get_kline
 from services.database import Database
 from services.behavior_engine import BehaviorEngine, format_alert
 from ai.trade_scorer import TradeScorer

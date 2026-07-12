@@ -247,6 +247,12 @@ class Database:
                     ('bingx_secret_key', 'TEXT'),
                     ('last_active_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
                     ('notifications_enabled', 'INTEGER NOT NULL DEFAULT 1'),
+                    # Exchange Adapter Layer (services/exchanges/) — какую биржу
+                    # использует пользователь. Пока хранение ключей остаётся в
+                    # bingx_api_key/bingx_secret_key (единственная реализованная
+                    # биржа) — при добавлении второй потребуется отдельная
+                    # схема (per-exchange credentials), не сейчас.
+                    ('exchange', "TEXT NOT NULL DEFAULT 'bingx'"),
                 ],
                 'behavior_events': [
                     ('order_id', 'TEXT'),

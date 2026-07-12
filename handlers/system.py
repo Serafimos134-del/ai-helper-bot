@@ -12,13 +12,35 @@ from core.container import get_db, get_ai_analyzer
 from core.keyboards import main_menu_keyboard
 from core.billing import SUBSCRIPTION_PLANS, SUBSCRIPTION_ASSET
 from core.user_context import require_auth, get_current_user_id
-from services.bingx_api import get_balance
+from services.exchange_api import get_balance
 from services.auto_sync import sync_trades
 from core.scheduler import update_pinned_status, _build_status_text
 from services.trade_manager import TradeManager
 from utils.telegram_text import clean_markdown as _clean, send_long as _send_long, strip_llm_self_correction
 
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')  # owner-only команды на переходный период миграции
+
+# Юридический минимум (задача от 12.07.2026) — текст не мой, дан дословно,
+# менять нельзя без явного запроса. Показывается на каждый /start (не
+# только новым пользователям — юридически показ должен предшествовать
+# использованию, а не быть спрятан за подпиской) и по команде /disclaimer.
+DISCLAIMER_TEXT = (
+    "⚠️ Дисклеймер\n\n"
+    "AI Trading Assistant предоставляет аналитическую информацию, статистику "
+    "и рекомендации, основанные на алгоритмах анализа данных. Сервис не "
+    "является финансовым консультантом, брокером или управляющим активами. "
+    "Любые торговые решения принимаются пользователем самостоятельно и под "
+    "его полную ответственность. Торговля криптовалютами связана с высоким "
+    "риском потери капитала. Используя сервис, пользователь подтверждает "
+    "понимание данных рисков.\n\n"
+    "Для подключения биржи допускаются только API-ключи с правами Read Only. "
+    "Сервис не осуществляет торговые операции и не имеет доступа к выводу "
+    "средств пользователя."
+)
+
+
+async def disclaimer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(DISCLAIMER_TEXT)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,6 +82,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, parse_mode='Markdown')
 
+    await update.message.reply_text(DISCLAIMER_TEXT)
+
 
 async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вкл/выкл ежедневный отчёт (core/scheduler.py:daily_report_job).
@@ -99,7 +123,8 @@ async def show_help(update: Update):
         "/setidea — установить торговую идею и уровни\n"
         "/ai\\_fix — AI-разбор серии убыточных сделок\n"
         "/test\\_behavior — тест детекторов поведения\n"
-        "/health — состояние систем"
+        "/health — состояние систем\n"
+        "/disclaimer — юридический дисклеймер"
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 

@@ -188,8 +188,8 @@ def _stop_discipline_component(closed_trades: list) -> tuple:
 
 async def compute_risk_score(db, user_id: str) -> dict:
     """Живой пересчёт (нужен текущий баланс с биржи) — вызывать явно
-    (/riskscore), не на каждый AI-запрос. Требует, чтобы BingX-ключи
-    пользователя уже были установлены в contextvar (services/bingx_api.py)
+    (/riskscore), не на каждый AI-запрос. Требует, чтобы биржа/ключи
+    пользователя уже были установлены в contextvar (services/exchange_api.py)
     вызывающим кодом — как любой другой authenticated-вызов.
 
     Все синхронные вызовы БД — через asyncio.to_thread (тот же паттерн,
@@ -198,7 +198,7 @@ async def compute_risk_score(db, user_id: str) -> dict:
     обработку ВСЕХ остальных апдейтов бота, пока идёт запрос — при
     случайной коллизии с фоновой джобой, держащей self.lock БД
     (core/scheduler.py), это ощущается как зависание бота."""
-    from services.bingx_api import get_balance
+    from services.exchange_api import get_balance
 
     closed_trades = await asyncio.to_thread(db.get_closed_trades, limit=100, user_id=user_id)
     if len(closed_trades) < MIN_TRADES_FOR_SCORE:

@@ -1,7 +1,7 @@
 """
 handlers/onboarding.py
 Мультитенантность, Этап 2 (см. MULTITENANCY_MIGRATION_PLAN.md) — привязка
-пользователем своих BingX API-ключей (только чтение) + валидация реальным
+пользователем своих API-ключей биржи (только чтение) + валидация реальным
 запросом к бирже перед сохранением (зашифрованно, services/crypto_utils.py).
 
 /setkeys открыт независимо от подписки: привязка ключей — часть онбординга,
@@ -9,6 +9,13 @@ handlers/onboarding.py
 Crypto Pay, ещё не подключён); сами торговые/AI-хендлеры уже гейтятся
 require_auth() (Этап 3), так что открытый /setkeys не даёт доступа ни к
 чему платному сам по себе.
+
+Через Exchange Adapter Layer (services/exchanges/), но пока хардкодит
+биржу 'bingx' — единственная полностью реализованная (задача от
+12.07.2026: "первой полностью рабочей биржей остаётся BingX"). Выбор
+биржи в UI /setkeys — будущее расширение, не меняющее сам факт, что
+дальше по коду (AI Core, фоновые джобы) уже работает общий адаптерный
+интерфейс, не завязанный на BingX напрямую.
 """
 
 import asyncio
@@ -19,7 +26,9 @@ from telegram.ext import ContextTypes
 from core.container import get_db
 from core.keyboards import cancel_keyboard, main_menu_keyboard
 from core.user_context import get_current_user_id, require_auth
-from services.bingx_api import validate_keys, set_bingx_credentials, clear_bingx_credentials
+from services.exchange_api import validate_keys, set_current_exchange, clear_current_exchange
+
+_EXCHANGE = 'bingx'
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +83,7 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
         return
 
     msg = await update.effective_chat.send_message("⏳ Проверяю ключи на бирже...")
-    result = await validate_keys(api_key, secret_key)
+    result = await validate_keys(_EXCHANGE, api_key, secret_key)
 
     if not result.get('success'):
         await msg.edit_text(
@@ -105,7 +114,7 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
     # Фоново, чтобы не задерживать ответ пользователю — /riskscore (Этап
     # "персональная модель риска") требует минимум 5 закрытых сделок,
     # ждать их накопления через обычный периодический sync могло бы занять
-    # недели. Ключи передаём явно (set_bingx_credentials/clear в finally),
+    # недели. Ключи передаём явно (set_current_exchange/clear в finally),
     # а не полагаемся на ambient contextvar — тот к этому моменту уже
     # сброшен обратно middleware'ом (core/user_context.py) для этого же
     # запроса (validate_keys() сама восстанавливает прежнее значение через
@@ -117,7 +126,7 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
 
 async def _run_background_history_import(user_id: str, chat_id, api_key: str, secret_key: str, bot):
     from services.history_import import import_trade_history
-    set_bingx_credentials(api_key, secret_key)
+    set_current_exchange(_EXCHANGE, api_key, secret_key)
     try:
         db = get_db()
         result = await import_trade_history(db, user_id)
@@ -144,7 +153,7 @@ async def _run_background_history_import(user_id: str, chat_id, api_key: str, se
     except Exception as e:
         logger.error(f"_run_background_history_import: ошибка для {user_id}: {e}")
     finally:
-        clear_bingx_credentials()
+        clear_current_exchange()
 
 
 async def importhistory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

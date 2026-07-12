@@ -22,6 +22,7 @@ from handlers.system import (
     setidea_command,                      # internal/admin
     debug_positions_command,              # временная diagnostic-команда, см. handlers/system.py
     notifications_command,
+    disclaimer_command,
 )
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
@@ -81,6 +82,7 @@ def main():
     app.add_handler(CommandHandler('riskprofile',     riskprofile_command))
     app.add_handler(CommandHandler('riskscore',       riskscore_command))
     app.add_handler(CommandHandler('importhistory',   importhistory_command))
+    app.add_handler(CommandHandler('disclaimer',      disclaimer_command))
 
     # Debug / admin (можно оставить для тестов)
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))

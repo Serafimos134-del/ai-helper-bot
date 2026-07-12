@@ -1,10 +1,10 @@
 import asyncio
 import logging
 from services.database import Database
+from services.exchange_api import get_balance, get_open_positions
 from services.bingx_api import (
-    get_balance, get_open_positions, get_ticker, get_top_tickers,
-    get_funding_rate, get_open_interest, get_kline,
-    _calculate_atr, _detect_market_regime
+    get_ticker, get_top_tickers, get_funding_rate, get_open_interest,
+    get_kline, _calculate_atr, _detect_market_regime
 )
 from ai.trader_context import build_trader_context, format_trader_context_summary
 from ai.risk_profile import build_risk_profile_context
