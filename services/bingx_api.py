@@ -4,6 +4,7 @@ import time
 import asyncio
 import os
 import logging
+import contextvars
 from urllib.parse import urlencode
 import httpx
 from services.api_cache import api_cache
@@ -17,15 +18,45 @@ BASE_URL = 'https://open-api.bingx.com'
 MAX_RETRIES = 2
 RETRY_DELAY = 1
 
+# Мультитенантность (см. MULTITENANCY_MIGRATION_PLAN.md, Этап 1): ключи
+# конкретного пользователя для текущего asyncio-таска. Каждый Telegram-
+# апдейт обрабатывается в своём Task (core/user_context.py — middleware,
+# группа -1, вызывается раньше всех остальных хендлеров), поэтому
+# contextvars корректно изолируют ключи разных пользователей при
+# конкурентных запросах — без протаскивания api_key/secret_key параметром
+# через ContextBuilder/AIOrchestrator/ConsensusEngine (5+ слоёв вызовов).
+# Фоновые джобы (auto_sync_job/position_watch_job) устанавливают ключи
+# сами на каждой итерации по пользователю. Если контекст не установлен
+# (например, старые/ещё не мигрированные пути) — используется глобальный
+# fallback из .env, чтобы не сломать текущий single-user режим.
+_credentials_var: contextvars.ContextVar = contextvars.ContextVar('bingx_credentials', default=None)
+
+
+def set_bingx_credentials(api_key: str, secret_key: str) -> None:
+    """Устанавливает BingX-ключи текущего пользователя для этого asyncio-таска."""
+    _credentials_var.set((api_key or '', secret_key or ''))
+
+
+def clear_bingx_credentials() -> None:
+    _credentials_var.set(None)
+
+
+def _get_credentials() -> tuple:
+    creds = _credentials_var.get()
+    if creds and creds[0] and creds[1]:
+        return creds
+    return (BINGX_API_KEY, BINGX_SECRET_KEY)
+
 
 def _get_timestamp() -> str:
     return str(int(time.time() * 1000))
 
 
 def _sign(params: dict) -> str:
+    _, secret_key = _get_credentials()
     query_string = urlencode(sorted(params.items()))
     signature = hmac.new(
-        BINGX_SECRET_KEY.encode('utf-8'),
+        secret_key.encode('utf-8'),
         query_string.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
@@ -51,8 +82,9 @@ async def _request(method: str, path: str, params: dict = None) -> dict:
         params = {}
     params['timestamp'] = _get_timestamp()
     params['signature'] = _sign(params)
+    api_key, _ = _get_credentials()
     headers = {
-        'X-BX-APIKEY': BINGX_API_KEY,
+        'X-BX-APIKEY': api_key,
         'Content-Type': 'application/json'
     }
     url = BASE_URL + path
