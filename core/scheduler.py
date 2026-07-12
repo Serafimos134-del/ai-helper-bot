@@ -193,6 +193,13 @@ async def crypto_pay_poll_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
     for payment in pending:
         status = statuses.get(str(payment['invoice_id']))
         if status != 'paid':
+            # Crypto Pay сам истекает счёт через 1 час (expires_in=3600,
+            # см. services/crypto_pay.py). Если это уже явный терминальный
+            # статус (не 'active' и не отсутствие ответа) — помечаем
+            # локально, иначе брошенный /subscribe навсегда остаётся
+            # 'active' и опрашивается каждую минуту без ограничения.
+            if status and status != 'active':
+                await asyncio.to_thread(db.mark_payment_expired, payment['invoice_id'])
             continue
 
         credited = await asyncio.to_thread(db.mark_payment_paid, payment['invoice_id'])
