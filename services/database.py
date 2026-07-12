@@ -418,6 +418,19 @@ class Database:
             )
         return dict(row)
 
+    def mark_payment_expired(self, invoice_id) -> None:
+        """Помечает неоплаченный счёт истёкшим — без этого брошенные
+        чек-ауты (Crypto Pay сам истекает инвойс через expires_in=3600,
+        см. services/crypto_pay.py) навсегда остаются status='active' и
+        get_pending_payments() опрашивает их у Crypto Pay бесконечно,
+        неограниченно накапливаясь с каждым непройденным до оплаты
+        /subscribe (см. core/scheduler.py:crypto_pay_poll_job)."""
+        with self.transaction():
+            self._execute(
+                "UPDATE payments SET status = 'expired' WHERE invoice_id = ? AND status = 'active'",
+                (str(invoice_id),)
+            )
+
     def set_bingx_keys(self, user_id: str, api_key: str, secret_key: str):
         with self.transaction():
             self._execute(

@@ -23,7 +23,22 @@ db = Database()
 trade_scorer = TradeScorer()
 behavior_engine = BehaviorEngine(db)
 
-_sync_lock = asyncio.Lock()
+_sync_locks: dict = {}
+
+
+def _get_sync_lock(user_id: str) -> asyncio.Lock:
+    """Лок per-user, а не один общий на всех (см. sync_trades) — иначе
+    рост числа подписчиков в multi_user_sync_job (core/scheduler.py,
+    последовательный перебор раз в 60с) систематически блокировал бы
+    быстрый 15-секундный auto_sync_job владельца на всё время своего
+    цикла. Словарь растёт по числу когда-либо синкавшихся user_id — это
+    просто мелкие Lock-объекты, не БД-строки, не проблема даже на тысячах
+    пользователей."""
+    lock = _sync_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _sync_locks[user_id] = lock
+    return lock
 _missing_cycles: dict = {}
 _missing_cycles_lock = asyncio.Lock()
 _MISSING_CYCLES_CATEGORY = 'missing_cycles'
@@ -209,16 +224,14 @@ async def _analyze_and_notify(bot, chat_id: str, trade_id: int, closed_trade: di
 async def sync_trades(bot, chat_id: str, user_id: str = 'default') -> dict:
     # user_id — параметр, не хардкод (см. MULTITENANCY_MIGRATION_PLAN.md,
     # Этап 3): ручной /sync передаёт реального вызывающего пользователя,
-    # фоновый auto_sync_job — пока 'default' (полноценный per-user фон —
-    # Этап 6, отдельно). _sync_lock общий на все вызовы (не per-user) —
-    # известное ограничение: конкурентные /sync разных пользователей не
-    # выполняются параллельно, один будет пропущен ("уже выполняется").
-    # Не критично для корректности данных, только для скорости — не
-    # исправлено в этом проходе, чтобы не расширять и без того большой diff.
-    if _sync_lock.locked():
-        logger.debug("Синхронизация пропущена (уже выполняется)")
+    # фоновый auto_sync_job — 'default' (владелец), multi_user_sync_job —
+    # реальный user_id каждого подписчика. Лок — per-user (_get_sync_lock),
+    # так что синк одного пользователя не блокирует синк другого.
+    lock = _get_sync_lock(user_id)
+    if lock.locked():
+        logger.debug(f"Синхронизация для {user_id} пропущена (уже выполняется)")
         return {'new_open': [], 'new_closed': []}
-    async with _sync_lock:
+    async with lock:
         return await _sync_trades_impl(bot, chat_id, user_id)
 
 
