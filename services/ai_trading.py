@@ -21,11 +21,11 @@ class AITradingAnalyzer:
             self.provider = None
             logger.warning("GROQ_API_KEY не найден. AI отключён.")
 
-    def analyze(self) -> str:
+    def analyze(self, user_id: str = 'default') -> str:
         """Основной AI-анализ статистики и последних сделок."""
         db = Database()
-        stats = db.get_stats()
-        closed = db.get_closed_trades(limit=15)
+        stats = db.get_stats(user_id=user_id)
+        closed = db.get_closed_trades(limit=15, user_id=user_id)
 
         if not closed:
             return (

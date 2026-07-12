@@ -47,6 +47,16 @@ def _fmt_price(val) -> str:
         return str(val)
 
 
+def _current_user_id(context: ContextTypes.DEFAULT_TYPE) -> str:
+    """user_id текущего пользователя, зарезолвленного middleware
+    (core/user_context.py, устанавливается в group=-1 до этого хендлера).
+    Нужен, чтобы find_trade_by_id/add_comment не отдавали чужую сделку по
+    trade_id из callback_data (простое число, потенциально подбираемое) —
+    см. MULTITENANCY_MIGRATION_PLAN.md, "разграничение данных"."""
+    user = context.user_data.get('user') if context.user_data else None
+    return user['user_id'] if user else 'default'
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -91,7 +101,7 @@ async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYP
         if len(parts) < 2:
             return
         trade_id = int(parts[1])
-        trade = db.find_trade_by_id(trade_id)
+        trade = db.find_trade_by_id(trade_id, user_id=_current_user_id(context))
         if trade:
             holding = trade.get('holding_minutes')
             duration_str = f"{holding} мин" if holding is not None else "—"
@@ -131,13 +141,13 @@ async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYP
         if len(parts) < 3:
             return
         trade_id = int(parts[2])
-        await generate_full_ai_analysis(query, trade_id)
+        await generate_full_ai_analysis(query, trade_id, _current_user_id(context))
     elif data.startswith("eval_"):
         parts = data.split("_", 1)
         if len(parts) < 2:
             return
         trade_id = int(parts[1])
-        await generate_ai_review(query, trade_id)
+        await generate_ai_review(query, trade_id, _current_user_id(context))
     elif data.startswith("entry_reason_"):
         parts = data.split("_", 2)
         if len(parts) < 3:
@@ -172,7 +182,7 @@ async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYP
         if len(parts) < 3:
             return
         trade_id = int(parts[2])
-        await generate_ai_review(query, trade_id)
+        await generate_ai_review(query, trade_id, _current_user_id(context))
     elif data == "skip_comment":
         await query.edit_message_text("Запись сохранена без комментария.")
     elif data.startswith("setup_"):
@@ -205,8 +215,8 @@ async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("Выбор сетапа отменён.")
 
 
-async def generate_ai_review(query, trade_id):
-    trade = db.find_trade_by_id(trade_id)
+async def generate_ai_review(query, trade_id, user_id: str = 'default'):
+    trade = db.find_trade_by_id(trade_id, user_id=user_id)
     if not trade:
         await query.edit_message_text("❌ Сделка не найдена.")
         return
@@ -228,8 +238,8 @@ async def generate_ai_review(query, trade_id):
     await query.edit_message_text(f"🤖 AI-оценка сделки #{trade_id}:\n\n{clean_markdown(review)}")
 
 
-async def generate_full_ai_analysis(query, trade_id):
-    trade = db.find_trade_by_id(trade_id)
+async def generate_full_ai_analysis(query, trade_id, user_id: str = 'default'):
+    trade = db.find_trade_by_id(trade_id, user_id=user_id)
     if not trade:
         await query.edit_message_text("❌ Сделка не найдена.")
         return
@@ -243,7 +253,7 @@ async def generate_full_ai_analysis(query, trade_id):
         # анализа оценка сделки в БД не обновлялась.
         score = analysis['score_breakdown']
         # Сохраняем все метрики, кроме setup_type (если уже был задан вручную, не перезаписываем)
-        existing = db.find_trade_by_id(trade_id)
+        existing = db.find_trade_by_id(trade_id, user_id=user_id)
         setup = existing.get('setup_type') if existing else None
         db.update_trade_metrics(
             trade_id,

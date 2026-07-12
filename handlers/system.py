@@ -10,32 +10,36 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from core.container import get_db, get_ai_analyzer
 from core.keyboards import main_menu_keyboard
+from core.billing import SUBSCRIPTION_PRICE_USDT, SUBSCRIPTION_PERIOD_DAYS, SUBSCRIPTION_ASSET
+from core.user_context import require_auth, get_current_user_id
 from services.bingx_api import get_balance
 from services.auto_sync import sync_trades
 from core.scheduler import update_pinned_status
 from services.trade_manager import TradeManager
 from utils.telegram_text import clean_markdown as _clean, send_long as _send_long, strip_llm_self_correction
 
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-
-
-def _check_chat(update: Update) -> bool:
-    return str(update.effective_chat.id) == CHAT_ID
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')  # owner-only команды на переходный период миграции
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
+    # Не context.user_data.clear() целиком — это стёрло бы user/is_owner/
+    # is_authorized, которые уже установил middleware (core/user_context.py,
+    # group=-1, отрабатывает раньше этого хендлера). Чистим только
+    # состояние диалога.
+    for key in ('state', 'comment_order_id', 'entry_order_id', 'setup_trade_id', 'consilium_positions'):
+        context.user_data.pop(key, None)
+
     db = get_db()
+    user = context.user_data.get('user')
+    if not user:
+        telegram_id = str(update.effective_user.id) if update.effective_user else str(update.effective_chat.id)
+        username = update.effective_user.username if update.effective_user else None
+        user = db.get_or_create_user(telegram_id, username)
 
-    telegram_id = str(update.effective_chat.id)
-    username = update.effective_user.username if update.effective_user else None
-    user = db.get_or_create_user(telegram_id, username)
-    context.user_data['user_id'] = user['user_id']
-
-    is_owner   = _check_chat(update)
+    is_authorized = context.user_data.get('is_authorized', False)
     tier_label = "Premium ⭐️" if db.is_premium(user['user_id']) else "Free"
 
-    if is_owner:
+    if is_authorized:
         text = (
             "👋 *AI Helper Bot*\n\n"
             "Твой помощник трейдера.\n"
@@ -47,8 +51,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"👋 *AI Helper Bot*\n\n"
             f"Твой тариф: {tier_label}\n\n"
-            f"Бот сейчас в режиме раннего доступа. "
-            f"Полная многопользовательская версия скоро откроется."
+            f"Пробный период или подписка закончились. Продли доступ: /subscribe "
+            f"({SUBSCRIPTION_PRICE_USDT} {SUBSCRIPTION_ASSET} / {SUBSCRIPTION_PERIOD_DAYS} дней).\n\n"
+            f"Если ещё не привязал BingX-ключи (только чтение) — сделай это через /setkeys."
         )
         await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -65,6 +70,8 @@ async def show_help(update: Update):
         "🔄 Синхронизация каждые 15 секунд.\n\n"
         "📌 *Команды:*\n"
         "/start — главное меню\n"
+        "/setkeys — привязать/обновить BingX API-ключи (только чтение)\n"
+        "/subscribe — оплатить/продлить подписку\n"
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/calc — калькулятор позиции\n"
@@ -78,7 +85,7 @@ async def show_help(update: Update):
 
 
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
     db = get_db()
     ai_analyzer = get_ai_analyzer()
@@ -116,10 +123,12 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
+    chat_id = str(update.effective_chat.id)
+    user_id = get_current_user_id(context)
     msg = await update.message.reply_text("🔄 Синхронизирую сделки с BingX...")
-    results = await sync_trades(context.bot, CHAT_ID)
+    results = await sync_trades(context.bot, chat_id, user_id)
     new_open   = len(results.get('new_open', []))
     new_closed = len(results.get('new_closed', []))
     await msg.edit_text(
@@ -130,7 +139,11 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    # Пока owner-only (не общий require_auth): закреплённый статус —
+    # общее состояние ('bot_state', см. core/scheduler.py), не per-user —
+    # открывать его всем подписчикам сейчас означало бы показывать чужой
+    # баланс/позиции. Полноценный per-user статус — Этап 6/7 миграции.
+    if not context.user_data.get('is_owner'):
         return
     db = get_db()
     await update_pinned_status(context, db, CHAT_ID, force=True)
@@ -141,12 +154,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
     db = get_db()
     ai_analyzer = get_ai_analyzer()
     msg = await update.message.reply_text("🤖 Анализирую убыточные сделки...")
-    last_trades = db.get_closed_trades(limit=5)
+    last_trades = db.get_closed_trades(limit=5, user_id=get_current_user_id(context))
     losing = [t for t in last_trades if t['realized_pnl'] < 0]
     if not losing:
         await msg.edit_text("Убыточных сделок не найдено.")
@@ -177,7 +190,7 @@ async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
     from services.database import Database
     from services.behavior_engine import BehaviorEngine, format_alert
@@ -185,7 +198,7 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     db     = Database()
     engine = BehaviorEngine(db)
-    user_id = 'default'
+    user_id = get_current_user_id(context)
 
     msg = await update.message.reply_text("🧪 Тестирую детекторы поведения на реальных данных...")
     results = []
@@ -242,7 +255,7 @@ async def test_behavior_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
 
     args = context.args
@@ -303,7 +316,7 @@ async def calc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
 
     args = context.args
@@ -328,7 +341,9 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if '-' not in symbol:
         symbol = f"{symbol}-USDT"
 
-    open_positions = db.get_open_trades()
+    # user_id=... — иначе искали бы позицию среди чужих сделок (см.
+    # MULTITENANCY_MIGRATION_PLAN.md, "разграничение данных").
+    open_positions = db.get_open_trades(user_id=get_current_user_id(context))
     target_order_id = None
     for pos in open_positions:
         if pos['symbol'].upper() == symbol:
@@ -387,17 +402,18 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─────────────────────────── /analyze ───────────────────────────
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_chat(update):
+    if not await require_auth(update, context):
         return
 
     args = context.args
     db = get_db()
+    user_id = get_current_user_id(context)
 
     if args:
         symbol = args[0].upper()
         if '-' not in symbol:
             symbol = f"{symbol}-USDT"
-        open_positions = db.get_open_trades()
+        open_positions = db.get_open_trades(user_id=user_id)
         target = None
         for pos in open_positions:
             if pos['symbol'].upper() == symbol:
@@ -407,7 +423,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Нет открытой позиции по {symbol}")
             return
     else:
-        open_positions = db.get_open_trades()
+        open_positions = db.get_open_trades(user_id=user_id)
         if not open_positions:
             await update.message.reply_text("❌ Нет открытых позиций для анализа")
             return
@@ -493,8 +509,11 @@ async def debug_positions_command(update: Update, context: ContextTypes.DEFAULT_
     Нужна, чтобы увидеть реальные raw-поля (type/positionSide/closePosition)
     вместо догадок по документации — два предыдущих фикса были основаны на
     документации/community-репортах, не на реальном ответе для этого
-    аккаунта. Убрать команду после того, как кейс будет закрыт."""
-    if not _check_chat(update):
+    аккаунта. Убрать команду после того, как кейс будет закрыт.
+
+    Owner-only (не require_auth) — дампит сырые ответы биржи, не должна
+    быть доступна произвольным подписчикам."""
+    if not context.user_data.get('is_owner'):
         return
     from services.bingx_api import _request_with_retry
 

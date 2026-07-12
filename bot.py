@@ -8,12 +8,13 @@ import os
 import logging
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, TypeHandler, filters
 
 from services.database import init_db, Database
 from core.container import get_db
 from core.router import setup_router
 from core.scheduler import setup_scheduler
+from core.user_context import resolve_user_context
 
 from handlers.system import (
     start, health_command, sync_command, status_command,
@@ -23,6 +24,8 @@ from handlers.system import (
 )
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
+from handlers.onboarding import setkeys_command
+from handlers.subscription import subscribe_command
 
 load_dotenv()
 
@@ -112,12 +115,19 @@ def main():
     # Глобальный обработчик ошибок
     app.add_error_handler(error_handler)
 
+    # Мультитенантность (см. MULTITENANCY_MIGRATION_PLAN.md): резолвит
+    # пользователя и его BingX-ключи ДО всех остальных хендлеров —
+    # group=-1 обрабатывается раньше group=0 (публичные команды/меню).
+    app.add_handler(TypeHandler(Update, resolve_user_context), group=-1)
+
     # Публичные команды
     app.add_handler(CommandHandler('start',           start))
     app.add_handler(CommandHandler('sync',            sync_command))
     app.add_handler(CommandHandler('status',          status_command))
     app.add_handler(CommandHandler('health',          health_command))
     app.add_handler(CommandHandler('coach',           show_coach))
+    app.add_handler(CommandHandler('setkeys',         setkeys_command))
+    app.add_handler(CommandHandler('subscribe',       subscribe_command))
 
     # Debug / admin (можно оставить для тестов)
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))

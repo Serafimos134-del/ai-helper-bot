@@ -8,6 +8,7 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_orchestrator, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
+from core.user_context import get_current_user_id, require_auth
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
 from utils.telegram_text import clean_markdown as _clean, strip_llm_self_correction
 from utils.formatting import format_position_plan
@@ -112,11 +113,11 @@ async def show_trends(update: Update):
     await _send_chunks(update.message, f"📊 Тренды от AI\n\n{analysis}", reply_markup=ai_menu_keyboard())
 
 
-async def show_journal_analysis(update: Update):
+async def show_journal_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     ai_analyzer = get_ai_analyzer()
     msg = await update.message.reply_text("🤖 Анализирую журнал сделок...")
-    trades = db.get_closed_trades(limit=50)
+    trades = db.get_closed_trades(limit=50, user_id=get_current_user_id(context))
     if not trades:
         await msg.edit_text("Нет закрытых сделок для анализа.")
         return
@@ -154,7 +155,13 @@ async def show_journal_analysis(update: Update):
 
 
 async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI Coach — персональный разбор на основе Performance Engine."""
+    """AI Coach — персональный разбор на основе Performance Engine.
+    Зарегистрирован как отдельный CommandHandler('coach', ...) в bot.py, а
+    не через menu_handler — require_auth() нужно проверять здесь явно,
+    иначе платная фича была бы доступна без подписки (см. MULTITENANCY_
+    MIGRATION_PLAN.md, Этап 3)."""
+    if not await require_auth(update, context):
+        return
     from services.coach_engine import CoachEngine
     ai_analyzer = get_ai_analyzer()
     db = get_db()
@@ -166,7 +173,7 @@ async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     coach = CoachEngine(ai_analyzer.provider, db)
-    result = await coach.generate_coaching(user_id='default')
+    result = await coach.generate_coaching(user_id=get_current_user_id(context))
     text = _clean(result)
 
     try:
@@ -177,14 +184,14 @@ async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_chunks(update.message, f"🎯 AI Coach\n\n{text}", reply_markup=ai_menu_keyboard())
 
 
-async def show_trader_dna(update: Update):
+async def show_trader_dna(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Trader DNA v1 (TRADER_DNA_V1.md) — детерминированный каталог
     паттернов + DNA Score поверх PerformanceEngine/behavior_events.
     В отличие от AI Coach — не LLM-генерация, а прозрачный расчёт."""
     from ai.trader_dna import format_dna_report
     db = get_db()
     msg = await update.message.reply_text("🧬 Считаю Trader DNA...")
-    text = format_dna_report(db, user_id='default')
+    text = format_dna_report(db, user_id=get_current_user_id(context))
     await msg.edit_text(text)
 
 
