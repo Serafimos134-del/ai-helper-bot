@@ -309,6 +309,83 @@ async def get_closed_orders(symbol: str = '', limit: int = 20) -> dict:
         }
 
 
+POSITION_HISTORY_MAX_WINDOW_MS = 90 * 24 * 3600 * 1000  # 3 месяца — задокументированный максимум BingX
+
+
+async def get_position_history(symbol: str, start_ts: int = None, end_ts: int = None, page_size: int = 100) -> dict:
+    """Закрытые ПОЗИЦИИ (цена входа/выхода, реализованный PnL за всю
+    позицию) — /openApi/swap/v1/trade/positionHistory. В отличие от
+    get_closed_orders()/allOrders (только исполнения отдельных ордеров,
+    без пары цена-входа/цена-выхода) — тот эндпоинт не годится для
+    восстановления истории сделок, см. history_import.py. symbol
+    обязателен по документации BingX — нет вызова "все инструменты сразу"."""
+    if end_ts is None:
+        end_ts = int(time.time() * 1000)
+    if start_ts is None:
+        start_ts = end_ts - POSITION_HISTORY_MAX_WINDOW_MS
+    path = '/openApi/swap/v1/trade/positionHistory'
+    params = {
+        'symbol': symbol,
+        'startTs': start_ts,
+        'endTs': end_ts,
+        'pageIndex': 1,
+        'pageSize': page_size,
+    }
+    result = await _request_with_retry('GET', path, params)
+    if result.get('code') == 0:
+        raw = result.get('data', {}).get('positionHistory', [])
+        positions = []
+        for p in raw:
+            positions.append({
+                'positionId':   p.get('positionId', ''),
+                'symbol':       p.get('symbol', ''),
+                'side':         p.get('positionSide', 'LONG'),
+                'entry_price':  float(p.get('avgPrice', 0) or 0),
+                'exit_price':   float(p.get('avgClosePrice', 0) or 0),
+                'quantity':     float(p.get('closePositionAmt', p.get('positionAmt', 0)) or 0),
+                'realized_pnl': float(p.get('netProfit', p.get('realisedProfit', 0)) or 0),
+                'leverage':     float(p.get('leverage', 1) or 1),
+                'open_time':    p.get('openTime'),
+                'close_time':   p.get('updateTime'),
+            })
+        return {'success': True, 'positions': positions}
+    return {'success': False, 'error': result.get('msg', 'Неизвестная ошибка'), 'positions': []}
+
+
+async def get_recent_closed_positions(limit: int = 20) -> dict:
+    """Best-effort сбор недавних закрытых позиций по нескольким инструментам.
+    positionHistory требует symbol на каждый вызов — опрашиваем (1) символы
+    текущих открытых позиций и (2) топ-30 по объёму за 24ч (get_top_tickers).
+    Покрывает подавляющее большинство активности типичного трейдера, но
+    принципиально может пропустить редкую пару, которую пользователь
+    никогда не держал открытой сейчас и она не входит в топ по объёму —
+    известное ограничение MVP (см. history_import.py)."""
+    open_res = await get_open_positions()
+    open_symbols = {p['symbol'] for p in open_res.get('trades', [])} if open_res.get('success') else set()
+
+    top_res = await get_top_tickers(30)
+    top_symbols = {t.get('symbol') for t in top_res.get('tickers', [])} if top_res.get('success') else set()
+
+    symbols = list((open_symbols | top_symbols) - {None, ''})
+    if not symbols:
+        return {'success': False, 'error': 'Не удалось получить список инструментов', 'positions': []}
+
+    sem = asyncio.Semaphore(2)  # BingX: 2 запроса/сек на IP
+
+    async def _fetch(sym):
+        async with sem:
+            return await get_position_history(sym)
+
+    results = await asyncio.gather(*[_fetch(s) for s in symbols], return_exceptions=True)
+    all_positions = []
+    for r in results:
+        if isinstance(r, dict) and r.get('success'):
+            all_positions.extend(r['positions'])
+
+    all_positions.sort(key=lambda p: p.get('close_time') or 0, reverse=True)
+    return {'success': True, 'positions': all_positions[:limit]}
+
+
 async def get_top_tickers(limit: int = 10) -> dict:
     cache_key = f"top_tickers:{limit}"
     cached = await api_cache.get(cache_key)

@@ -89,6 +89,7 @@ async def show_help(update: Update):
         "📌 *Команды:*\n"
         "/start — главное меню\n"
         "/setkeys — привязать/обновить BingX API-ключи (только чтение)\n"
+        "/importhistory — подтянуть историю закрытых сделок с биржи\n"
         "/subscribe — оплатить/продлить подписку\n"
         "/notifications — вкл/выкл ежедневный отчёт\n"
         "/riskprofile — заполнить риск-профиль\n"
