@@ -10,6 +10,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from core.container import get_db, get_ai_analyzer
 from core.keyboards import main_menu_keyboard
+from core.billing import SUBSCRIPTION_PRICE_USDT, SUBSCRIPTION_PERIOD_DAYS, SUBSCRIPTION_ASSET
 from core.user_context import require_auth, get_current_user_id
 from services.bingx_api import get_balance
 from services.auto_sync import sync_trades
@@ -50,9 +51,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"👋 *AI Helper Bot*\n\n"
             f"Твой тариф: {tier_label}\n\n"
-            f"Для доступа к функциям бота нужна активная подписка — приём оплаты скоро откроется.\n\n"
-            f"Пока можно привязать свои BingX API-ключи (только чтение) заранее — "
-            f"набери /setkeys, чтобы всё было готово к моменту запуска подписки."
+            f"Пробный период или подписка закончились. Продли доступ: /subscribe "
+            f"({SUBSCRIPTION_PRICE_USDT} {SUBSCRIPTION_ASSET} / {SUBSCRIPTION_PERIOD_DAYS} дней).\n\n"
+            f"Если ещё не привязал BingX-ключи (только чтение) — сделай это через /setkeys."
         )
         await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -70,6 +71,7 @@ async def show_help(update: Update):
         "📌 *Команды:*\n"
         "/start — главное меню\n"
         "/setkeys — привязать/обновить BingX API-ключи (только чтение)\n"
+        "/subscribe — оплатить/продлить подписку\n"
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/calc — калькулятор позиции\n"

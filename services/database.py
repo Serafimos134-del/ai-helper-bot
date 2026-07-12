@@ -160,6 +160,15 @@ class Database:
                     payload TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS payments (
+                    invoice_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    asset TEXT NOT NULL DEFAULT 'USDT',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    paid_at TIMESTAMP
+                );
                 CREATE INDEX IF NOT EXISTS idx_closed_symbol ON closed_trades(symbol);
                 CREATE INDEX IF NOT EXISTS idx_closed_date ON closed_trades(close_time);
                 CREATE INDEX IF NOT EXISTS idx_closed_user_id ON closed_trades(user_id);
@@ -167,6 +176,8 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
                 CREATE INDEX IF NOT EXISTS idx_behavior_user_id ON behavior_events(user_id);
                 CREATE INDEX IF NOT EXISTS idx_trade_events_order_id ON trade_events(order_id);
+                CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
+                CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
             """)
 
             # Add missing columns (safe migration)
@@ -291,12 +302,21 @@ class Database:
                 )
             return dict(row)
 
+        # Новый пользователь получает бесплатный триал (core/billing.py,
+        # TRIAL_PERIOD_DAYS) сразу при регистрации — Этап 4 плана миграции:
+        # "Сначала бесплатные 14 дней потом подписка". Тариф 'premium' с
+        # ограниченным сроком, а не 'free' — is_premium() ничего не знает
+        # про триалы отдельно, expiry делает всё сам.
+        from datetime import datetime, timedelta
+        from core.billing import TRIAL_PERIOD_DAYS
+        trial_expires_at = (datetime.now() + timedelta(days=TRIAL_PERIOD_DAYS)).isoformat()
         with self.transaction():
             self._execute(
-                "INSERT INTO users (user_id, telegram_id, username, subscription_tier) VALUES (?, ?, ?, 'free')",
-                (telegram_id, telegram_id, username)
+                "INSERT INTO users (user_id, telegram_id, username, subscription_tier, subscription_expires_at) "
+                "VALUES (?, ?, ?, 'premium', ?)",
+                (telegram_id, telegram_id, username, trial_expires_at)
             )
-        logger.info(f"Новый пользователь зарегистрирован: telegram_id={telegram_id}")
+        logger.info(f"Новый пользователь зарегистрирован: telegram_id={telegram_id}, триал до {trial_expires_at}")
         row = self._execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
         return dict(row)
 
@@ -325,6 +345,54 @@ class Database:
                 "UPDATE users SET subscription_tier = ?, subscription_expires_at = ? WHERE user_id = ?",
                 (tier, expires_at, user_id)
             )
+
+    def extend_subscription(self, user_id: str, days: int) -> str:
+        """Продлевает подписку на `days` дней от текущей даты истечения,
+        если она ещё в будущем (не сгорает остаток при досрочной оплате),
+        иначе от текущего момента (истёкшая/впервые оплаченная подписка).
+        Возвращает новую дату истечения (ISO)."""
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        user = self.get_user(user_id)
+        current_expiry = None
+        if user and user.get('subscription_expires_at'):
+            try:
+                current_expiry = datetime.fromisoformat(user['subscription_expires_at'])
+            except (ValueError, TypeError):
+                current_expiry = None
+        base = current_expiry if (current_expiry and current_expiry > now) else now
+        new_expiry = (base + timedelta(days=days)).isoformat()
+        self.set_subscription(user_id, 'premium', new_expiry)
+        return new_expiry
+
+    # ==================== payments (Crypto Pay) ====================
+    def create_payment(self, invoice_id, user_id: str, amount: float, asset: str = 'USDT'):
+        with self.transaction():
+            self._execute(
+                "INSERT INTO payments (invoice_id, user_id, amount, asset, status) VALUES (?, ?, ?, ?, 'active')",
+                (str(invoice_id), user_id, amount, asset)
+            )
+
+    def get_pending_payments(self) -> list:
+        rows = self._execute("SELECT * FROM payments WHERE status = 'active'").fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_payment_paid(self, invoice_id) -> dict:
+        """Идемпотентно помечает счёт оплаченным. Возвращает запись платежа,
+        если это первое начисление, либо None если счёт уже был обработан
+        раньше — защита от двойного продления подписки при повторном опросе
+        Crypto Pay (см. core/scheduler.py:crypto_pay_poll_job)."""
+        row = self._execute(
+            "SELECT * FROM payments WHERE invoice_id = ?", (str(invoice_id),)
+        ).fetchone()
+        if not row or row['status'] == 'paid':
+            return None
+        with self.transaction():
+            self._execute(
+                "UPDATE payments SET status = 'paid', paid_at = CURRENT_TIMESTAMP WHERE invoice_id = ?",
+                (str(invoice_id),)
+            )
+        return dict(row)
 
     def set_bingx_keys(self, user_id: str, api_key: str, secret_key: str):
         with self.transaction():

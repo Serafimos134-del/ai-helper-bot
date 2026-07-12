@@ -25,6 +25,7 @@ from handlers.system import (
 from handlers.ai import show_coach
 from handlers.menu import menu_handler
 from handlers.onboarding import setkeys_command
+from handlers.subscription import subscribe_command
 
 load_dotenv()
 
@@ -126,6 +127,7 @@ def main():
     app.add_handler(CommandHandler('health',          health_command))
     app.add_handler(CommandHandler('coach',           show_coach))
     app.add_handler(CommandHandler('setkeys',         setkeys_command))
+    app.add_handler(CommandHandler('subscribe',       subscribe_command))
 
     # Debug / admin (можно оставить для тестов)
     app.add_handler(CommandHandler('ai_fix',          ai_fix_command))

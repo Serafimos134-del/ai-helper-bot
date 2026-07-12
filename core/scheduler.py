@@ -14,6 +14,8 @@ from services.bingx_api import get_balance
 from services.database import Database
 from services.auto_sync import sync_trades
 from services.trade_manager import TradeManager
+from services.crypto_pay import get_invoice_statuses
+from core.billing import SUBSCRIPTION_PERIOD_DAYS
 from core.container import get_orchestrator
 from utils.liquidation import get_volatility_class
 from utils.formatting import format_position_plan
@@ -52,6 +54,12 @@ VOLATILITY_CHECK_EVERY = {"LOW": 3, "MEDIUM": 2, "HIGH": 1}
 MEMORY_CATEGORY_POSITION_WATCH = "position_watch"
 _watch_tick = 0
 
+# Этап 4 плана миграции: опрос Crypto Pay вместо вебхука (см.
+# services/crypto_pay.py — у бота нет публичного HTTPS-эндпоинта, он
+# работает через long-polling). Раз в минуту достаточно — оплата не
+# требует мгновенного отклика, в отличие от синхронизации сделок.
+CRYPTO_PAY_POLL_INTERVAL = 60
+
 
 def setup_scheduler(app, db: Database, chat_id: str) -> None:
     """Register auto-sync and status update jobs."""
@@ -70,6 +78,53 @@ def setup_scheduler(app, db: Database, chat_id: str) -> None:
         interval=POSITION_WATCH_INTERVAL,
         first=60
     )
+    app.job_queue.run_repeating(
+        lambda c: crypto_pay_poll_job(c, db),
+        interval=CRYPTO_PAY_POLL_INTERVAL,
+        first=20
+    )
+
+
+async def crypto_pay_poll_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
+    """Проверяет статус выставленных счетов (services/database.py:payments)
+    и продлевает подписку при оплате. mark_payment_paid() идемпотентен —
+    повторный опрос уже оплаченного счёта не продлит подписку дважды."""
+    try:
+        pending = await asyncio.to_thread(db.get_pending_payments)
+    except Exception as e:
+        logger.error(f"crypto_pay_poll_job: не удалось получить платежи: {e}")
+        return
+    if not pending:
+        return
+
+    statuses = await get_invoice_statuses([p['invoice_id'] for p in pending])
+
+    for payment in pending:
+        status = statuses.get(str(payment['invoice_id']))
+        if status != 'paid':
+            continue
+
+        credited = await asyncio.to_thread(db.mark_payment_paid, payment['invoice_id'])
+        if not credited:
+            continue
+
+        try:
+            new_expiry = await asyncio.to_thread(
+                db.extend_subscription, payment['user_id'], SUBSCRIPTION_PERIOD_DAYS
+            )
+        except Exception as e:
+            logger.error(f"crypto_pay_poll_job: не удалось продлить подписку {payment['user_id']}: {e}")
+            continue
+
+        try:
+            user = await asyncio.to_thread(db.get_user, payment['user_id'])
+            if user and user.get('telegram_id'):
+                await context.bot.send_message(
+                    chat_id=int(user['telegram_id']),
+                    text=f"✅ Оплата получена! Подписка продлена до {new_expiry[:10]}."
+                )
+        except Exception as e:
+            logger.error(f"crypto_pay_poll_job: не удалось уведомить пользователя {payment['user_id']}: {e}")
 
 
 async def position_watch_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_id: str):
