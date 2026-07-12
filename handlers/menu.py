@@ -23,15 +23,32 @@ from handlers.ai import (
     consilium_new_setup, consilium_process_setup, consilium_keyboard,
 )
 from handlers.journal import show_journal
+from handlers.onboarding import handle_awaiting_bingx_key, handle_awaiting_bingx_secret
 from handlers.system import show_help
 from services.comment_manager import save_comment
 
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_auth(update, context):
-        return
     text  = update.message.text.strip()
     state = context.user_data.get('state')
+
+    # Онбординг BingX-ключей (handlers/onboarding.py, /setkeys) открыт
+    # независимо от подписки — обрабатываем ДО require_auth, иначе
+    # пользователь без подписки не смог бы ввести свои ключи в принципе.
+    if state in ('awaiting_bingx_key', 'awaiting_bingx_secret'):
+        if text == BTN_CANCEL or text.strip().lower() in ('отмена', 'cancel'):
+            context.user_data['state'] = None
+            context.user_data.pop('pending_bingx_api_key', None)
+            await update.message.reply_text("Отменено.", reply_markup=main_menu_keyboard())
+            return
+        if state == 'awaiting_bingx_key':
+            await handle_awaiting_bingx_key(update, context)
+        else:
+            await handle_awaiting_bingx_secret(update, context)
+        return
+
+    if not await require_auth(update, context):
+        return
     db    = get_db()
 
     # Промпты entering_comment_inline/entering_exit_reason/entering_entry_reason

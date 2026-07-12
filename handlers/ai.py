@@ -8,7 +8,7 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_orchestrator, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
-from core.user_context import get_current_user_id
+from core.user_context import get_current_user_id, require_auth
 from services.bingx_api import get_top_tickers, get_kline, get_open_positions
 from utils.telegram_text import clean_markdown as _clean, strip_llm_self_correction
 from utils.formatting import format_position_plan
@@ -155,7 +155,13 @@ async def show_journal_analysis(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI Coach — персональный разбор на основе Performance Engine."""
+    """AI Coach — персональный разбор на основе Performance Engine.
+    Зарегистрирован как отдельный CommandHandler('coach', ...) в bot.py, а
+    не через menu_handler — require_auth() нужно проверять здесь явно,
+    иначе платная фича была бы доступна без подписки (см. MULTITENANCY_
+    MIGRATION_PLAN.md, Этап 3)."""
+    if not await require_auth(update, context):
+        return
     from services.coach_engine import CoachEngine
     ai_analyzer = get_ai_analyzer()
     db = get_db()

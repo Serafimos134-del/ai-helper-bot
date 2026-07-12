@@ -48,6 +48,18 @@ def _get_credentials() -> tuple:
     return (BINGX_API_KEY, BINGX_SECRET_KEY)
 
 
+async def validate_keys(api_key: str, secret_key: str) -> dict:
+    """Проверяет BingX-ключи реальным аутентифицированным запросом (баланс),
+    не трогая ключи текущего пользователя в contextvar — используется в
+    онбординге (handlers/onboarding.py) ДО сохранения ключей в БД, поэтому
+    восстанавливаем предыдущее значение через token, а не clear()."""
+    token = _credentials_var.set((api_key or '', secret_key or ''))
+    try:
+        return await get_balance()
+    finally:
+        _credentials_var.reset(token)
+
+
 def _get_timestamp() -> str:
     return str(int(time.time() * 1000))
 

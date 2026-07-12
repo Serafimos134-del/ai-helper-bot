@@ -50,7 +50,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"👋 *AI Helper Bot*\n\n"
             f"Твой тариф: {tier_label}\n\n"
-            f"Для доступа нужна активная подписка — приём оплаты скоро откроется."
+            f"Для доступа к функциям бота нужна активная подписка — приём оплаты скоро откроется.\n\n"
+            f"Пока можно привязать свои BingX API-ключи (только чтение) заранее — "
+            f"набери /setkeys, чтобы всё было готово к моменту запуска подписки."
         )
         await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -67,6 +69,7 @@ async def show_help(update: Update):
         "🔄 Синхронизация каждые 15 секунд.\n\n"
         "📌 *Команды:*\n"
         "/start — главное меню\n"
+        "/setkeys — привязать/обновить BingX API-ключи (только чтение)\n"
         "/sync — ручная синхронизация\n"
         "/status — текущий статус (баланс, позиции, правила)\n"
         "/calc — калькулятор позиции\n"
