@@ -16,7 +16,7 @@ BingX orderId: positionHistory отдаёт positionId, другое прост�
 
 import logging
 
-from services.bingx_api import get_recent_closed_positions
+from services.exchange_api import get_recent_closed_positions
 
 logger = logging.getLogger(__name__)
 

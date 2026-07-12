@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from telegram.ext import ContextTypes
-from services.bingx_api import get_balance, set_bingx_credentials, clear_bingx_credentials
+from services.exchange_api import get_balance, set_current_exchange, clear_current_exchange
 from services.database import Database
 from services.auto_sync import sync_trades
 from services.crypto_pay import get_invoice_statuses
@@ -109,8 +109,8 @@ def setup_scheduler(app, db: Database, chat_id: str) -> None:
 
 
 async def multi_user_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
-    """Синхронизация сделок для всех подписчиков с собственными BingX-
-    ключами (владелец обслуживается отдельно, см. auto_sync_job выше)."""
+    """Синхронизация сделок для всех подписчиков с собственными ключами
+    биржи (владелец обслуживается отдельно, см. auto_sync_job выше)."""
     try:
         users = await asyncio.to_thread(db.get_users_for_background_jobs)
     except Exception as e:
@@ -123,13 +123,13 @@ async def multi_user_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
         telegram_id = user.get('telegram_id')
         if not api_key or not secret_key or not telegram_id:
             continue
-        set_bingx_credentials(api_key, secret_key)
+        set_current_exchange(user.get('exchange') or 'bingx', api_key, secret_key)
         try:
             await sync_trades(context.bot, telegram_id, user['user_id'])
         except Exception as e:
             logger.error(f"multi_user_sync_job: ошибка синхронизации для {user['user_id']}: {e}")
         finally:
-            clear_bingx_credentials()
+            clear_current_exchange()
 
 
 async def daily_report_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
@@ -160,7 +160,7 @@ async def daily_report_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
         if not can_send:
             continue
 
-        set_bingx_credentials(api_key, secret_key)
+        set_current_exchange(user.get('exchange') or 'bingx', api_key, secret_key)
         try:
             balance = await get_balance()
             open_positions = await asyncio.to_thread(db.get_open_trades, user['user_id'])
@@ -173,7 +173,7 @@ async def daily_report_job(context: ContextTypes.DEFAULT_TYPE, db: Database):
         except Exception as e:
             logger.error(f"daily_report_job: ошибка отчёта для {user['user_id']}: {e}")
         finally:
-            clear_bingx_credentials()
+            clear_current_exchange()
 
 
 async def crypto_pay_poll_job(context: ContextTypes.DEFAULT_TYPE, db: Database):

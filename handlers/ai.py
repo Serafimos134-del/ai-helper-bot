@@ -9,7 +9,8 @@ from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_orchestrator, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from core.user_context import get_current_user_id, require_auth
-from services.bingx_api import get_top_tickers, get_kline, get_open_positions
+from services.bingx_api import get_top_tickers, get_kline
+from services.exchange_api import get_open_positions
 from utils.telegram_text import clean_markdown as _clean, strip_llm_self_correction
 from utils.formatting import format_position_plan
 

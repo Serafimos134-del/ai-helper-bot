@@ -24,7 +24,7 @@ from ai.consensus_engine import ConsensusEngine
 from ai.engines.structure_arbiter import build_structure_plan
 from ai.trade_scorer import TradeScorer
 from services.market_data import get_market_snapshot
-from services.bingx_api import get_balance
+from services.exchange_api import get_balance
 from services.calc_engine import calculate_position
 from services.stop_engine import analyze_stop
 from services.tp_engine import analyze_tp
