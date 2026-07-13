@@ -128,6 +128,17 @@ async def handle_awaiting_risk_goal(update: Update, context: ContextTypes.DEFAUL
         return
     context.user_data.pop('risk_profile_draft', None)
 
+    if context.user_data.pop('guided_onboarding', False):
+        # Управляемый онбординг (задача от 12.07.2026) завершён — биржа
+        # привязана (handlers/onboarding.py) и риск-профиль заполнен.
+        await update.message.reply_text(
+            "🎉 Настройка завершена! Биржа привязана, риск-профиль заполнен.\n\n"
+            "Как только накопится минимум 5 закрытых сделок — посмотри /riskscore.\n"
+            "Дальше пользуйся кнопками меню 👇",
+            reply_markup=main_menu_keyboard()
+        )
+        return
+
     await update.message.reply_text(
         "✅ Риск-профиль сохранён!\n\n"
         "Как только накопится минимум 5 закрытых сделок, я смогу сравнить твой заявленный "

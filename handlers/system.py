@@ -69,6 +69,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Используй кнопки меню 👇"
         )
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+        await update.message.reply_text(DISCLAIMER_TEXT)
+
+        # Управляемый онбординг (задача от 12.07.2026 — второй Telegram-
+        # аккаунт на /start увидел только меню без привязки биржи и
+        # риск-профиля, потому что раньше /start просто перечислял команды
+        # в тексте вместо того, чтобы сразу вести по шагам). Флаг
+        # guided_onboarding снимается в handlers/onboarding.py:
+        # handle_awaiting_bingx_secret (передаёт эстафету риск-профилю) и
+        # handlers/risk_profile.py:handle_awaiting_risk_goal (финиш).
+        has_keys = bool(user.get('bingx_api_key'))
+        profile = db.get_risk_profile(user['user_id'])
+        has_profile = bool(profile and profile.get('onboarding_completed'))
+
+        if not has_keys:
+            context.user_data['guided_onboarding'] = True
+            from handlers.onboarding import setkeys_command
+            await update.message.reply_text("Для начала привяжем биржу — это займёт минуту.")
+            await setkeys_command(update, context)
+        elif not has_profile:
+            context.user_data['guided_onboarding'] = True
+            from handlers.risk_profile import riskprofile_command
+            await update.message.reply_text("Осталось настроить риск-профиль — 4 коротких шага.")
+            await riskprofile_command(update, context)
+        return
     else:
         plans_text = "\n".join(
             f"• {p['label']} — {p['price']} {SUBSCRIPTION_ASSET}" for p in SUBSCRIPTION_PLANS.values()
