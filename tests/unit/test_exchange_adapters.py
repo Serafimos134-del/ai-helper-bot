@@ -142,6 +142,34 @@ async def test_mexc_transport_error_message_not_swallowed():
     assert 'Connection timed out' in result['error']
 
 
+@pytest.mark.asyncio
+async def test_bybit_non_ascii_key_gives_clear_message_not_generic_json_error():
+    """Регрессия: не-ASCII символы в api_key/secret_key (случайно
+    зацепившаяся кириллица при копировании) заставляли httpx падать с
+    UnicodeEncodeError при кодировании HTTP-заголовка — подкласс ValueError,
+    без отдельной ветки ловился бы как невнятное "Invalid JSON response:
+    'ascii' codec can't encode...". Найдено на реальном тесте с ключами
+    Bybit (13.07.2026). Основная защита теперь на входе (handlers/
+    onboarding.py:_looks_like_key), это — второй рубеж на случай обхода."""
+    import services.bybit_api as bybit_api
+
+    class _RaisingClient:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, *a, **kw):
+            raise UnicodeEncodeError('ascii', 'ключЯ', 5, 6, 'ordinal not in range(128)')
+
+    bybit_api.set_bybit_credentials('KEYЯ', 'SECRET')
+    with patch('httpx.AsyncClient', _RaisingClient):
+        result = await bybit_api._request('/v5/account/wallet-balance', {'accountType': 'UNIFIED'})
+    assert 'не ASCII' in result['retMsg'] or 'ASCII' in result['retMsg']
+    bybit_api.clear_bybit_credentials()
+
+
 def test_binance_position_reconstruction_dca_then_partial_closes():
     """Два входа (DCA) + два частичных выхода — проверяет средневзвешенные
     цены входа/выхода, а не только простой случай 1 сделка/1 сделка."""

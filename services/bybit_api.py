@@ -140,6 +140,15 @@ async def _request(path: str, params: dict = None) -> dict:
             return data
     except httpx.HTTPError as e:
         return _transport_error(str(e))
+    except UnicodeError:
+        # UnicodeEncodeError — подкласс ValueError, поэтому без отдельной
+        # ветки ловился бы ниже и подписывался как "Invalid JSON response",
+        # хотя проблема на самом деле в том, что api_key/secret_key
+        # содержат не-ASCII символы (httpx не может закодировать их в
+        # HTTP-заголовок) — см. _looks_like_key в handlers/onboarding.py,
+        # это основная точка защиты, здесь просто честное сообщение на
+        # случай обхода той проверки другим вызывающим кодом.
+        return _transport_error('API-ключ или секрет содержат недопустимые символы (не ASCII)')
     except ValueError as e:
         return _transport_error(f'Invalid JSON response: {e}')
 

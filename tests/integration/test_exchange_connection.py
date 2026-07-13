@@ -120,3 +120,29 @@ async def test_setkeys_short_input_rejected_without_hitting_exchange():
         await onboarding.handle_awaiting_bingx_key(_make_update('short'), ctx)
     validate_mock.assert_not_called()
     assert ctx.user_data['state'] == 'awaiting_bingx_key'
+
+
+@pytest.mark.asyncio
+async def test_setkeys_non_ascii_key_rejected_without_hitting_exchange():
+    """Регрессия: не-ASCII символы в ключе (например, случайно зацепившаяся
+    при копировании кириллица) раньше долетали до HTTP-запроса к бирже и
+    падали там с UnicodeEncodeError, замаскированным под "Invalid JSON
+    response" — найдено на реальном тесте с ключами Bybit (13.07.2026).
+    Теперь отсекается на входе, до любого сетевого вызова."""
+    import handlers.onboarding as onboarding
+    ctx = MagicMock()
+    ctx.user_data = {'state': 'awaiting_bingx_key'}
+    with patch('handlers.onboarding.validate_keys', new=AsyncMock()) as validate_mock:
+        await onboarding.handle_awaiting_bingx_key(_make_update('API_KEYЯ_1234567890'), ctx)
+    validate_mock.assert_not_called()
+    assert ctx.user_data['state'] == 'awaiting_bingx_key'
+
+
+@pytest.mark.asyncio
+async def test_setkeys_non_ascii_secret_rejected_without_hitting_exchange():
+    import handlers.onboarding as onboarding
+    ctx = MagicMock()
+    ctx.user_data = {'state': 'awaiting_bingx_secret', 'pending_bingx_api_key': 'GOOD_KEY_1234567890'}
+    with patch('handlers.onboarding.validate_keys', new=AsyncMock()) as validate_mock:
+        await onboarding.handle_awaiting_bingx_secret(_make_update('SECRETЯ_0987654321'), ctx)
+    validate_mock.assert_not_called()

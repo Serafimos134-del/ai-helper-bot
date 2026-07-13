@@ -116,6 +116,12 @@ async def _request(path: str, params: dict = None):
             return data
     except httpx.HTTPError as e:
         return {'code': -1, 'msg': str(e), '_transport_error': True}
+    except UnicodeError:
+        # См. services/bybit_api.py:_request — та же причина (не-ASCII
+        # символы в api_key/secret_key, httpx не может закодировать HTTP-
+        # заголовок); UnicodeEncodeError — подкласс ValueError, без этой
+        # ветки ловился бы ниже и подписывался как "Invalid JSON response".
+        return {'code': -1, 'msg': 'API-ключ или секрет содержат недопустимые символы (не ASCII)', '_transport_error': True}
     except ValueError as e:
         return {'code': -1, 'msg': f'Invalid JSON response: {e}', '_transport_error': True}
 

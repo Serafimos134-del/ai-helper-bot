@@ -90,11 +90,23 @@ async def handle_awaiting_exchange_choice(update: Update, context: ContextTypes.
     )
 
 
+def _looks_like_key(text: str) -> bool:
+    # API-ключи/секреты бирж — всегда чистый ASCII (буквы/цифры, иногда
+    # -/_). Если в строке есть не-ASCII символы — почти наверняка при
+    # копировании зацепилось что-то лишнее (например, кусок соседнего
+    # текста из чата) — раньше это не ловилось здесь и падало глубоко
+    # внутри HTTP-запроса к бирже с непонятным UnicodeEncodeError,
+    # замаскированным под "Invalid JSON response" (найдено на реальном
+    # тесте с ключами Bybit).
+    return len(text) >= 10 and text.isascii()
+
+
 async def handle_awaiting_bingx_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     api_key = update.message.text.strip()
-    if len(api_key) < 10:
+    if not _looks_like_key(api_key):
         await update.message.reply_text(
-            "Похоже, это не API Key. Пришли ключ ещё раз (или «отмена»):",
+            "Похоже, это не API Key (слишком короткий или содержит не-ASCII символы — "
+            "возможно, при копировании зацепилось что-то лишнее). Пришли ключ ещё раз (или «отмена»):",
             reply_markup=cancel_keyboard()
         )
         return
@@ -119,9 +131,17 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
     except Exception:
         pass
 
-    if not api_key or len(secret_key) < 10:
+    if not api_key:
         await update.effective_chat.send_message(
             "Что-то пошло не так, начни заново: /setkeys", reply_markup=main_menu_keyboard()
+        )
+        return
+
+    if not _looks_like_key(secret_key):
+        await update.effective_chat.send_message(
+            "Похоже, это не Secret Key (слишком короткий или содержит не-ASCII символы — "
+            "возможно, при копировании зацепилось что-то лишнее). Начни заново: /setkeys",
+            reply_markup=main_menu_keyboard()
         )
         return
 
