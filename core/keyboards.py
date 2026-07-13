@@ -63,3 +63,23 @@ def ai_menu_keyboard():
 
 def cancel_keyboard():
     return ReplyKeyboardMarkup([[BTN_CANCEL]], resize_keyboard=True)
+
+
+# Выбор биржи при /setkeys (задача от 13.07.2026 — "мультибиржевость
+# обязательна"). Порядок — BingX первым, единственная биржа, проверенная
+# на реальном трафике (см. services/bingx_api.py); остальные три сверены
+# только с документацией. OKX сознательно не в списке — не реализован
+# (services/exchanges/registry.py).
+EXCHANGE_LABELS = {
+    'BingX':   'bingx',
+    'Bybit':   'bybit',
+    'Binance': 'binance',
+    'MEXC':    'mexc',
+}
+
+
+def exchange_choice_keyboard():
+    return ReplyKeyboardMarkup(
+        [['BingX'], ['Bybit', 'Binance'], ['MEXC'], [BTN_CANCEL]],
+        resize_keyboard=True
+    )

@@ -10,12 +10,13 @@ Crypto Pay, ещё не подключён); сами торговые/AI-хен
 require_auth() (Этап 3), так что открытый /setkeys не даёт доступа ни к
 чему платному сам по себе.
 
-Через Exchange Adapter Layer (services/exchanges/), но пока хардкодит
-биржу 'bingx' — единственная полностью реализованная (задача от
-12.07.2026: "первой полностью рабочей биржей остаётся BingX"). Выбор
-биржи в UI /setkeys — будущее расширение, не меняющее сам факт, что
-дальше по коду (AI Core, фоновые джобы) уже работает общий адаптерный
-интерфейс, не завязанный на BingX напрямую.
+Через Exchange Adapter Layer (services/exchanges/) — задача от 13.07.2026
+("мультибиржевость обязательна") добавила реальный выбор биржи прямо в
+/setkeys (BingX/Bybit/Binance/MEXC — OKX не реализован, см.
+services/exchanges/registry.py) вместо прежнего жёсткого BingX. Инструкции
+по получению ключа (_INSTRUCTIONS_BY_EXCHANGE) — единственное, что реально
+разное между биржами на этом экране; остальной путь (валидация, шифрование,
+сохранение) уже был написан exchange-agnostic на предыдущем этапе.
 """
 
 import asyncio
@@ -24,29 +25,69 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.container import get_db
-from core.keyboards import cancel_keyboard, main_menu_keyboard
+from core.keyboards import cancel_keyboard, main_menu_keyboard, exchange_choice_keyboard, EXCHANGE_LABELS
 from core.user_context import get_current_user_id, require_auth
 from services.exchange_api import validate_keys, set_current_exchange, clear_current_exchange
 
-_EXCHANGE = 'bingx'
-
 logger = logging.getLogger(__name__)
 
-_INSTRUCTIONS = (
-    "🔑 Привяжем твои BingX API-ключи.\n\n"
-    "⚠️ ВАЖНО: создавай ключ с правами ТОЛЬКО НА ЧТЕНИЕ (Read-Only). "
-    "НЕ включай торговлю и вывод средств — боту для аналитики это не нужно, "
-    "а тебе так безопаснее.\n\n"
-    "Как получить: BingX → Аккаунт → API Management → Create API Key → "
-    "оставь только разрешение «Read».\n\n"
-    "Пришли API Key (или «отмена»):"
-)
+_INSTRUCTIONS_BY_EXCHANGE = {
+    'bingx': (
+        "🔑 Привяжем твои BingX API-ключи.\n\n"
+        "⚠️ ВАЖНО: создавай ключ с правами ТОЛЬКО НА ЧТЕНИЕ (Read-Only). "
+        "НЕ включай торговлю и вывод средств — боту для аналитики это не нужно, "
+        "а тебе так безопаснее.\n\n"
+        "Как получить: BingX → Аккаунт → API Management → Create API Key → "
+        "оставь только разрешение «Read».\n\n"
+        "Пришли API Key (или «отмена»):"
+    ),
+    'bybit': (
+        "🔑 Привяжем твои Bybit API-ключи.\n\n"
+        "⚠️ ВАЖНО: создавай ключ с правами ТОЛЬКО НА ЧТЕНИЕ (без Trade/Withdraw).\n\n"
+        "Как получить: Bybit → Profile → API → Create New Key → System-generated API Keys → "
+        "оставь только разрешения на чтение (Read-Only), Unified Trading Account.\n\n"
+        "Пришли API Key (или «отмена»):"
+    ),
+    'binance': (
+        "🔑 Привяжем твои Binance API-ключи.\n\n"
+        "⚠️ ВАЖНО: создавай ключ с правами ТОЛЬКО НА ЧТЕНИЕ (без Enable Trading/Withdrawals).\n\n"
+        "Как получить: Binance → Account → API Management → Create API → "
+        "включи только Enable Reading, для USDT-M Futures аккаунта.\n\n"
+        "Пришли API Key (или «отмена»):"
+    ),
+    'mexc': (
+        "🔑 Привяжем твои MEXC API-ключи.\n\n"
+        "⚠️ ВАЖНО: создавай ключ с правами ТОЛЬКО НА ЧТЕНИЕ (без Trade/Withdraw).\n\n"
+        "Как получить: MEXC → Account → API Management → Create API → "
+        "оставь только права на чтение, для Futures-аккаунта.\n\n"
+        "Пришли API Key (или «отмена»):"
+    ),
+}
 
 
 async def setkeys_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['state'] = 'awaiting_bingx_key'
+    context.user_data['state'] = 'awaiting_exchange_choice'
     context.user_data.pop('pending_bingx_api_key', None)
-    await update.message.reply_text(_INSTRUCTIONS, reply_markup=cancel_keyboard())
+    context.user_data.pop('pending_exchange', None)
+    await update.message.reply_text(
+        "Какую биржу подключаем?",
+        reply_markup=exchange_choice_keyboard()
+    )
+
+
+async def handle_awaiting_exchange_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    exchange = EXCHANGE_LABELS.get(text)
+    if not exchange:
+        await update.message.reply_text(
+            "Выбери биржу на клавиатуре 👇", reply_markup=exchange_choice_keyboard()
+        )
+        return
+    context.user_data['pending_exchange'] = exchange
+    context.user_data['state'] = 'awaiting_bingx_key'
+    await update.message.reply_text(
+        _INSTRUCTIONS_BY_EXCHANGE[exchange], reply_markup=cancel_keyboard()
+    )
 
 
 async def handle_awaiting_bingx_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,8 +109,10 @@ async def handle_awaiting_bingx_key(update: Update, context: ContextTypes.DEFAUL
 async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     secret_key = update.message.text.strip()
     api_key = context.user_data.get('pending_bingx_api_key')
+    exchange = context.user_data.get('pending_exchange', 'bingx')
     context.user_data['state'] = None
     context.user_data.pop('pending_bingx_api_key', None)
+    context.user_data.pop('pending_exchange', None)
 
     try:
         await update.message.delete()
@@ -83,7 +126,7 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
         return
 
     msg = await update.effective_chat.send_message("⏳ Проверяю ключи на бирже...")
-    result = await validate_keys(_EXCHANGE, api_key, secret_key)
+    result = await validate_keys(exchange, api_key, secret_key)
 
     if not result.get('success'):
         await msg.edit_text(
@@ -97,6 +140,7 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
     user_id = get_current_user_id(context)
     try:
         db.set_bingx_keys(user_id, api_key, secret_key)
+        db.set_exchange(user_id, exchange)
     except Exception as e:
         logger.error(f"setkeys: не удалось сохранить ключи для {user_id}: {e}")
         await msg.edit_text("❌ Ключи проверены, но не удалось их сохранить. Попробуй ещё раз позже: /setkeys")
@@ -130,13 +174,13 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
     # запроса (validate_keys() сама восстанавливает прежнее значение через
     # token/reset после проверки, см. services/bingx_api.py).
     asyncio.create_task(
-        _run_background_history_import(user_id, update.effective_chat.id, api_key, secret_key, context.bot)
+        _run_background_history_import(user_id, update.effective_chat.id, exchange, api_key, secret_key, context.bot)
     )
 
 
-async def _run_background_history_import(user_id: str, chat_id, api_key: str, secret_key: str, bot):
+async def _run_background_history_import(user_id: str, chat_id, exchange: str, api_key: str, secret_key: str, bot):
     from services.history_import import import_trade_history
-    set_current_exchange(_EXCHANGE, api_key, secret_key)
+    set_current_exchange(exchange, api_key, secret_key)
     try:
         db = get_db()
         result = await import_trade_history(db, user_id)
