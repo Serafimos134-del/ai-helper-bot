@@ -504,6 +504,22 @@ class Database:
                 (str(invoice_id),)
             )
 
+    def set_exchange(self, user_id: str, exchange: str):
+        """Какую биржу выбрал пользователь при /setkeys (задача от
+        13.07.2026 — "мультибиржевость обязательна"). users.exchange
+        существовала в схеме и раньше (core/user_context.py уже читал её
+        для резолвинга адаптера), но сеттера не было — /setkeys был
+        жёстко привязан к BingX. Ключи по-прежнему одна пара на
+        пользователя (bingx_api_key/bingx_secret_key — исторически
+        названные колонки, теперь хранят ключи ЛЮБОЙ выбранной биржи, не
+        только BingX) — модель "одна подключённая биржа на пользователя",
+        не одновременно несколько."""
+        with self.transaction():
+            self._execute(
+                "UPDATE users SET exchange = ? WHERE user_id = ?",
+                (exchange, user_id)
+            )
+
     def set_bingx_keys(self, user_id: str, api_key: str, secret_key: str):
         with self.transaction():
             self._execute(

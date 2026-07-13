@@ -13,6 +13,7 @@ from core.container import get_db, get_ai_analyzer
 from core.keyboards import main_menu_keyboard
 from core.billing import SUBSCRIPTION_PLANS, SUBSCRIPTION_ASSET
 from core.user_context import require_auth, get_current_user_id
+from core.ai_rate_limit import check_ai_cooldown, cooldown_message
 from services.exchange_api import get_balance
 from services.auto_sync import sync_trades
 from core.scheduler import update_pinned_status, _build_status_text
@@ -251,6 +252,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ai_fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_auth(update, context):
+        return
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait))
         return
     db = get_db()
     ai_analyzer = get_ai_analyzer()

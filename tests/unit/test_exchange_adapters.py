@@ -15,7 +15,20 @@ def test_get_adapter_resolves_bingx():
     assert isinstance(get_adapter(None), BingXAdapter)  # default fallback
 
 
-@pytest.mark.parametrize("exchange", ["binance", "bybit", "okx", "mexc"])
+@pytest.mark.parametrize("exchange,adapter_cls_name", [
+    ("bybit", "BybitAdapter"),
+    ("binance", "BinanceAdapter"),
+    ("mexc", "MEXCAdapter"),
+])
+def test_get_adapter_resolves_newly_implemented_exchanges(exchange, adapter_cls_name):
+    """Задача от 13.07.2026 ("мультибиржевость обязательна") — Bybit/
+    Binance/MEXC перестали быть заглушками ExchangeNotImplementedError."""
+    from services.exchanges import registry
+    adapter = registry.get_adapter(exchange)
+    assert type(adapter).__name__ == adapter_cls_name
+
+
+@pytest.mark.parametrize("exchange", ["okx"])
 def test_supported_but_unimplemented_exchanges_raise_clearly(exchange):
     from services.exchanges.registry import get_adapter, ExchangeNotImplementedError, SUPPORTED_EXCHANGES
     assert exchange in SUPPORTED_EXCHANGES
@@ -36,6 +49,90 @@ async def test_bingx_adapter_delegates_to_bingx_api():
     with patch('services.bingx_api.get_balance', new=AsyncMock(return_value={'success': True, 'equity': 42.0})):
         result = await adapter.get_balance()
     assert result['equity'] == 42.0
+
+
+@pytest.mark.asyncio
+async def test_bybit_adapter_delegates_to_bybit_api():
+    from services.exchanges.bybit import BybitAdapter
+    adapter = BybitAdapter()
+    with patch('services.bybit_api.get_balance', new=AsyncMock(return_value={'success': True, 'equity': 11.0})):
+        result = await adapter.get_balance()
+    assert result['equity'] == 11.0
+
+
+@pytest.mark.asyncio
+async def test_binance_adapter_delegates_to_binance_api():
+    from services.exchanges.binance import BinanceAdapter
+    adapter = BinanceAdapter()
+    with patch('services.binance_api.get_balance', new=AsyncMock(return_value={'success': True, 'equity': 22.0})):
+        result = await adapter.get_balance()
+    assert result['equity'] == 22.0
+
+
+@pytest.mark.asyncio
+async def test_mexc_adapter_delegates_to_mexc_api():
+    from services.exchanges.mexc import MEXCAdapter
+    adapter = MEXCAdapter()
+    with patch('services.mexc_api.get_balance', new=AsyncMock(return_value={'success': True, 'equity': 33.0})):
+        result = await adapter.get_balance()
+    assert result['equity'] == 33.0
+
+
+def test_bybit_symbol_normalization():
+    from services.bybit_api import _to_bot_symbol, _to_exchange_symbol
+    assert _to_bot_symbol('BTCUSDT') == 'BTC-USDT'
+    assert _to_exchange_symbol('BTC-USDT') == 'BTCUSDT'
+
+
+def test_binance_symbol_normalization():
+    from services.binance_api import _to_bot_symbol, _to_exchange_symbol
+    assert _to_bot_symbol('ETHUSDT') == 'ETH-USDT'
+    assert _to_exchange_symbol('ETH-USDT') == 'ETHUSDT'
+
+
+def test_mexc_symbol_normalization():
+    from services.mexc_api import _to_bot_symbol, _to_exchange_symbol
+    assert _to_bot_symbol('BTC_USDT') == 'BTC-USDT'
+    assert _to_exchange_symbol('BTC-USDT') == 'BTC_USDT'
+
+
+def test_binance_position_reconstruction_simple_round_trip():
+    """Открытие + полное закрытие одним ордером каждое — простейший случай
+    восстановления закрытой позиции из /userTrades (см. docstring
+    services/binance_api.py — у Binance нет готового эндпоинта "закрытые
+    позиции", в отличие от BingX/Bybit)."""
+    from services.binance_api import _reconstruct_closed_positions
+    trades = [
+        {'side': 'BUY', 'qty': '1.0', 'price': '100.0', 'realizedPnl': '0', 'time': 1000},
+        {'side': 'SELL', 'qty': '1.0', 'price': '110.0', 'realizedPnl': '10.0', 'time': 2000},
+    ]
+    positions = _reconstruct_closed_positions('BTC-USDT', trades, leverage=5)
+    assert len(positions) == 1
+    p = positions[0]
+    assert p['side'] == 'LONG'
+    assert p['entry_price'] == 100.0
+    assert p['exit_price'] == 110.0
+    assert p['realized_pnl'] == 10.0
+    assert p['leverage'] == 5
+
+
+def test_binance_position_reconstruction_dca_then_partial_closes():
+    """Два входа (DCA) + два частичных выхода — проверяет средневзвешенные
+    цены входа/выхода, а не только простой случай 1 сделка/1 сделка."""
+    from services.binance_api import _reconstruct_closed_positions
+    trades = [
+        {'side': 'BUY', 'qty': '1.0', 'price': '100.0', 'realizedPnl': '0', 'time': 1000},
+        {'side': 'BUY', 'qty': '1.0', 'price': '120.0', 'realizedPnl': '0', 'time': 1500},
+        {'side': 'SELL', 'qty': '1.0', 'price': '130.0', 'realizedPnl': '15.0', 'time': 2000},
+        {'side': 'SELL', 'qty': '1.0', 'price': '150.0', 'realizedPnl': '35.0', 'time': 2500},
+    ]
+    positions = _reconstruct_closed_positions('BTC-USDT', trades, leverage=3)
+    assert len(positions) == 1
+    p = positions[0]
+    assert p['entry_price'] == 110.0  # (100+120)/2
+    assert p['exit_price'] == 140.0   # (130+150)/2
+    assert p['realized_pnl'] == 50.0
+    assert p['quantity'] == 2.0
 
 
 @pytest.mark.asyncio

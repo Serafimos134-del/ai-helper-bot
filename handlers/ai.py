@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from core.container import get_ai_analyzer, get_orchestrator, get_db
 from core.keyboards import ai_menu_keyboard, cancel_keyboard, BTN_BACK, CONSILIUM_OPEN, CONSILIUM_SETUP
 from core.user_context import get_current_user_id, require_auth
+from core.ai_rate_limit import check_ai_cooldown, cooldown_message
 from services.bingx_api import get_top_tickers, get_kline
 from services.exchange_api import get_open_positions
 from utils.telegram_text import clean_markdown as _clean, strip_llm_self_correction
@@ -22,7 +23,11 @@ async def _send_chunks(obj, text: str, **kwargs):
         await obj.reply_text(text[i:i+limit], **kwargs)
 
 
-async def show_market_overview(update: Update):
+async def show_market_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait))
+        return
     ai_analyzer = get_ai_analyzer()
     msg = await update.message.reply_text("🌐 Собираю данные рынка...")
     result = await get_top_tickers(10)
@@ -62,7 +67,11 @@ async def show_market_overview(update: Update):
     await _send_chunks(update.message, f"🌐 Обзор рынка от AI\n\n{analysis}", reply_markup=ai_menu_keyboard())
 
 
-async def show_trends(update: Update):
+async def show_trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait))
+        return
     ai_analyzer = get_ai_analyzer()
     msg = await update.message.reply_text("📊 Анализирую тренды...")
     symbols = ["BTC-USDT", "ETH-USDT"]
@@ -115,6 +124,10 @@ async def show_trends(update: Update):
 
 
 async def show_journal_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait))
+        return
     db = get_db()
     ai_analyzer = get_ai_analyzer()
     msg = await update.message.reply_text("🤖 Анализирую журнал сделок...")
@@ -162,6 +175,10 @@ async def show_coach(update: Update, context: ContextTypes.DEFAULT_TYPE):
     иначе платная фича была бы доступна без подписки (см. MULTITENANCY_
     MIGRATION_PLAN.md, Этап 3)."""
     if not await require_auth(update, context):
+        return
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait))
         return
     from services.coach_engine import CoachEngine
     ai_analyzer = get_ai_analyzer()
@@ -247,6 +264,10 @@ async def consilium_analyze_position(update: Update, context: ContextTypes.DEFAU
     if not chosen:
         await update.message.reply_text("Выбери позицию из списка.", reply_markup=consilium_keyboard())
         return
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait), reply_markup=consilium_keyboard())
+        return
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую позицию...")
     result = await orchestrator.review_open_position(chosen, user_id=get_current_user_id(context))
@@ -276,6 +297,10 @@ async def consilium_process_setup(update: Update, context: ContextTypes.DEFAULT_
             "Не удалось определить тикер и направление. Укажите явно, например: BTC long",
             reply_markup=cancel_keyboard()
         )
+        return
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait), reply_markup=cancel_keyboard())
         return
     context.user_data['state'] = None
     msg    = await update.message.reply_text("🔄 Анализирую сетап...")

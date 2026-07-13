@@ -9,6 +9,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from core.container import get_orchestrator, get_ai_analyzer, get_db
+from core.ai_rate_limit import check_ai_cooldown, cooldown_message
 from utils.formatting import format_verdict, format_score_breakdown
 from utils.telegram_text import clean_markdown, strip_llm_self_correction
 
@@ -228,6 +229,10 @@ async def generate_ai_review(query, trade_id, user_id: str = 'default'):
     if not trade:
         await query.edit_message_text("❌ Сделка не найдена.")
         return
+    wait = check_ai_cooldown(user_id)
+    if wait > 0:
+        await query.edit_message_text(cooldown_message(wait))
+        return
     prompt = (
         f"Дай краткую оценку сделке (2-3 предложения): что хорошо, что плохо, оценка от 1 до 10.\n"
         f"Символ: {trade['symbol']}, сторона: {trade['side']}, вход: {trade['entry_price']}, "
@@ -250,6 +255,10 @@ async def generate_full_ai_analysis(query, trade_id, user_id: str = 'default'):
     trade = db.find_trade_by_id(trade_id, user_id=user_id)
     if not trade:
         await query.edit_message_text("❌ Сделка не найдена.")
+        return
+    wait = check_ai_cooldown(user_id)
+    if wait > 0:
+        await query.edit_message_text(cooldown_message(wait))
         return
     await query.edit_message_text("🔄 Запускаю полный AI-анализ...")
     try:

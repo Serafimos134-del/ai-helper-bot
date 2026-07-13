@@ -23,7 +23,9 @@ from handlers.ai import (
     consilium_new_setup, consilium_process_setup, consilium_keyboard,
 )
 from handlers.journal import show_journal
-from handlers.onboarding import handle_awaiting_bingx_key, handle_awaiting_bingx_secret
+from handlers.onboarding import (
+    handle_awaiting_exchange_choice, handle_awaiting_bingx_key, handle_awaiting_bingx_secret,
+)
 from handlers.risk_profile import (
     RISK_ONBOARDING_STATES, handle_awaiting_risk_level, handle_awaiting_trading_style,
     handle_awaiting_experience_level, handle_awaiting_risk_goal,
@@ -36,16 +38,20 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text  = update.message.text.strip()
     state = context.user_data.get('state')
 
-    # Онбординг BingX-ключей (handlers/onboarding.py, /setkeys) открыт
-    # независимо от подписки — обрабатываем ДО require_auth, иначе
-    # пользователь без подписки не смог бы ввести свои ключи в принципе.
-    if state in ('awaiting_bingx_key', 'awaiting_bingx_secret'):
+    # Онбординг ключей биржи (handlers/onboarding.py, /setkeys — с задачи
+    # от 13.07.2026 включает выбор биржи) открыт независимо от подписки —
+    # обрабатываем ДО require_auth, иначе пользователь без подписки не
+    # смог бы ввести свои ключи в принципе.
+    if state in ('awaiting_exchange_choice', 'awaiting_bingx_key', 'awaiting_bingx_secret'):
         if text == BTN_CANCEL or text.strip().lower() in ('отмена', 'cancel'):
             context.user_data['state'] = None
             context.user_data.pop('pending_bingx_api_key', None)
+            context.user_data.pop('pending_exchange', None)
             await update.message.reply_text("Отменено.", reply_markup=main_menu_keyboard())
             return
-        if state == 'awaiting_bingx_key':
+        if state == 'awaiting_exchange_choice':
+            await handle_awaiting_exchange_choice(update, context)
+        elif state == 'awaiting_bingx_key':
             await handle_awaiting_bingx_key(update, context)
         else:
             await handle_awaiting_bingx_secret(update, context)
@@ -171,9 +177,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == CONSILIUM_SETUP:
         await consilium_new_setup(update, context)
     elif text == BTN_AI_MARKET:
-        await show_market_overview(update)
+        await show_market_overview(update, context)
     elif text == BTN_AI_TRENDS:
-        await show_trends(update)
+        await show_trends(update, context)
     elif text == BTN_AI_LEARN:
         await show_journal_analysis(update, context)
     elif text == BTN_AI_COACH:
