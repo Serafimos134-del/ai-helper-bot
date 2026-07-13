@@ -104,12 +104,20 @@ async def _request(path: str, params: dict = None) -> dict:
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
-                return {'error': 'Unexpected response format', 'success': False, '_transport_error': True}
+                return _transport_error('Unexpected response format')
             return data
     except httpx.HTTPError as e:
-        return {'error': str(e), 'success': False, '_transport_error': True}
+        return _transport_error(str(e))
     except ValueError as e:
-        return {'error': f'Invalid JSON response: {e}', 'success': False, '_transport_error': True}
+        return _transport_error(f'Invalid JSON response: {e}')
+
+
+def _transport_error(message: str) -> dict:
+    # 'message' задублирован с 'error' намеренно — get_balance() и т.д.
+    # читают именно 'message' (формат бизнес-ошибок MEXC), иначе
+    # транспортная ошибка молча превращалась бы в бесполезное "Неизвестная
+    # ошибка" (та же ошибка, что нашлась и исправлена в bybit_api.py).
+    return {'error': message, 'message': message, 'success': False, '_transport_error': True}
 
 
 async def get_balance() -> dict:
