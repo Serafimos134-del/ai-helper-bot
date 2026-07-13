@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from core.container import get_db, get_ai_analyzer
 from core.keyboards import trading_menu_keyboard
 from core.user_context import get_current_user_id
+from core.ai_rate_limit import check_ai_cooldown, cooldown_message
 from services.exchange_api import get_balance
 from services.trading_stats import format_stats_message
 from utils.telegram_text import clean_markdown as _clean, send_long as _send_long
@@ -94,6 +95,10 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    wait = check_ai_cooldown(get_current_user_id(context))
+    if wait > 0:
+        await update.message.reply_text(cooldown_message(wait))
+        return
     ai_analyzer = get_ai_analyzer()
     msg  = await update.message.reply_text("🤖 Анализирую...")
     # ai_analyzer.analyze() — синхронный метод с блокирующим requests.post

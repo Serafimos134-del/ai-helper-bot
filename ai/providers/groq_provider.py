@@ -15,15 +15,56 @@ logger = logging.getLogger(__name__)
 
 PROXY_URL = "socks5://127.0.0.1:1080"
 
-# Default rate limit: minimum interval between requests (seconds)
-_RATE_LIMIT_DELAY = 2.0
-_last_request_time = 0.0
-_rate_lock = threading.Lock()
+# Раньше здесь был фиксированный интервал "1 запрос / 2с на весь процесс"
+# (threading.Lock + time.sleep(2) внутри него) — независимо от того, сколько
+# реально разрешает аккаунт Groq. Эмпирически (нагрузочный тест на реальном
+# коде rate-limiter'а, без обращения к настоящему API) это давало задержку
+# ~2с на каждого ДОПОЛНИТЕЛЬНОГО одновременного пользователя — 40
+# параллельных AI-запросов означали ~80с ожидания для последнего в очереди,
+# при том что сам Groq не был узким местом (см. отчёт аудита от 13.07.2026).
+#
+# Token bucket, откалиброванный под реальную квоту аккаунта — можно
+# добираться до фактического лимита короткими всплесками, а не только по
+# одному запросу раз в 2с. GROQ_RPM по умолчанию — консервативное значение
+# под Free tier Groq (30 RPM у llama-3.3-70b-versatile на середину 2026,
+# см. console.groq.com/docs/rate-limits) с небольшим запасом; на платном
+# тарифе лимит выше — поднять через переменную окружения GROQ_RPM.
+GROQ_RPM = int(os.getenv('GROQ_RPM', '28'))
+GROQ_BURST = int(os.getenv('GROQ_BURST', str(min(GROQ_RPM, 10))))
 
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.0  # initial backoff in seconds (will be multiplied by 2 each retry)
 RETRYABLE_STATUSES = {429, 502, 503, 504}
+
+
+class _TokenBucket:
+    """Потокобезопасный token bucket — вызывается из воркер-тредов
+    ThreadPoolExecutor (run_in_executor), поэтому обычные threading-примитивы,
+    не asyncio. capacity — сколько запросов можно сделать одним всплеском
+    без ожидания; rate_per_sec — скорость восполнения после этого."""
+
+    def __init__(self, rate_per_sec: float, capacity: float):
+        self.rate = rate_per_sec
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last = time.monotonic()
+        self.lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                self.tokens = min(self.capacity, self.tokens + (now - self.last) * self.rate)
+                self.last = now
+                if self.tokens >= 1:
+                    self.tokens -= 1
+                    return
+                wait = (1 - self.tokens) / self.rate
+            time.sleep(wait)
+
+
+_bucket = _TokenBucket(rate_per_sec=GROQ_RPM / 60.0, capacity=GROQ_BURST)
 
 
 class GroqProviderError(Exception):
@@ -50,8 +91,6 @@ class GroqProvider(BaseProvider):
         Send a request to Groq with rate limiting and retry logic.
         Returns the model's response text.
         """
-        global _last_request_time
-
         temp = temperature if temperature is not None else self.default_temperature
         max_tok = max_tokens if max_tokens is not None else self.default_max_tokens
 
@@ -69,14 +108,10 @@ class GroqProvider(BaseProvider):
 
         last_exception = None
         for attempt in range(MAX_RETRIES + 1):
-            # Apply rate limiting (thread-safe)
-            with _rate_lock:
-                now = time.time()
-                elapsed = now - _last_request_time
-                if elapsed < _RATE_LIMIT_DELAY:
-                    sleep_time = _RATE_LIMIT_DELAY - elapsed
-                    time.sleep(sleep_time)
-                _last_request_time = time.time()
+            # Token bucket вместо фиксированной паузы — см. комментарий у
+            # GROQ_RPM выше. Ретраи одного и того же запроса тоже проходят
+            # через бакет, а не идут в обход него.
+            _bucket.acquire()
 
             start_time = time.time()
             try:

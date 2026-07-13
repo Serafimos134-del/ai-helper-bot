@@ -171,9 +171,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == CONSILIUM_SETUP:
         await consilium_new_setup(update, context)
     elif text == BTN_AI_MARKET:
-        await show_market_overview(update)
+        await show_market_overview(update, context)
     elif text == BTN_AI_TRENDS:
-        await show_trends(update)
+        await show_trends(update, context)
     elif text == BTN_AI_LEARN:
         await show_journal_analysis(update, context)
     elif text == BTN_AI_COACH:
