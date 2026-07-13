@@ -109,7 +109,17 @@ async def handle_awaiting_bingx_secret(update: Update, context: ContextTypes.DEF
         "⏳ Подтягиваю историю закрытых сделок с биржи в фоне (до ~15 секунд) — "
         "пришлю итог отдельным сообщением."
     )
-    await update.effective_chat.send_message("Главное меню:", reply_markup=main_menu_keyboard())
+
+    if context.user_data.get('guided_onboarding'):
+        # Управляемый онбординг (задача от 12.07.2026 — /start должен
+        # проводить по шагам, не просто перечислять команды в /help):
+        # после привязки ключей сразу продолжаем риск-профилем, флаг
+        # снимается в handlers/risk_profile.py:handle_awaiting_risk_goal.
+        from handlers.risk_profile import riskprofile_command
+        await update.effective_chat.send_message("Осталось настроить риск-профиль — 4 коротких шага.")
+        await riskprofile_command(update, context)
+    else:
+        await update.effective_chat.send_message("Главное меню:", reply_markup=main_menu_keyboard())
 
     # Фоново, чтобы не задерживать ответ пользователю — /riskscore (Этап
     # "персональная модель риска") требует минимум 5 закрытых сделок,
