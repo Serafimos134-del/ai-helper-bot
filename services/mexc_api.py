@@ -101,8 +101,17 @@ async def _request(path: str, params: dict = None) -> dict:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            # См. bybit_api.py:_request — читаем тело ДО проверки статуса,
+            # иначе JSON-тело биржи с реальной причиной ошибки (code/message)
+            # при non-2xx статусе терялось бы целиком за обёрткой httpx.
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
+            if response.status_code != 200:
+                if isinstance(data, dict) and (data.get('message') or data.get('code') is not None):
+                    return data
+                return _transport_error(f"HTTP {response.status_code}: {response.text[:300] or response.reason_phrase}")
             if not isinstance(data, dict):
                 return _transport_error('Unexpected response format')
             return data

@@ -120,13 +120,21 @@ async def _request(path: str, params: dict = None) -> dict:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, params=params, headers=headers)
-            # raise_for_status() ДО json() — если Bybit (или прокси/шлюз перед
-            # ним) вернул non-2xx статус без валидного JSON-тела, response.json()
-            # упал бы с ValueError, и настоящая причина (сам HTTP-статус) не
-            # попала бы в текст ошибки вообще — только "Invalid JSON response:
-            # Expecting value...", бесполезно для диагностики.
-            response.raise_for_status()
-            data = response.json()
+            # Раньше raise_for_status() вызывался ДО чтения тела ответа —
+            # если Bybit при non-2xx статусе всё же прислал JSON с retCode/
+            # retMsg (у части ошибок это так, HTTP-статус и бизнес-код не
+            # взаимоисключающие), этот JSON терялся целиком, и пользователь
+            # видел только обёртку httpx ("Client error '401 ...' for url
+            # ..."), а не реальный текст Bybit — вместо диагностики ещё один
+            # уровень непрозрачности (найдено на реальном тесте с ключами).
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
+            if response.status_code != 200:
+                if isinstance(data, dict) and (data.get('retMsg') or data.get('retCode') is not None):
+                    return data
+                return _transport_error(f"HTTP {response.status_code}: {response.text[:300] or response.reason_phrase}")
             if not isinstance(data, dict):
                 return _transport_error('Unexpected response format')
             return data
