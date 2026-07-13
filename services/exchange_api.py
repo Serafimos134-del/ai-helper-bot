@@ -47,6 +47,23 @@ def clear_current_exchange() -> None:
     _adapter_var.set(None)
 
 
+def set_owner_exchange() -> None:
+    """Явно устанавливает глобальные .env-ключи владельца — единственное
+    место, где это делается. Нужно ДВУМ путям:
+    1. core/user_context.py:resolve_user_context — когда резолвится сам
+       владелец (is_owner=True) и у него нет своих привязанных ключей
+       (переходный период, чтобы не заблокировать себя самого).
+    2. core/scheduler.py:auto_sync_job/update_pinned_status — owner-only
+       фоновые джобы, которые НЕ проходят через resolve_user_context (это
+       job_queue-колбэки, не апдейты Telegram) и без явного вызова
+       остались бы вовсе без credentials, раз services/bingx_api.py:
+       _get_credentials() больше не откатывается на .env неявно ни для
+       кого (см. её докстринг — раньше это давало утечку чужого баланса
+       любому пользователю без своих ключей)."""
+    from services.bingx_api import BINGX_API_KEY, BINGX_SECRET_KEY
+    set_current_exchange(DEFAULT_EXCHANGE, BINGX_API_KEY, BINGX_SECRET_KEY)
+
+
 def _current():
     adapter = _adapter_var.get()
     if adapter is None:

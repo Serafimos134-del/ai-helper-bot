@@ -13,7 +13,22 @@ from services.trading_stats import format_stats_message
 from utils.telegram_text import clean_markdown as _clean, send_long as _send_long
 
 
-async def show_balance(update: Update):
+async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = get_db()
+    user_id = get_current_user_id(context)
+    user = db.get_user(user_id)
+    # Без своих привязанных ключей запрос к бирже теперь честно вернёт
+    # ошибку авторизации (см. core/user_context.py — раньше он тихо
+    # откатывался на РЕАЛЬНЫЙ баланс владельца для любого пользователя
+    # без ключей). Ловим это заранее понятным сообщением, а не отдаём
+    # пользователю сырую ошибку BingX про неверный API-ключ.
+    if not context.user_data.get('is_owner') and (not user or not user.get('bingx_api_key')):
+        await update.message.reply_text(
+            "Сначала привяжи BingX-ключи (только чтение): /setkeys",
+            reply_markup=trading_menu_keyboard()
+        )
+        return
+
     msg = await update.message.reply_text("⏳ Получаю баланс...")
     result = await get_balance()
     if result.get('success'):

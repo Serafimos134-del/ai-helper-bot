@@ -21,7 +21,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.container import get_db
-from services.exchange_api import set_current_exchange, clear_current_exchange
+from services.exchange_api import set_current_exchange, set_owner_exchange, clear_current_exchange
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +81,25 @@ async def resolve_user_context(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"resolve_user_context: не удалось получить ключи биржи для {db_user['user_id']}: {e}")
         api_key, secret_key = None, None
 
-    set_current_exchange(exchange, api_key, secret_key)
-    # Если своих ключей нет — адаптер очищен внутри set_current_exchange:
-    # BingXAdapter откатится на глобальный .env fallback (текущий
-    # single-user режим, пока онбординг ключей не пройден всеми
-    # пользователями), а не на ключи чужого предыдущего запроса.
+    if api_key and secret_key:
+        set_current_exchange(exchange, api_key, secret_key)
+    elif is_owner:
+        # Owner-only транзитный фолбэк на глобальные .env-ключи, пока
+        # владелец сам не прошёл /setkeys. КРИТИЧНО: это ветвится по
+        # is_owner, а не применяется всем без ключей — раньше
+        # (services/bingx_api.py:_get_credentials()) откат на .env был
+        # неявным для ЛЮБОГО пользователя без своих ключей, и подписчик,
+        # ни разу не привязавший ключи, тихо видел РЕАЛЬНЫЙ баланс
+        # владельца при нажатии "Баланс" (найдено на реальном тесте с
+        # другого Telegram-аккаунта — утечка чужих финансовых данных).
+        set_owner_exchange()
+    else:
+        clear_current_exchange()
+        # Обычный подписчик без своих привязанных ключей: адаптер остаётся
+        # очищенным — запрос к бирже вернёт понятную ошибку авторизации
+        # вместо чужих данных. handlers/trading.py и др. дополнительно
+        # проверяют наличие ключей заранее и подсказывают /setkeys, не
+        # дожидаясь ошибки биржи.
 
 
 def get_current_user_id(context: ContextTypes.DEFAULT_TYPE, default: str = 'default') -> str:

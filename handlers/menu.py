@@ -153,7 +153,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_BACK:
         await update.message.reply_text("🏠 *Главное меню*\nВыбери раздел:", parse_mode='Markdown', reply_markup=main_menu_keyboard())
     elif text == BTN_BALANCE:
-        await show_balance(update)
+        await show_balance(update, context)
     elif text == BTN_LAST_TRADES:
         await show_last_trades(update, context)
     elif text == BTN_STATS:
