@@ -98,7 +98,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'entering_exit_reason':
         trade_id = context.user_data.get('comment_order_id')
         if trade_id:
-            db.update_trade_metrics(trade_id, exit_comment=text)
+            # user_id — иначе подписчик, подобрав/угадав чужой числовой
+            # trade_id в state (изначально пришедший из callback_data кнопки
+            # "Добавить вывод"), мог бы записать текст в чужую закрытую
+            # сделку (см. AUDIT.md — запись без проверки владения).
+            db.update_trade_metrics(trade_id, user_id=get_current_user_id(context), exit_comment=text)
             await update.message.reply_text("✅ Вывод сохранён.", reply_markup=trading_menu_keyboard())
         context.user_data['state'] = None
         context.user_data.pop('comment_order_id', None)
@@ -107,7 +111,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'entering_entry_reason':
         order_id = context.user_data.get('entry_order_id')
         if order_id:
-            db.update_open_trade_by_order_id(order_id, entry_comment=text)
+            db.update_open_trade_by_order_id(order_id, user_id=get_current_user_id(context), entry_comment=text)
             await update.message.reply_text("✅ Причина входа сохранена.", reply_markup=trading_menu_keyboard())
         context.user_data['state'] = None
         return

@@ -90,7 +90,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS open_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT DEFAULT 'default',
-                    orderId TEXT UNIQUE NOT NULL,
+                    orderId TEXT NOT NULL,
                     symbol TEXT NOT NULL,
                     side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
                     entry_price REAL NOT NULL,
@@ -275,8 +275,33 @@ class Database:
                     pass
 
             self.conn.execute("DELETE FROM open_trades WHERE orderId IS NULL OR orderId = ''")
-            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_orderId ON open_trades(orderId)")
-            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_orderId ON closed_trades(orderId)")
+            # Раньше UNIQUE был глобальным по orderId — псевдо-ID биржи
+            # (services/bingx_api.py: f"{symbol}_{side}", BingX не отдаёт
+            # стабильный ID на позицию целиком) не уникален между разными
+            # пользователями. Два подписчика с LONG по BTC-USDT одновременно
+            # получали одинаковый orderId — INSERT второго тихо падал с
+            # IntegrityError (см. services/auto_sync.py), и трекинг его
+            # позиции пропадал без следа. Составной индекс по (user_id,
+            # orderId) сохраняет дедуп внутри одного пользователя, не мешая
+            # разным пользователям иметь совпадающий псевдо-ID.
+            #
+            # На уже существующих БД open_trades.orderId был объявлен как
+            # "TEXT UNIQUE NOT NULL" прямо в CREATE TABLE — SQLite реализует
+            # такой inline UNIQUE через автоиндекс (sqlite_autoindex_*),
+            # который НЕЛЬЗЯ снять через DROP INDEX (только пересозданием
+            # таблицы). Без этой пересборки DROP/CREATE INDEX ниже был бы
+            # no-op на реальной БД — старое глобальное ограничение осталось
+            # бы в силе, и весь фикс не работал бы там, где это важнее всего
+            # (на уже накопленных данных). closed_trades.orderId такого
+            # inline-констрейнта никогда не имел (уникальность там всегда
+            # была только через отдельный именованный индекс) — для неё
+            # пересборка не нужна.
+            if self._has_column_level_unique('open_trades'):
+                self._rebuild_open_trades_without_column_unique()
+            self.conn.execute("DROP INDEX IF EXISTS idx_open_orderId")
+            self.conn.execute("DROP INDEX IF EXISTS idx_closed_orderId")
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_user_orderId ON open_trades(user_id, orderId)")
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_user_orderId ON closed_trades(user_id, orderId)")
             # order_id добавлен в behavior_events через ALTER TABLE выше (для
             # существующих БД) — индекс создаётся здесь, после того как
             # колонка гарантированно есть, а не в executescript() наверху
@@ -291,6 +316,48 @@ class Database:
                 ('default', default_telegram_id)
             )
             self.conn.commit()
+
+    def _has_column_level_unique(self, table: str) -> bool:
+        """True, если у таблицы есть автоиндекс от inline UNIQUE-констрейнта
+        (объявленного прямо в CREATE TABLE), а не от обычного CREATE INDEX —
+        такие автоиндексы SQLite называет sqlite_autoindex_* и не даёт снять
+        через DROP INDEX."""
+        rows = self.conn.execute(f"PRAGMA index_list({table})").fetchall()
+        return any(row[3] == 'u' and str(row[1]).startswith('sqlite_autoindex_') for row in rows)
+
+    def _rebuild_open_trades_without_column_unique(self):
+        """Пересоздаёт open_trades без inline UNIQUE на orderId (см. вызов в
+        _migrate). Список столбцов — тот же, что в CREATE TABLE выше;
+        колонки копируются явно (не SELECT *), чтобы порядок гарантированно
+        совпадал с обеими сторонами INSERT...SELECT."""
+        cols = ("id, user_id, orderId, symbol, side, entry_price, quantity, leverage, "
+                "unrealized_pnl, stop_loss, take_profit, entry_comment, idea, "
+                "invalidation_sl, dca_count, tp_zones, created_at")
+        logger.info("Пересобираю open_trades: убираю устаревший глобальный UNIQUE(orderId)")
+        self.conn.execute("""
+            CREATE TABLE open_trades_rebuild (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT DEFAULT 'default',
+                orderId TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL CHECK(side IN ('LONG','SHORT')),
+                entry_price REAL NOT NULL,
+                quantity REAL NOT NULL,
+                leverage REAL DEFAULT 1,
+                unrealized_pnl REAL DEFAULT 0,
+                stop_loss REAL,
+                take_profit REAL,
+                entry_comment TEXT DEFAULT '',
+                idea TEXT,
+                invalidation_sl REAL,
+                dca_count INTEGER DEFAULT 0,
+                tp_zones TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute(f"INSERT INTO open_trades_rebuild ({cols}) SELECT {cols} FROM open_trades")
+        self.conn.execute("DROP TABLE open_trades")
+        self.conn.execute("ALTER TABLE open_trades_rebuild RENAME TO open_trades")
 
     # ==================== thread-safe execution ====================
     @retry_on_locked()
@@ -595,8 +662,16 @@ class Database:
 
     # ==================== atomic trade closing ====================
     def close_trade_atomic(self, order_id: str, closed_trade_data: dict) -> int:
+        # user_id из closed_trade_data (всегда проставлен вызывающим кодом,
+        # см. services/auto_sync.py:_build_closed_trade) — без него SELECT/
+        # DELETE по одному orderId задели бы чужую открытую позицию с тем же
+        # псевдо-ID (см. _migrate: составной индекс (user_id, orderId)
+        # теперь допускает такие совпадения между разными пользователями).
+        user_id = closed_trade_data.get('user_id', 'default')
         with self.transaction():
-            cursor = self._execute("SELECT id FROM open_trades WHERE orderId = ?", (order_id,))
+            cursor = self._execute(
+                "SELECT id FROM open_trades WHERE orderId = ? AND user_id = ?", (order_id, user_id)
+            )
             open_row = cursor.fetchone()
             if not open_row:
                 raise ValueError(f"Open trade with orderId {order_id} not found")
@@ -641,7 +716,7 @@ class Database:
             )
             self._execute(insert_sql, params)
             new_id = self._execute("SELECT last_insert_rowid()").fetchone()[0]
-            self._execute("DELETE FROM open_trades WHERE orderId = ?", (order_id,))
+            self._execute("DELETE FROM open_trades WHERE orderId = ? AND user_id = ?", (order_id, user_id))
             logger.info(f"Trade closed atomically: orderId={order_id}, new closed_id={new_id}")
             return new_id
 
@@ -670,7 +745,11 @@ class Database:
             ))
             logger.info(f"Open trade added: orderId={trade['orderId']}")
 
-    def update_open_trade(self, symbol: str, **kwargs):
+    def update_open_trade(self, symbol: str, user_id: str = 'default', **kwargs):
+        # user_id обязателен для WHERE — иначе один запрос обновил бы позиции
+        # по этому symbol сразу у ВСЕХ пользователей (составной индекс
+        # (user_id, orderId) теперь допускает несколько пользователей на
+        # одном и том же символе одновременно, см. close_trade_atomic).
         allowed = ['unrealized_pnl', 'leverage', 'quantity', 'entry_price',
                    'stop_loss', 'take_profit', 'entry_comment',
                    'idea', 'invalidation_sl', 'dca_count', 'tp_zones']
@@ -678,13 +757,13 @@ class Database:
         if not updates:
             return
         set_clause = ", ".join(f"{k}=?" for k in updates)
-        values = list(updates.values()) + [symbol]
+        values = list(updates.values()) + [symbol, user_id]
         with self.transaction():
-            cursor = self._execute(f"UPDATE open_trades SET {set_clause} WHERE symbol=?", values)
+            cursor = self._execute(f"UPDATE open_trades SET {set_clause} WHERE symbol=? AND user_id=?", values)
             if cursor.rowcount == 0:
-                logger.warning(f"update_open_trade: no rows updated for symbol={symbol}")
+                logger.warning(f"update_open_trade: no rows updated for symbol={symbol}, user_id={user_id}")
 
-    def update_open_trade_by_order_id(self, order_id: str, **kwargs):
+    def update_open_trade_by_order_id(self, order_id: str, user_id: str = 'default', **kwargs):
         allowed = ['entry_comment', 'unrealized_pnl', 'leverage', 'quantity', 'entry_price',
                    'stop_loss', 'take_profit',
                    'idea', 'invalidation_sl', 'dca_count', 'tp_zones']
@@ -692,23 +771,23 @@ class Database:
         if not updates:
             return
         set_clause = ", ".join(f"{k}=?" for k in updates)
-        values = list(updates.values()) + [order_id]
+        values = list(updates.values()) + [order_id, user_id]
         with self.transaction():
-            cursor = self._execute(f"UPDATE open_trades SET {set_clause} WHERE orderId=?", values)
+            cursor = self._execute(f"UPDATE open_trades SET {set_clause} WHERE orderId=? AND user_id=?", values)
             if cursor.rowcount == 0:
-                logger.warning(f"update_open_trade_by_order_id: orderId {order_id} not found")
+                logger.warning(f"update_open_trade_by_order_id: orderId {order_id} not found for user_id={user_id}")
 
-    def delete_open_trade(self, symbol: str):
+    def delete_open_trade(self, symbol: str, user_id: str = 'default'):
         with self.transaction():
-            cursor = self._execute("DELETE FROM open_trades WHERE symbol=?", (symbol,))
+            cursor = self._execute("DELETE FROM open_trades WHERE symbol=? AND user_id=?", (symbol, user_id))
             if cursor.rowcount == 0:
-                logger.warning(f"delete_open_trade: no rows for symbol={symbol}")
+                logger.warning(f"delete_open_trade: no rows for symbol={symbol}, user_id={user_id}")
 
-    def delete_open_trade_by_order_id(self, order_id: str):
+    def delete_open_trade_by_order_id(self, order_id: str, user_id: str = 'default'):
         with self.transaction():
-            cursor = self._execute("DELETE FROM open_trades WHERE orderId=?", (order_id,))
+            cursor = self._execute("DELETE FROM open_trades WHERE orderId=? AND user_id=?", (order_id, user_id))
             if cursor.rowcount == 0:
-                logger.warning(f"delete_open_trade_by_order_id: orderId {order_id} not found")
+                logger.warning(f"delete_open_trade_by_order_id: orderId {order_id} not found for user_id={user_id}")
 
     def cleanup_orphan_open_trades(self):
         logger.debug("cleanup_orphan_open_trades skipped (no NULL orderIds allowed)")
@@ -836,7 +915,15 @@ class Database:
             row = self._execute("SELECT * FROM closed_trades WHERE id = ?", (trade_id,)).fetchone()
         return dict(row) if row else None
 
-    def update_trade_metrics(self, trade_id: int, **kwargs):
+    def update_trade_metrics(self, trade_id: int, user_id: str = None, **kwargs):
+        # user_id=None сохраняет старое поведение (без изоляции) для
+        # внутренних/legacy вызовов, тем же паттерном, что и add_comment()
+        # выше; вызывающий код, где trade_id приходит из пользовательского
+        # callback_data (например core/router.py: "set_setup_"/"ai_full_",
+        # или после ручного разбора сделки), обязан передавать user_id
+        # текущего пользователя — иначе подписчик, подобрав/угадав чужой
+        # числовой trade_id, мог записать данные в чужую сделку (найдено
+        # при аудите — та же ошибка, что уже чинили для чтения в journal.py).
         allowed = ['risk_percent', 'leverage', 'stop_loss', 'take_profit', 'risk_reward',
                    'entry_comment', 'exit_comment', 'ai_review',
                    'holding_minutes', 'btc_price', 'eth_price', 'market_trend',
@@ -847,11 +934,16 @@ class Database:
         if not updates:
             return
         set_clause = ", ".join(f"{k}=?" for k in updates)
-        values = list(updates.values()) + [trade_id]
+        if user_id is not None:
+            sql = f"UPDATE closed_trades SET {set_clause} WHERE id=? AND user_id=?"
+            values = list(updates.values()) + [trade_id, user_id]
+        else:
+            sql = f"UPDATE closed_trades SET {set_clause} WHERE id=?"
+            values = list(updates.values()) + [trade_id]
         with self.transaction():
-            cursor = self._execute(f"UPDATE closed_trades SET {set_clause} WHERE id=?", values)
+            cursor = self._execute(sql, values)
             if cursor.rowcount == 0:
-                logger.warning(f"update_trade_metrics: trade_id {trade_id} not found")
+                logger.warning(f"update_trade_metrics: trade_id {trade_id} not found (user_id={user_id})")
 
     def get_last_closed_id(self):
         row = self._execute("SELECT MAX(id) FROM closed_trades").fetchone()

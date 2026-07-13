@@ -280,6 +280,7 @@ async def _sync_trades_impl(bot, chat_id: str, user_id: str = 'default') -> dict
                 try:
                     await asyncio.to_thread(db.update_open_trade_by_order_id,
                         oid,
+                        user_id=user_id,
                         unrealized_pnl=float(trade.get('unrealizedPnl', 0)),
                         leverage=float(trade.get('leverage', 1)),
                         quantity=abs(float(trade.get('positionAmt', trade.get('size', 0)))),
@@ -350,7 +351,7 @@ async def _sync_trades_impl(bot, chat_id: str, user_id: str = 'default') -> dict
             asyncio.create_task(_analyze_and_notify(bot, chat_id, new_id, closed_trade, stored, user_id))
         except sqlite3.IntegrityError:
             logger.warning(f"Закрытие {oid}: дубликат в closed_trades, принудительно удаляю из open_trades")
-            await asyncio.to_thread(db.delete_open_trade_by_order_id, oid)
+            await asyncio.to_thread(db.delete_open_trade_by_order_id, oid, user_id)
         except ValueError as e:
             logger.error(f"Закрытие {oid}: {e}")
         except Exception as e:

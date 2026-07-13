@@ -209,7 +209,11 @@ async def _dispatch_callback(data: str, query, context: ContextTypes.DEFAULT_TYP
             return
         trade_id = int(parts[2])
         setup = parts[3]
-        db.update_trade_metrics(trade_id, setup_type=setup)
+        # user_id — trade_id здесь приходит прямо из callback_data кнопки,
+        # без проверки владения (см. AUDIT.md); без фильтра по user_id в
+        # update_trade_metrics подписчик мог бы перезаписать setup_type
+        # чужой сделки, отправив вручную сконструированный callback.
+        db.update_trade_metrics(trade_id, user_id=_current_user_id(context), setup_type=setup)
         await query.edit_message_text(f"✅ Сетап сохранён: {setup}")
     elif data == "cancel_setup":
         await query.edit_message_text("Выбор сетапа отменён.")
@@ -233,7 +237,7 @@ async def generate_ai_review(query, trade_id, user_id: str = 'default'):
         f"или пометки вроде «ошибся»/«на самом деле»/«заменю на»."
     )
     review = strip_llm_self_correction(await ai_analyzer.analyze_raw(prompt))
-    db.update_trade_metrics(trade_id, ai_review=review)
+    db.update_trade_metrics(trade_id, user_id=user_id, ai_review=review)
     # clean_markdown() убирает **bold**/__underline__/`code` из LLM-ответа —
     # тот же паттерн, что уже используется для AI-текста в handlers/ai.py,
     # handlers/system.py, handlers/trading.py. Без него непарные */_ в
@@ -261,6 +265,7 @@ async def generate_full_ai_analysis(query, trade_id, user_id: str = 'default'):
         setup = existing.get('setup_type') if existing else None
         db.update_trade_metrics(
             trade_id,
+            user_id=user_id,
             market_review=analysis.get('market_review', ''),
             risk_review=analysis.get('risk_review', ''),
             psychology_review=analysis.get('psychology_review', ''),
