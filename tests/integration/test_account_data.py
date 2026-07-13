@@ -95,3 +95,57 @@ async def test_open_positions_snapshot_used_by_status(db, make_user):
 
     text = upd.message.reply_text.call_args.args[0]
     assert 'SOL-USDT' in text
+
+
+@pytest.mark.asyncio
+async def test_show_balance_without_keys_prompts_setkeys_not_exchange_call(db, make_user):
+    """Регрессия на реальный баг: подписчик без ключей, нажав «Баланс»,
+    раньше тихо получал баланс владельца через .env-фолбэк. Теперь должен
+    получить понятную подсказку, а запрос к бирже вообще не должен уйти."""
+    from unittest.mock import MagicMock
+    import handlers.trading as trading
+    user = make_user('905')  # no BingX keys linked
+
+    ctx = MagicMock()
+    ctx.user_data = {'user': user, 'is_owner': False}
+    upd = MagicMock()
+    upd.message = MagicMock()
+    upd.message.reply_text = AsyncMock()
+
+    orig_get_db = trading.get_db
+    trading.get_db = lambda: db
+    try:
+        with patch('handlers.trading.get_balance', new=AsyncMock()) as balance_mock:
+            await trading.show_balance(upd, ctx)
+    finally:
+        trading.get_db = orig_get_db
+
+    balance_mock.assert_not_called()
+    text = upd.message.reply_text.call_args.args[0]
+    assert '/setkeys' in text
+
+
+@pytest.mark.asyncio
+async def test_show_balance_owner_without_keys_still_works(db, owner_user):
+    """Владелец без привязанных своих ключей — переходный период — всё
+    ещё должен видеть баланс (через явный set_owner_exchange, не общий
+    .env-фолбэк, который раньше применялся ко всем)."""
+    from unittest.mock import MagicMock
+    import handlers.trading as trading
+    ctx = MagicMock()
+    ctx.user_data = {'user': owner_user, 'is_owner': True}
+    upd = MagicMock()
+    upd.message = MagicMock()
+    upd.message.reply_text = AsyncMock(return_value=MagicMock(edit_text=AsyncMock()))
+
+    orig_get_db = trading.get_db
+    trading.get_db = lambda: db
+    try:
+        with patch('handlers.trading.get_balance', new=AsyncMock(return_value={
+            'success': True, 'equity': 1000.0, 'available': 900.0, 'used_margin': 100.0, 'unrealized_pnl': 0.0
+        })) as balance_mock:
+            await trading.show_balance(upd, ctx)
+    finally:
+        trading.get_db = orig_get_db
+
+    balance_mock.assert_called_once()

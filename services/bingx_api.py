@@ -42,10 +42,22 @@ def clear_bingx_credentials() -> None:
 
 
 def _get_credentials() -> tuple:
+    """Раньше при пустом contextvar здесь был неявный откат на глобальные
+    .env-ключи (BINGX_API_KEY/BINGX_SECRET_KEY) — ДЛЯ ЛЮБОГО вызывающего,
+    не только владельца. Это значило, что подписчик без своих привязанных
+    ключей, нажав "Баланс", тихо получал РЕАЛЬНЫЙ баланс владельца —
+    утечка чужих финансовых данных (найдено на реальном тесте с другого
+    аккаунта). Кто именно имеет право на .env-фолбэк (только владелец,
+    core/user_context.py:resolve_user_context) — решение, которое можно
+    принять только зная, какой Telegram-пользователь сейчас обрабатывается;
+    здесь, в низкоуровневом HTTP-слое, этого контекста нет и быть не
+    должно. Owner-only фоновые джобы, не проходящие через этот middleware
+    (auto_sync_job/update_pinned_status, core/scheduler.py), теперь явно
+    вызывают services.exchange_api.set_owner_exchange() сами."""
     creds = _credentials_var.get()
     if creds and creds[0] and creds[1]:
         return creds
-    return (BINGX_API_KEY, BINGX_SECRET_KEY)
+    return ('', '')
 
 
 async def validate_keys(api_key: str, secret_key: str) -> dict:

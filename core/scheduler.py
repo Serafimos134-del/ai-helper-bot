@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from telegram.ext import ContextTypes
-from services.exchange_api import get_balance, set_current_exchange, clear_current_exchange
+from services.exchange_api import get_balance, set_current_exchange, set_owner_exchange, clear_current_exchange
 from services.database import Database
 from services.auto_sync import sync_trades
 from services.crypto_pay import get_invoice_statuses
@@ -340,6 +340,12 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
         )
         return
 
+    # Owner-only джоба — не проходит через resolve_user_context middleware
+    # (это job_queue-колбэк, не апдейт Telegram), поэтому ключи владельца
+    # нужно установить явно (см. services/exchange_api.py:set_owner_exchange
+    # — раньше это делалось неявным фолбэком в _get_credentials(), который
+    # применялся вообще ко всем без разбора).
+    set_owner_exchange()
     try:
         results = await sync_trades(context.bot, chat_id)
 
@@ -378,6 +384,8 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE, db: Database, chat_i
         backoff = min(BACKOFF_BASE_SECONDS * (2 ** (_consecutive_failures - 1)), BACKOFF_MAX_SECONDS)
         _next_attempt_at = now + backoff
         logger.error(f"Ошибка авто-синхронизации: {e}, пауза {backoff}s")
+    finally:
+        clear_current_exchange()
 
 
 def _build_status_text(balance: dict, open_positions: list, db: Database) -> str:
@@ -514,8 +522,14 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
     if not chat_id:
         return
 
-    async with _pinned_lock:
-        try:
+    # Owner-only (закреплённый статус — общее состояние бота, не per-user).
+    # Вызывается и напрямую джобой каждые 300с, и вложенно из
+    # auto_sync_job (там уже установлено — повторный вызов безвреден) —
+    # без своего set_owner_exchange() здесь standalone-путь остался бы без
+    # credentials вообще (см. services/exchange_api.py:set_owner_exchange).
+    set_owner_exchange()
+    try:
+        async with _pinned_lock:
             balance = await get_balance()
             open_positions = await asyncio.to_thread(db.get_open_trades)
 
@@ -552,5 +566,7 @@ async def update_pinned_status(context: ContextTypes.DEFAULT_TYPE, db: Database,
             _save_pinned_msg_id(db, msg.message_id)
             logger.info(f"New pinned message created: {msg.message_id}")
 
-        except Exception as e:
-            logger.error(f"Error updating pinned status: {e}")
+    except Exception as e:
+        logger.error(f"Error updating pinned status: {e}")
+    finally:
+        clear_current_exchange()
