@@ -116,6 +116,32 @@ def test_binance_position_reconstruction_simple_round_trip():
     assert p['leverage'] == 5
 
 
+@pytest.mark.asyncio
+async def test_bybit_transport_error_message_not_swallowed():
+    """Регрессия: _request() при транспортной ошибке (сеть/прокси/HTTP-статус
+    без валидного тела) клал текст только в ключ 'error', а get_balance()
+    читал 'retMsg' — реальная причина отказа терялась за общим "Неизвестная
+    ошибка". Найдено на реальном тесте с ключами Bybit (13.07.2026)."""
+    import services.bybit_api as bybit_api
+    with patch.object(bybit_api, '_request_with_retry', new=AsyncMock(
+        return_value=bybit_api._transport_error('403 Forbidden')
+    )):
+        result = await bybit_api.get_balance()
+    assert result['success'] is False
+    assert '403 Forbidden' in result['error']
+
+
+@pytest.mark.asyncio
+async def test_mexc_transport_error_message_not_swallowed():
+    import services.mexc_api as mexc_api
+    with patch.object(mexc_api, '_request_with_retry', new=AsyncMock(
+        return_value=mexc_api._transport_error('Connection timed out')
+    )):
+        result = await mexc_api.get_balance()
+    assert result['success'] is False
+    assert 'Connection timed out' in result['error']
+
+
 def test_binance_position_reconstruction_dca_then_partial_closes():
     """Два входа (DCA) + два частичных выхода — проверяет средневзвешенные
     цены входа/выхода, а не только простой случай 1 сделка/1 сделка."""

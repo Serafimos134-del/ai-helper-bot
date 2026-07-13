@@ -120,15 +120,30 @@ async def _request(path: str, params: dict = None) -> dict:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, params=params, headers=headers)
+            # raise_for_status() ДО json() — если Bybit (или прокси/шлюз перед
+            # ним) вернул non-2xx статус без валидного JSON-тела, response.json()
+            # упал бы с ValueError, и настоящая причина (сам HTTP-статус) не
+            # попала бы в текст ошибки вообще — только "Invalid JSON response:
+            # Expecting value...", бесполезно для диагностики.
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
-                return {'error': 'Unexpected response format', 'retCode': -1, '_transport_error': True}
+                return _transport_error('Unexpected response format')
             return data
     except httpx.HTTPError as e:
-        return {'error': str(e), 'retCode': -1, '_transport_error': True}
+        return _transport_error(str(e))
     except ValueError as e:
-        return {'error': f'Invalid JSON response: {e}', 'retCode': -1, '_transport_error': True}
+        return _transport_error(f'Invalid JSON response: {e}')
+
+
+def _transport_error(message: str) -> dict:
+    # Ключ 'retMsg' задублирован с 'error' намеренно — get_balance()/
+    # get_open_positions() и т.д. читают именно 'retMsg' (формат обычных
+    # бизнес-ошибок Bybit), иначе транспортная ошибка (сеть/прокси/HTTP-
+    # статус) молча превращалась бы в бесполезное "Неизвестная ошибка" для
+    # пользователя — баг, из-за которого реальная причина отказа /setkeys
+    # терялась (найдено на реальном тесте с ключами Bybit).
+    return {'error': message, 'retMsg': message, 'retCode': -1, '_transport_error': True}
 
 
 async def get_balance() -> dict:
