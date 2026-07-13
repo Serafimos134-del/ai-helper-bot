@@ -3,6 +3,7 @@ handlers/trading.py
 Trading-related handlers: balance, last trades, stats, AI analysis.
 """
 
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.container import get_db, get_ai_analyzer
@@ -95,5 +96,14 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ai_analyzer = get_ai_analyzer()
     msg  = await update.message.reply_text("🤖 Анализирую...")
-    text = _clean(ai_analyzer.analyze(user_id=get_current_user_id(context)))
+    # ai_analyzer.analyze() — синхронный метод с блокирующим requests.post
+    # внутри (services/ai_trading.py -> ai/providers/groq_provider.py, до
+    # 30с таймаут × 3 ретрая). Без run_in_executor вызов из этого async-
+    # хендлера напрямую вставал бы в event loop всего бота — PTB обрабатывает
+    # апдейты последовательно в одном таске, так что все остальные
+    # пользователи и фоновые джобы (sync каждые 15-60с) ждали бы вместе с
+    # этим запросом (найдено при аудите — тот же класс бага, что уже чинили
+    # для /riskscore).
+    loop = asyncio.get_running_loop()
+    text = _clean(await loop.run_in_executor(None, ai_analyzer.analyze, get_current_user_id(context)))
     await _send_long(msg, text)

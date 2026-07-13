@@ -6,6 +6,7 @@ System-level handlers: start, help, health, sync, status, ai_fix, test_behavior,
 import os
 import re
 import json
+import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from core.container import get_db, get_ai_analyzer
@@ -175,7 +176,12 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status.append(f"📡 BingX API: 🔴 ({e})")
     if ai_analyzer.provider:
         try:
-            test = ai_analyzer.provider.generate("ping")
+            # provider.generate() — синхронный блокирующий requests.post
+            # (до 30с × 3 ретрая внутри). Без run_in_executor /health вставал
+            # бы в event loop всего бота на время проверки (тот же класс
+            # бага, что уже чинили для /riskscore — найдено при аудите).
+            loop = asyncio.get_running_loop()
+            test = await loop.run_in_executor(None, ai_analyzer.provider.generate, "ping")
             if test and "unavailable" not in test:
                 status.append("🧠 AI-провайдер: 🟢")
             else:
@@ -478,7 +484,8 @@ async def setidea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Не указана идея. Заключите её в кавычки. Пример: /setidea BTC \"поддержка\" 59500")
         return
 
-    tm.set_idea(target_order_id, idea, invalidation_sl, tp_zones if tp_zones else None)
+    tm.set_idea(target_order_id, idea, invalidation_sl, tp_zones if tp_zones else None,
+                user_id=get_current_user_id(context))
 
     response = f"✅ Идея для {symbol} установлена:\n🎯 {idea}"
     if invalidation_sl:

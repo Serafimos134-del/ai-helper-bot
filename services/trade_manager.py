@@ -11,14 +11,14 @@ class TradeManager:
         self.db = db or Database()
 
     def set_idea(self, order_id: str, idea: str, invalidation_sl: float = None,
-                 tp_zones: list = None):
+                 tp_zones: list = None, user_id: str = 'default'):
         """Установить торговую идею и опционально уровень инвалидации и TP-зоны."""
         updates = {'idea': idea}
         if invalidation_sl is not None:
             updates['invalidation_sl'] = invalidation_sl
         if tp_zones:
             updates['tp_zones'] = json.dumps(tp_zones)
-        self.db.update_open_trade_by_order_id(order_id, **updates)
+        self.db.update_open_trade_by_order_id(order_id, user_id=user_id, **updates)
 
     def is_invalidated(self, order_id: str, current_price: float, user_id: str = 'default') -> bool:
         """Проверить, сломана ли идея по цене."""
@@ -54,7 +54,7 @@ class TradeManager:
         trade = self._get_open_by_order(order_id, user_id)
         if trade:
             new_count = int(trade.get('dca_count', 0)) + 1
-            self.db.update_open_trade_by_order_id(order_id, dca_count=new_count)
+            self.db.update_open_trade_by_order_id(order_id, user_id=user_id, dca_count=new_count)
 
     def _get_open_by_order(self, order_id: str, user_id: str = 'default') -> dict:
         """Внутренний метод для получения открытой сделки по orderId. user_id
