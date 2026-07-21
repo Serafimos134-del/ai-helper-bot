@@ -13,7 +13,17 @@ from .base_provider import BaseProvider
 
 logger = logging.getLogger(__name__)
 
-PROXY_URL = "socks5://127.0.0.1:1080"
+# Раньше был жёстко зашит порт (socks5://127.0.0.1:1080) — единственное
+# место в проекте, где прокси задавался константой в коде, а не через
+# ALL_PROXY (см. systemd-юнит ai-helper-bot.service). Реальный инцидент
+# (21.07.2026): после переустановки xray для второго бота на сервере он
+# стал слушать другой порт (10808 вместо 1080) — ALL_PROXY в systemd
+# поправили одной строкой, и всё остальное (Telegram-клиент, BingX/Bybit/
+# MEXC через httpx с trust_env) само подхватило новый порт, а этот модуль
+# — нет, потому что requests.post(..., proxies=PROXY_URL) здесь явно
+# переопределяет ambient-прокси константой. GROQ_PROXY_URL — sanity-фолбэк
+# на случай локальной разработки без ALL_PROXY в окружении.
+PROXY_URL = os.getenv('ALL_PROXY') or os.getenv('GROQ_PROXY_URL') or 'socks5://127.0.0.1:10808'
 
 # Раньше здесь был фиксированный интервал "1 запрос / 2с на весь процесс"
 # (threading.Lock + time.sleep(2) внутри него) — независимо от того, сколько
